@@ -14,6 +14,27 @@ pnpm dev
 bun dev
 ```
 
+enviroment:
+```.env.local
+NEXTAUTH_URL="http://[hostname]:[port]"
+NEXTAUTH_SECRET="secret"
+
+
+# database data
+DB_HOST="[hostname]"
+DB_PORT=3307
+DB_DATABASE="[database]"
+DB_USER="[username]"
+DB_PASSWORD="[password]"
+
+
+#Auth0
+AUTH0_CLIENT_ID="[client_id]"
+AUTH0_API_CLIENT_ID="[api_client_id]"
+AUTH0_CLIENT_SECRET="[client_secret]"
+AUTH0_DOMAIN="[domain]"
+```
+
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 You can start editing the page by modifying `pages/index.tsx`. The page auto-updates as you edit the file.
