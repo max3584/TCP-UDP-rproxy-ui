@@ -144,7 +144,7 @@ function validation(rule: ForwardRule): boolean {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
 
   // sessionを取得
-  const session: sessionUser = await getServerSession(req, res, authOptions) || null;
+  const session: sessionUser | null = await getServerSession(req, res, authOptions);
 
   // query data from the request
   let query = req.query.forward;
