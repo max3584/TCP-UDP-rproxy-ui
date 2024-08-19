@@ -10,11 +10,13 @@
   },
   "dependencies": {
     "mariadb": "^3.3.1",
+    "netcat": "^1.5.0",
     "next": "14.2.5",
     "next-auth": "^4.24.7",
     "pino": "^9.3.2",
     "react": "^18",
-    "react-dom": "^18"
+    "react-dom": "^18",
+    "ts-pattern": "^5.3.1"
   },
   "devDependencies": {
     "@types/node": "^20",

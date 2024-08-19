@@ -40,6 +40,7 @@ const IndexPage: React.FC = () => {
       } else {
         setRules([...rules, newRule]);
         setShowModal(false);
+        fetch
       }
     }
     setLoading(!loading);
@@ -95,6 +96,7 @@ const IndexPage: React.FC = () => {
       distAddr: rule.distAddr,
       distPort: rule.distPort
     };
+    rules.find
     let option = {
       method: 'POST',
       headers: {

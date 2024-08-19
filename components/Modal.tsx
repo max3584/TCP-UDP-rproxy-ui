@@ -9,11 +9,12 @@ interface ModalProps {
 }
 
 const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData }) => {
-  const [protocol, setProtocol] = useState('tcp');
+  const [protocol, setProtocol] = useState(initialData?.protocol || 'tcp');
   const [srcAddr, setSrcAddr] = useState(initialData?.srcAddr || '');
   const [srcPort, setSrcPort] = useState<number | ''>(initialData?.srcPort || '');
   const [distAddr, setDistAddr] = useState(initialData?.distAddr || '');
   const [distPort, setDistPort] = useState<number | ''>(initialData?.distPort || '');
+  const [editMode, setEditMode] = useState(initialData ? true : false);
 
   const [errors, setErrors] = useState({
     srcAddr: '',
@@ -38,9 +39,9 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
     const domainPattern = /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})(\.[A-Za-z0-9-]{2,63})*$/;
 
     if (ipPattern.test(address)) {
-      return ''; 
+      return '';
     } else if (domainPattern.test(address) || address === '') {
-      return ''; 
+      return '';
     } else {
       return '無効なアドレス形式です。';
     }
@@ -87,36 +88,47 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
   return (
     <div className="fixed inset-0 flex items-center justify-center z-50">
       <div className="bg-white p-4 rounded shadow-lg w-1/3">
-        <h2 className="text-xl mb-4">{initialData ? 'Edit Forward Rule' : 'Add Forward Rule'}</h2>
+        <h2 className="text-xl mb-4">{editMode ? 'Edit Forward Rule' : 'Add Forward Rule'}</h2>
         <div className="mb-4">
           <label className="block text-sm font-medium mb-1">Protocol:</label>
-          <select className="border rounded px-2 py-1 w-full" onChange={(e) => setProtocol(e.target.value)}>
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-          </select>
+          {editMode ? 
+            <input type='text' value={protocol} className='border rounded px-2 py-1 w-full' readOnly /> :
+            <select className="border rounded px-2 py-1 w-full" onChange={(e) => setProtocol(e.target.value)}>
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          }
         </div>
         <div className="mb-4">
+          
           <label className="block text-sm font-medium mb-1">Source Address:</label>
-          <input
-            type="text"
-            value={srcAddr}
-            onChange={(e) => setSrcAddr(e.target.value)}
-            className="border rounded px-2 py-1 w-full"
-            placeholder="例: 192.168.1.1 または example.com"
-          />
+          {editMode ?
+            <input type='text' value={srcAddr} className='border rounded px-2 py-1 w-full' readOnly /> :
+            <input
+              type="text"
+              value={srcAddr}
+              onChange={(e) => setSrcAddr(e.target.value)}
+              className="border rounded px-2 py-1 w-full"
+              placeholder="例: 192.168.1.1 または example.com"
+            />
+          }
           {errors.srcAddr && <p className="text-red-500 text-xs">{errors.srcAddr}</p>}
+          
         </div>
         <div className="mb-4">
           <label className="block text-sm font-medium mb-1">Source Port:</label>
-          <input
-            type="number"
-            value={srcPort === '' ? '' : srcPort}
-            onChange={(e) => setSrcPort(Number(e.target.value))}
-            className="border rounded px-2 py-1 w-full"
-            placeholder="ポート番号（0-49151）"
-            min="0"
-            max="49151"
-          />
+          {editMode ?
+            <input type='number' value={srcPort} className='border rounded px-2 py-1 w-full' readOnly /> :
+            <input
+              type="number"
+              value={srcPort === '' ? '' : srcPort}
+              onChange={(e) => setSrcPort(Number(e.target.value))}
+              className="border rounded px-2 py-1 w-full"
+              placeholder="ポート番号（0-49151）"
+              min="0"
+              max="49151"
+            />
+          }
           {errors.srcPort && <p className="text-red-500 text-xs">{errors.srcPort}</p>}
         </div>
         <div className="mb-4">

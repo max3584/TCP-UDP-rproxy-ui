@@ -2,6 +2,8 @@ import { authOptions } from '@/pages/api/auth/[...nextauth]';
 import { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { ForwardRule, Logger, sessionUser } from '@/components/lib';
+import { match } from 'ts-pattern';
+import {sendToServer} from '@/components/netcat';
 import mariadb from 'mariadb';
 
 // MariaDBのコネクションプールを作成
@@ -13,15 +15,21 @@ const pool = mariadb.createPool({
   connectionLimit: 1000,
 });
 
+// Reverse Proxyのアドレスを環境変数から取得
+const rproxy_api_addr = process.env.RPROXY_API_ADDR;
+const rproxy_api_port = process.env.RPROXY_API_PORT;
+const rproxy_tcp_addr = process.env.RPROXY_TCP_ADDR;
+const rproxy_udp_addr = process.env.RPROXY_UDP_ADDR;
+
 // ForwardingRuleインターフェースの定義
 interface ForwardRuleDB extends ForwardRule {
   auth_id: string | null;
 }
 
-type action = 'ADD' | 'UPDATE' | 'DELETE';
+type Action = 'ADD' | 'UPDATE' | 'DELETE';
 
 interface ForwardRuleLogDB extends ForwardRule {
-  action: action;
+  action: Action;
 }
 
 async function getForwardingRule(id: string): Promise<ForwardRule[]> {
@@ -57,6 +65,40 @@ async function updateForwardingRuleLog(conn: mariadb.PoolConnection, log: Forwar
   );
 }
 
+async function ReverseProxy(rule: ForwardRuleLogDB): Promise<void> {
+  if (rule.action == 'ADD') {
+    let msg = {
+      property: 'UP',
+      listen_addr: rule.srcAddr,
+      listen_port: rule.srcPort,
+      remote_addr: rule.distAddr,
+      remote_port: rule.distPort,
+      protocol: rule.protocol.toUpperCase(),
+    }
+    sendToServer(rproxy_api_addr, rproxy_api_port, JSON.stringify(msg));
+  } else if (rule.action == 'UPDATE') {
+    let msg = {
+      property: 'UPDATE',
+      parameter: `${rule.distAddr}:${rule.distPort}`
+    }
+    if (rule.protocol == 'TCP') {
+      sendToServer(rproxy_tcp_addr, rule.srcPort, JSON.stringify(msg));
+    } else if (rule.protocol == 'UDP') {
+      sendToServer(rproxy_udp_addr, rule.srcPort, JSON.stringify(msg));
+    }
+    
+  } else if (rule.action == 'DELETE') {
+    let msg = {
+      property: 'STOP'
+    }
+    if (rule.protocol == 'TCP') {
+      sendToServer(rproxy_tcp_addr, rule.srcPort, JSON.stringify(msg));
+    } else if (rule.protocol == 'UDP') {
+      sendToServer(rproxy_udp_addr, rule.srcPort, JSON.stringify(msg));
+    }
+  }
+}
+
 // DBにforwarding ruleを追加する関数
 async function addForwardingRule(rule: ForwardRuleDB): Promise<void> {
   let conn: mariadb.PoolConnection | null = null;
@@ -71,10 +113,11 @@ async function addForwardingRule(rule: ForwardRuleDB): Promise<void> {
   try {
     conn = await pool.getConnection();
     await conn.query(
-      'INSERT INTO forward_rules (auth_id, src_addr, src_port, dist_addr, dist_port) VALUES (?, ?, ?, ?, ?)',
-      [rule.auth_id, rule.srcAddr, rule.srcPort, rule.distAddr, rule.distPort]
+      'INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, dist_addr, dist_port) VALUES (?, ?, ?, ?, ?, ?)',
+      [rule.auth_id, rule.protocol, rule.srcAddr, rule.srcPort, rule.distAddr, rule.distPort]
     );
     updateForwardingRuleLog(conn, update_log);
+    ReverseProxy(update_log);
   } catch (err) {
     throw err;
   } finally {
@@ -95,10 +138,11 @@ async function deleteForwardingRule(rule: ForwardRuleDB): Promise<void> {
   try {
     conn = await pool.getConnection();
     await conn.query(
-      'DELETE FROM forward_rules WHERE auth_id = ? AND src_addr = ? AND src_port = ?',
-      [rule.auth_id, rule.srcAddr, rule.srcPort]
+      'DELETE FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
+      [rule.auth_id, rule.protocol, rule.srcAddr, rule.srcPort]
     );
     updateForwardingRuleLog(conn, update_log);
+    ReverseProxy(update_log);
   } catch (err) {
     throw err;
   } finally {
@@ -119,10 +163,11 @@ async function editForwardingRule(rule: ForwardRuleDB): Promise<void> {
   try {
     conn = await pool.getConnection();
     await conn.query(
-      'UPDATE forward_rules SET dist_addr = ?, dist_port = ? WHERE auth_id = ? AND src_addr = ? AND src_port = ?',
-      [rule.distAddr, rule.distPort, rule.auth_id, rule.srcAddr, rule.srcPort]
+      'UPDATE forward_rules SET dist_addr = ?, dist_port = ? WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
+      [rule.distAddr, rule.distPort, rule.auth_id, rule.protocol, rule.srcAddr, rule.srcPort]
     );
     updateForwardingRuleLog(conn, update_log);
+    ReverseProxy(update_log);
   } catch (err) {
     throw err;
   } finally {
