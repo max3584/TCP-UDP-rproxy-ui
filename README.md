@@ -43,6 +43,9 @@ RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
 ```
 
+Keycloak のレルムは `keycloak/realm-rproxy-dev.json` から作れる（管理コンソールの「Create realm」→「Resource file」で読み込む）。
+このファイルにはクライアントシークレットとユーザーが入っていないので、読み込んだあと、クライアント `rproxy-ui` の「Credentials」でシークレットを確認して `KEYCLOAK_CLIENT_SECRET` に設定する。URL は con0 の開発環境（`http://con0.dev.home:3001`）向け。
+
 Keycloak クライアントの「Valid redirect URIs」には `${NEXTAUTH_URL}/api/auth/callback/keycloak` を登録してください。
 
 テーブル定義とマイグレーションは `db/` にあります（`db/README.md` を参照）。
