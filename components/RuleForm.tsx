@@ -13,8 +13,10 @@ import {
   TlsCertificate,
   TlsMode,
   TlsSpec,
+  TlsUnmatched,
 } from './lib';
 import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount } from './tls';
+import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
@@ -29,6 +31,13 @@ export interface RuleFormProps {
 
 // 3 階層以上の PKI でも使えるように、中間 CA の欄は常に表示する
 export const CHAIN_HELP = '中間 CA（サーバ証明書を発行した CA からルートへ向かう順。ルートは不要）';
+
+export const ALLOW_FROM_HELP = '空欄ならすべて許可。範囲外からの接続は TLS より前に切断します';
+
+const UNMATCHED_LABELS: Record<TlsUnmatched, string> = {
+  default: '基本の転送先へ送る',
+  reject: '切断する',
+};
 
 const SOURCE_IP_LABELS: Record<SourceIp, string> = {
   proxy: 'proxy（送信元 IP を引き渡さない）',
@@ -92,6 +101,7 @@ type FieldErrors = {
   distPort: string;
   sourceIp: string;
   udpIdleSecs: string;
+  allowFrom: string;
   tls: string;
 };
 
@@ -100,7 +110,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
   basic: ['srcAddr', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort'],
   tls: ['tls'],
   mail: [],
-  advanced: ['sourceIp', 'udpIdleSecs'],
+  advanced: ['sourceIp', 'udpIdleSecs', 'allowFrom'],
 };
 
 const EMPTY_ERRORS: FieldErrors = {
@@ -111,6 +121,7 @@ const EMPTY_ERRORS: FieldErrors = {
   distPort: '',
   sourceIp: '',
   udpIdleSecs: '',
+  allowFrom: '',
   tls: '',
 };
 
@@ -145,6 +156,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [upstreamCert, setUpstreamCert] = useState(tls.upstream?.cert_file ?? '');
   const [upstreamChain, setUpstreamChain] = useState(tls.upstream?.chain_file ?? '');
   const [upstreamKey, setUpstreamKey] = useState(tls.upstream?.key_file ?? '');
+  const [unmatched, setUnmatched] = useState<TlsUnmatched>(tls.unmatched ?? 'default');
+  // 1 行に 1 件
+  const [allowFromText, setAllowFromText] = useState((initialData?.allowFrom ?? []).join('\n'));
   const [starttls, setStarttls] = useState<StartTls | ''>(initialData?.starttls ?? '');
   const [starttlsRequired, setStarttlsRequired] = useState(initialData?.starttlsRequired ?? true);
   const [caps, setCaps] = useState<Caps>(FALLBACK_CAPS);
@@ -248,6 +262,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   }, [availableTlsModes, tlsMode]);
 
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate';
+  // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
+  const showUnmatched = protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate') && routes.length > 0;
   const profile = PROFILES.find((p) => p.id === profileId);
 
   const applyProfile = (id: string) => {
@@ -318,6 +334,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         remote_addr: r.remote_addr,
         remote_port: r.remote_port === '' ? 0 : r.remote_port,
       }));
+      if (showUnmatched) spec.unmatched = unmatched;
     }
     if (tlsMode === 'terminate') {
       spec.certificates = certificates.map((c) => ({ cert_file: c.cert_file, chain_file: c.chain_file ?? '', key_file: c.key_file }));
@@ -353,8 +370,12 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       distPort: validatePort(distPort),
       sourceIp: editMode || availableSourceIps.includes(sourceIp) ? '' : 'この送信元 IP の扱いは選択できません。',
       udpIdleSecs: validateUdpIdleSecs(udpIdleSecs),
+      allowFrom: '',
       tls: '',
     };
+
+    const allowFrom = checkAllowFrom(splitAllowFromText(allowFromText));
+    if (!allowFrom.ok) newErrors.allowFrom = allowFrom.error;
 
     const end = editMode ? initialData?.srcPortEnd ?? null : rangeEnd();
     const starttlsValue = showStartTls && starttls !== '' ? starttls : null;
@@ -388,6 +409,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       tls: tlsSpec,
       starttls: starttlsValue,
       starttlsRequired: normalizeStartTlsRequired(starttlsRequired, starttlsValue),
+      allowFrom: allowFrom.ok ? allowFrom.value : [],
     };
 
     void onSubmit(rule);
@@ -677,6 +699,21 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           </fieldset>
         )}
 
+        {showUnmatched && (
+          <div className="mb-4">
+            <label htmlFor="rule-tls-unmatched" className={labelClass}>どのサーバ名にも一致しない接続:</label>
+            <select id="rule-tls-unmatched" className={inputClass} value={unmatched} onChange={(e) => setUnmatched(e.target.value as TlsUnmatched)}
+              aria-describedby="rule-tls-unmatched-help">
+              {(['default', 'reject'] as TlsUnmatched[]).map((u) => (
+                <option key={u} value={u}>{UNMATCHED_LABELS[u]}</option>
+              ))}
+            </select>
+            <p id="rule-tls-unmatched-help" className={helpClass}>
+              SNI のない接続も含みます。「切断する」では{tlsMode === 'terminate' ? 'ハンドシェイクを完了せずに' : ''}切断し、拒否した接続として数えます。
+            </p>
+          </div>
+        )}
+
         {tlsMode === 'terminate' && (
           <>
             <fieldset className="mb-4">
@@ -865,6 +902,24 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             {errors.udpIdleSecs && <p className={errorClass}>{errors.udpIdleSecs}</p>}
           </div>
         )}
+        <div className="mb-4">
+          <label htmlFor="rule-allow-from" className={labelClass}>接続を許可する送信元（allow_from）:</label>
+          <textarea
+            id="rule-allow-from"
+            value={allowFromText}
+            onChange={(e) => setAllowFromText(e.target.value)}
+            className={`${inputClass} font-mono`}
+            rows={4}
+            placeholder={'1 行に 1 件（CIDR か IP アドレス）\n例: 172.16.0.0/16\n例: 10.0.0.5\n例: fd00::/8'}
+            aria-describedby="rule-allow-from-help"
+            aria-invalid={errors.allowFrom !== '' || undefined}
+            spellCheck={false}
+          />
+          <p id="rule-allow-from-help" className={helpClass}>
+            {ALLOW_FROM_HELP}（最大 {MAX_ALLOW_FROM} 件。{protocol === 'udp' ? 'UDP では範囲外の送信元のデータグラムを捨てます。' : ''}保存すると 10.0.0.5 → 10.0.0.5/32 のように正規化します）。
+          </p>
+          {errors.allowFrom && <p className={errorClass}>{errors.allowFrom}</p>}
+        </div>
       </div>
 
       <div className="flex justify-end gap-2 mt-4 border-t border-gray-200 pt-4">

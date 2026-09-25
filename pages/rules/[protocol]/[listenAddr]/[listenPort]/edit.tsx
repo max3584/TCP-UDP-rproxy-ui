@@ -6,6 +6,7 @@ import RuleForm from '@/components/RuleForm';
 import type { ForwardRule } from '@/components/lib';
 import { hostPort, parseRuleKey, portsLabel, ruleHref, toRule } from '@/components/dashboard';
 import { ErrorBanner, goBack, postRule, useRule } from '@/components/ui';
+import { STATIC_RULE_MESSAGE } from '@/components/messages';
 
 const EditRulePage: React.FC = () => {
   const router = useRouter();
@@ -55,7 +56,13 @@ const EditRulePage: React.FC = () => {
         </div>
       )}
       {!initial && !notFound && !loadError && <p className="text-gray-700">読み込み中…</p>}
-      {initial && key && (
+      {rule && key && rule.origin === 'static' && (
+        <div className="card p-4 text-gray-900">
+          <p>{STATIC_RULE_MESSAGE}</p>
+          <Link href={ruleHref(key)} className="link">ルールの詳細へ戻る</Link>
+        </div>
+      )}
+      {initial && key && rule?.origin !== 'static' && (
         <RuleForm
           initialData={initial}
           submitting={submitting}
