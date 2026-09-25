@@ -14,8 +14,21 @@ import {
   sessionUser,
 } from '@/components/lib';
 import {
+  DEFAULT_TLS,
+  TlsError,
+  checkTls,
+  normalizeStartTls,
+  normalizeStartTlsRequired,
+  normalizeTls,
+  optionsJson,
+  parseOptions,
+  portCount,
+} from '@/components/tls';
+import {
   RproxyError,
+  RproxyRule,
   RproxyRuleKey,
+  RproxyRulePatch,
   RproxyRuleStatus,
   addRule,
   deleteRule,
@@ -25,14 +38,23 @@ import {
 import mariadb, { PoolConnection } from 'mariadb';
 
 // MariaDBのコネクションプールを作成
-const pool = mariadb.createPool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT) || 3306,
-  database: process.env.DB_DATABASE,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  connectionLimit: 10,
-});
+function createPool() {
+  return mariadb.createPool({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT) || 3306,
+    database: process.env.DB_DATABASE,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    connectionLimit: 10,
+  });
+}
+
+// next dev はファイルを変えるたびにこのモジュールを読み直すので、プールを使い回さないと
+// 古いプールの接続が DB に残り続ける（Too many connections になる）
+const globalForPool = globalThis as unknown as { rproxyPool?: ReturnType<typeof createPool> };
+const pool = process.env.NODE_ENV === 'development'
+  ? (globalForPool.rproxyPool ??= createPool())
+  : createPool();
 
 type Action = 'ADD' | 'UPDATE' | 'DELETE';
 type AppLogger = ReturnType<typeof Logger>;
@@ -69,8 +91,20 @@ function invalid(message: string): HttpError {
   return new HttpError(400, message, 'invalid');
 }
 
+function fromTlsError(err: unknown): unknown {
+  return err instanceof TlsError ? new HttpError(400, err.message, err.code) : err;
+}
+
 // 入力を検証して正規化する。delete ではキー（protocol, srcAddr, srcPort）だけを使う
 function parseRule(body: any, keyOnly: boolean): ForwardRule {
+  try {
+    return parseRuleInner(body, keyOnly);
+  } catch (err) {
+    throw fromTlsError(err);
+  }
+}
+
+function parseRuleInner(body: any, keyOnly: boolean): ForwardRule {
   if (typeof body !== 'object' || body === null) throw invalid('リクエストの形式が不正です。');
 
   const protocol = typeof body.protocol === 'string' ? body.protocol.toLowerCase() : '';
@@ -84,10 +118,14 @@ function parseRule(body: any, keyOnly: boolean): ForwardRule {
     protocol: protocol as Protocol,
     srcAddr: normalizeAddr(srcAddr),
     srcPort: body.srcPort,
+    srcPortEnd: null,
     distAddr: '',
     distPort: 0,
     sourceIp: 'proxy',
     udpIdleSecs: DEFAULT_UDP_IDLE_SECS,
+    tls: { ...DEFAULT_TLS },
+    starttls: null,
+    starttlsRequired: true,
   };
   if (keyOnly) return rule;
 
@@ -111,12 +149,28 @@ function parseRule(body: any, keyOnly: boolean): ForwardRule {
     throw invalid('UDP のアイドルタイムアウトは1から86400秒の範囲で指定してください。');
   }
 
+  // 範囲の終わりが開始と同じなら単一ポートとして扱う（rproxy の応答も null になる）
+  let srcPortEnd: number | null = body.srcPortEnd ?? null;
+  if (srcPortEnd !== null && !isPort(srcPortEnd)) throw invalid('ポート範囲の終わりは1から65535の範囲で指定してください。');
+  if (srcPortEnd === body.srcPort) srcPortEnd = null;
+  // 上限（capabilities の max_range_ports）は rproxy が確かめる
+  const count = portCount(body.srcPort, srcPortEnd, body.distPort);
+
+  const tls = normalizeTls(body.tls);
+  const starttls = normalizeStartTls(body.starttls);
+  const starttlsRequired = normalizeStartTlsRequired(body.starttlsRequired, starttls);
+  checkTls(protocol as Protocol, tls, starttls, count);
+
   return {
     ...rule,
+    srcPortEnd: srcPortEnd,
     distAddr: distAddr,
     distPort: body.distPort,
     sourceIp: sourceIp as SourceIp,
     udpIdleSecs: udpIdleSecs,
+    tls: tls,
+    starttls: starttls,
+    starttlsRequired: starttlsRequired,
   };
 }
 
@@ -144,15 +198,56 @@ async function withTransaction(logger: AppLogger, fn: (conn: PoolConnection) => 
   }
 }
 
-function toRproxyRule(rule: ForwardRule) {
+// starttls / starttls_required は STARTTLS を使うときだけ付ける
+function starttlsFields(rule: ForwardRule) {
+  return rule.starttls !== null ? { starttls: rule.starttls, starttls_required: rule.starttlsRequired } : {};
+}
+
+function toRproxyRule(rule: ForwardRule): RproxyRule {
   return {
     protocol: rule.protocol,
     listen_addr: rule.srcAddr,
     listen_port: rule.srcPort,
+    ...(rule.srcPortEnd !== null ? { listen_port_end: rule.srcPortEnd } : {}),
     remote_addr: rule.distAddr,
     remote_port: rule.distPort,
     source_ip: rule.sourceIp,
     udp_idle_secs: rule.udpIdleSecs,
+    tls: rule.tls,
+    ...starttlsFields(rule),
+  };
+}
+
+// PATCH では tls を毎回付けて TLS の設定を丸ごと置き換える（範囲と source_ip は変えられないので送らない）
+function toRproxyPatch(rule: ForwardRule): RproxyRulePatch {
+  return {
+    remote_addr: rule.distAddr,
+    remote_port: rule.distPort,
+    ...(rule.protocol === 'udp' ? { udp_idle_secs: rule.udpIdleSecs } : {}),
+    tls: rule.tls,
+    ...starttlsFields(rule),
+  };
+}
+
+function options(rule: ForwardRule): string | null {
+  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired);
+}
+
+// forward_rules の行（src_port_end と options を含む）をルールにする
+function fromRow(row: any): ForwardRule {
+  const opts = parseOptions(row.options);
+  return {
+    protocol: String(row.protocol).toLowerCase() as Protocol,
+    srcAddr: row.src_addr,
+    srcPort: Number(row.src_port),
+    srcPortEnd: row.src_port_end === null || row.src_port_end === undefined ? null : Number(row.src_port_end),
+    distAddr: row.dist_addr,
+    distPort: Number(row.dist_port),
+    sourceIp: row.source_ip,
+    udpIdleSecs: Number(row.udp_idle_secs),
+    tls: opts.tls,
+    starttls: opts.starttls,
+    starttlsRequired: opts.starttlsRequired,
   };
 }
 
@@ -162,31 +257,24 @@ function isNotFound(err: unknown): boolean {
 
 async function insertLog(conn: PoolConnection, authId: string, rule: ForwardRule, action: Action): Promise<void> {
   await conn.query(
-    'INSERT INTO forward_rules_log (auth_id, protocol, src_addr, src_port, dist_addr, dist_port, source_ip, udp_idle_secs, update_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [authId, rule.protocol, rule.srcAddr, rule.srcPort, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, action]
+    'INSERT INTO forward_rules_log (auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options, update_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [authId, rule.protocol, rule.srcAddr, rule.srcPort, rule.srcPortEnd, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, options(rule), action]
   );
 }
 
 // 自分のルールを行ロックして取得する。なければ 404
 async function lockOwnRule(conn: PoolConnection, authId: string, key: ForwardRule): Promise<ForwardRule> {
   const rows = await conn.query(
-    'SELECT dist_addr, dist_port, source_ip, udp_idle_secs FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ? FOR UPDATE',
+    'SELECT src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ? FOR UPDATE',
     [authId, key.protocol, key.srcAddr, key.srcPort]
   );
   if (rows.length === 0) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
-  const row = rows[0];
-  return {
-    ...key,
-    distAddr: row.dist_addr,
-    distPort: Number(row.dist_port),
-    sourceIp: row.source_ip,
-    udpIdleSecs: Number(row.udp_idle_secs),
-  };
+  return fromRow({ ...rows[0], protocol: key.protocol, src_addr: key.srcAddr, src_port: key.srcPort });
 }
 
 async function listForwardingRules(authId: string, logger: AppLogger): Promise<ForwardRules[]> {
   const rows = await pool.query(
-    'SELECT id, protocol, src_addr, src_port, dist_addr, dist_port, source_ip, udp_idle_secs FROM forward_rules WHERE auth_id = ? ORDER BY id',
+    'SELECT id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE auth_id = ? ORDER BY id',
     [authId]
   );
 
@@ -199,18 +287,11 @@ async function listForwardingRules(authId: string, logger: AppLogger): Promise<F
   }
 
   return rows.map((row: any): ForwardRules => {
-    const protocol = String(row.protocol).toLowerCase() as Protocol;
-    const srcPort = Number(row.src_port);
-    const status = live?.get(ruleKeyString(protocol, row.src_addr, srcPort));
+    const rule = fromRow(row);
+    const status = live?.get(ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort));
     return {
       id: Number(row.id),
-      protocol: protocol,
-      srcAddr: row.src_addr,
-      srcPort: srcPort,
-      distAddr: row.dist_addr,
-      distPort: Number(row.dist_port),
-      sourceIp: row.source_ip,
-      udpIdleSecs: Number(row.udp_idle_secs),
+      ...rule,
       state: live === null ? 'unknown' : status ? status.state : 'missing',
       error: status?.error ?? null,
       connections: status?.connections ?? null,
@@ -221,8 +302,8 @@ async function listForwardingRules(authId: string, logger: AppLogger): Promise<F
 async function addForwardingRule(authId: string, rule: ForwardRule, logger: AppLogger): Promise<void> {
   await withTransaction(logger, async (conn) => {
     await conn.query(
-      'INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, dist_addr, dist_port, source_ip, udp_idle_secs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [authId, rule.protocol, rule.srcAddr, rule.srcPort, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs]
+      'INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [authId, rule.protocol, rule.srcAddr, rule.srcPort, rule.srcPortEnd, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, options(rule)]
     );
     await insertLog(conn, authId, rule, 'ADD');
     await addRule(toRproxyRule(rule));
@@ -230,23 +311,33 @@ async function addForwardingRule(authId: string, rule: ForwardRule, logger: AppL
   });
 }
 
-async function editForwardingRule(authId: string, rule: ForwardRule, logger: AppLogger): Promise<void> {
+// body に srcPortEnd があるか（範囲を変えようとしていないか確かめるため）
+function hasRangeEnd(body: any): boolean {
+  return typeof body === 'object' && body !== null && body.srcPortEnd !== undefined;
+}
+
+async function editForwardingRule(authId: string, rule: ForwardRule, rangeGiven: boolean, logger: AppLogger): Promise<void> {
   await withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, authId, rule);
+    // ポート範囲は変更できない（API の制約）。指定があれば DB の値と同じでなければならない
+    if (rangeGiven && rule.srcPortEnd !== current.srcPortEnd) {
+      throw new HttpError(400, 'ポート範囲は変更できません。削除してから作り直してください。', 'unsupported');
+    }
     // source_ip は変更できないので DB の値を使う
-    const updated: ForwardRule = { ...rule, sourceIp: current.sourceIp };
+    const updated: ForwardRule = { ...rule, sourceIp: current.sourceIp, srcPortEnd: current.srcPortEnd };
+    try {
+      // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
+      checkTls(updated.protocol, updated.tls, updated.starttls, portCount(updated.srcPort, updated.srcPortEnd, updated.distPort));
+    } catch (err) {
+      throw fromTlsError(err);
+    }
     await conn.query(
-      'UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ? WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
-      [updated.distAddr, updated.distPort, updated.udpIdleSecs, authId, updated.protocol, updated.srcAddr, updated.srcPort]
+      'UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ?, options = ? WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
+      [updated.distAddr, updated.distPort, updated.udpIdleSecs, options(updated), authId, updated.protocol, updated.srcAddr, updated.srcPort]
     );
     await insertLog(conn, authId, updated, 'UPDATE');
-    const patch = (r: ForwardRule) => ({
-      remote_addr: r.distAddr,
-      remote_port: r.distPort,
-      ...(r.protocol === 'udp' ? { udp_idle_secs: r.udpIdleSecs } : {}),
-    });
     try {
-      await modifyRule(toKey(updated), patch(updated));
+      await modifyRule(toKey(updated), toRproxyPatch(updated));
     } catch (err) {
       if (!isNotFound(err)) throw err;
       // rproxy にないルール（missing）は作り直す
@@ -254,7 +345,8 @@ async function editForwardingRule(authId: string, rule: ForwardRule, logger: App
       await addRule(toRproxyRule(updated));
       return () => deleteRule(toKey(updated));
     }
-    return () => modifyRule(toKey(current), patch(current));
+    // 元の転送先と TLS の設定に戻す
+    return () => modifyRule(toKey(current), toRproxyPatch(current));
   });
 }
 
@@ -321,7 +413,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         logger.info('Forwarding rule added successfully');
         return res.status(200).json({ message: 'Forwarding rule added successfully' });
       } else if (query === 'modify') {
-        await editForwardingRule(id, parseRule(req.body, false), logger);
+        await editForwardingRule(id, parseRule(req.body, false), hasRangeEnd(req.body), logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json({ message: 'Forwarding rule modified successfully' });
       } else if (query === 'delete') {
