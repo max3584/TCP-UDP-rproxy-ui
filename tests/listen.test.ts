@@ -48,6 +48,11 @@ describe('explainError', () => {
     expect(msg).toContain('box.home:25');
   });
 
+  it('explains privileged ports separately from ports in use', () => {
+    expect(explainError('bind_failed', '127.0.0.2:25: Permission denied (os error 13)')).toContain('1024 未満のポート');
+    expect(explainError('bind_failed', '0.0.0.0:8080: Address already in use (os error 98)')).toContain('ほかのプログラム');
+  });
+
   it('falls back to the detail and code', () => {
     expect(explainError('weird', 'boom')).toBe('boom (weird)');
     expect(explainError(undefined, 'boom')).toBe('boom');

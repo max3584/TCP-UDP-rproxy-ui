@@ -10,7 +10,14 @@ const EXPLAIN: Record<string, string> = {
   unauthorized: 'ログインし直してください。',
 };
 
+// 1024 未満のポートは、rproxy に CAP_NET_BIND_SERVICE がないと開けない
+const PRIVILEGED_PORT =
+  '1024 未満のポートを開く権限が rproxy にありません。1024 以上のポートを使うか、rproxy に CAP_NET_BIND_SERVICE を付けてください（setcap cap_net_bind_service=+ep、systemd なら AmbientCapabilities=CAP_NET_BIND_SERVICE）。';
+
 export function explainError(code: string | undefined, detail: string): string {
+  if (code === 'bind_failed' && /Permission denied|os error 13/.test(detail)) {
+    return `${PRIVILEGED_PORT}（詳細: ${detail}）`;
+  }
   const text = code ? EXPLAIN[code] : undefined;
   if (!text) return code ? `${detail} (${code})` : detail;
   return `${text}（詳細: ${detail}）`;
