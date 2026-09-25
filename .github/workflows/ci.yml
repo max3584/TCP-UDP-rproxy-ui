@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck + lint + unit tests + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    name: e2e (MariaDB + rproxy-api)
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: rproxy_e2e
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: rproxy_e2e
+      DB_USER: root
+      DB_PASSWORD: root
+      RPROXY_API_URL: http://127.0.0.1:8080
+      RPROXY_API_TOKEN: e2e-token
+      E2E_BACKEND_PORT: 19001
+    steps:
+      - uses: actions/checkout@v4
+
+      # rproxy-api と同じ名前のブランチがあればそれを、なければ既定ブランチを使う
+      - name: pick rproxy-api ref
+        id: rproxy
+        run: |
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          if git ls-remote --exit-code --heads https://github.com/max3584/rproxy-api.git "$branch" >/dev/null; then
+            echo "ref=$branch" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=master" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: max3584/rproxy-api
+          ref: ${{ steps.rproxy.outputs.ref }}
+          path: rproxy-api
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rproxy-api
+      - name: build rproxy-api (${{ steps.rproxy.outputs.ref }})
+        run: cargo build --manifest-path rproxy-api/Cargo.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: create tables from db/schema.sql
+        run: |
+          node -e "
+            const fs = require('fs');
+            require('mariadb').createConnection({
+              host: process.env.DB_HOST, port: +process.env.DB_PORT, database: process.env.DB_DATABASE,
+              user: process.env.DB_USER, password: process.env.DB_PASSWORD, multipleStatements: true,
+            }).then(async (c) => { await c.query(fs.readFileSync('db/schema.sql', 'utf8')); await c.end(); });
+          "
+
+      - name: start rproxy-api
+        run: |
+          echo "$RPROXY_API_TOKEN" > "$RUNNER_TEMP/tokens"
+          RPROXY_API_PORT=8080 RPROXY_TOKEN_FILE="$RUNNER_TEMP/tokens" \
+          RPROXY_DATABASE_URL="mysql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_DATABASE" \
+            nohup rproxy-api/target/debug/rproxy-api > "$RUNNER_TEMP/rproxy.log" 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/rproxy.log"; exit 1
+
+      - name: e2e tests
+        run: RUN_E2E=1 npx vitest run tests/e2e.test.ts
+
+      - name: rproxy-api log
+        if: always()
+        run: cat "$RUNNER_TEMP/rproxy.log" || true
