@@ -1,6 +1,6 @@
 // rproxy-api の HTTP クライアント（契約は ../rproxy-api/docs/API.md）
 
-import type { Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec } from './lib';
+import type { Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec } from './lib';
 import type { InterfacesInfo } from './listen';
 
 export type { Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec };
@@ -17,9 +17,12 @@ export interface RproxyRule {
   tls?: TlsSpec;
   starttls?: StartTls;
   starttls_required?: boolean;
+  // 接続を許可する送信元（CIDR か単一の IP。最大 64 件）。省略または空ならすべて許可
+  allow_from?: string[];
 }
 
-// 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）
+// 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）。
+// allow_from は正規化した CIDR（10.0.0.5 → 10.0.0.5/32）。origin は固定ルールなら static（古い rproxy は返さない）
 export interface RproxyRuleStatus extends Omit<RproxyRule, 'listen_port_end' | 'starttls'> {
   listen_port_end?: number | null;
   starttls?: StartTls | null;
@@ -30,6 +33,7 @@ export interface RproxyRuleStatus extends Omit<RproxyRule, 'listen_port_end' | '
   // 古い rproxy は返さない
   stats?: RuleStats;
   started_at?: number | null;
+  origin?: RuleOrigin;
 }
 
 export interface RproxyRuleKey {
@@ -47,6 +51,8 @@ export interface RproxyRulePatch {
   tls?: TlsSpec;
   starttls?: StartTls;
   starttls_required?: boolean;
+  // 付けると丸ごと置き換える（[] ですべて許可に戻す）
+  allow_from?: string[];
   listen_port_end?: number;
 }
 

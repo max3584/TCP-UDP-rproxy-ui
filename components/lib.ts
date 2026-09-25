@@ -23,6 +23,8 @@ export type StartTls = 'smtp' | 'imap' | 'pop3';
 export const STARTTLS_PROTOCOLS: StartTls[] = ['smtp', 'imap', 'pop3'];
 export type ClientAuthMode = 'none' | 'optional' | 'required';
 export const CLIENT_AUTH_MODES: ClientAuthMode[] = ['none', 'optional', 'required'];
+// どの routes にも一致しない名前・SNI なしの接続：default はルールの転送先へ、reject は切断する
+export type TlsUnmatched = 'default' | 'reject';
 
 export interface TlsRoute {
   server_name: string;
@@ -64,6 +66,8 @@ export interface TlsSpec {
   client_auth?: TlsClientAuth;
   alpn?: string[];
   upstream?: TlsUpstream;
+  // 既定（default）なら省く。tcp の sni / terminate で routes があるときだけ reject にできる
+  unmatched?: TlsUnmatched;
 }
 
 export interface ForwardRule {
@@ -79,7 +83,12 @@ export interface ForwardRule {
   tls: TlsSpec;
   starttls: StartTls | null;
   starttlsRequired: boolean;
+  // 接続を許可する送信元（正規化した CIDR。例 10.0.0.5/32）。空ならすべて許可
+  allowFrom: string[];
 }
+
+// dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）
+export type RuleOrigin = 'dynamic' | 'static';
 
 // missing: DB にはあるが rproxy にない / unknown: rproxy に問い合わせできなかった
 export type RuleState = 'running' | 'failed' | 'missing' | 'unknown';
@@ -90,11 +99,15 @@ export interface RuleStats {
   rx_bytes: number;
   tx_bytes: number;
   tls_failures: number;
+  // allow_from の範囲外、または unmatched: reject で切断した接続の数（古い rproxy は返さない）
+  denied?: number;
 }
 
 // 稼働情報は rproxy に問い合わせできない（unknown）か rproxy にない（missing）ときは null / 空
+// id は DB の id。固定ルール（origin: static）は DB にないので負の数を振る（画面の key にだけ使う）
 export interface ForwardRules extends ForwardRule {
   id: number;
+  origin: RuleOrigin;
   state: RuleState;
   error: string | null;
   connections: number | null;
@@ -111,6 +124,7 @@ export interface DashboardData {
   reachable: boolean;
   // 取得できなかった理由
   rproxyError: string | null;
+  // 自分のルール（DB）のあとに、rproxy の固定ルール（origin: static）を続ける
   rules: ForwardRules[];
 }
 
