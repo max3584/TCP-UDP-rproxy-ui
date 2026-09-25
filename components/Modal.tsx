@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ForwardRule } from './lib';
+import React, { useState, useEffect, useMemo } from 'react';
+import { DEFAULT_UDP_IDLE_SECS, ForwardRule, Protocol, SourceIp, TCP_ONLY_SOURCE_IPS } from './lib';
 
 interface ModalProps {
   isOpen: boolean;
@@ -8,82 +8,141 @@ interface ModalProps {
   initialData?: ForwardRule | null;
 }
 
+const SOURCE_IP_LABELS: Record<SourceIp, string> = {
+  proxy: 'proxy（送信元 IP を引き渡さない）',
+  proxy_v1: 'proxy_v1（PROXY protocol v1）',
+  proxy_v2: 'proxy_v2（PROXY protocol v2）',
+  transparent: 'transparent（透過プロキシ）',
+};
+
+const ipv4Pattern = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+const ipv6Pattern = /^[0-9A-Fa-f:.]+$/;
+const domainPattern = /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*$/;
+
+const isIPv4 = (address: string) => ipv4Pattern.test(address);
+const isIPv6 = (address: string) => address.includes(':') && ipv6Pattern.test(address);
+
 const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData }) => {
-  const [protocol, setProtocol] = useState(initialData?.protocol || 'tcp');
+  const [protocol, setProtocol] = useState<Protocol>(initialData?.protocol || 'tcp');
   const [srcAddr, setSrcAddr] = useState(initialData?.srcAddr || '');
   const [srcPort, setSrcPort] = useState<number | ''>(initialData?.srcPort || '');
   const [distAddr, setDistAddr] = useState(initialData?.distAddr || '');
   const [distPort, setDistPort] = useState<number | ''>(initialData?.distPort || '');
-  const [editMode, setEditMode] = useState(initialData ? true : false);
+  const [sourceIp, setSourceIp] = useState<SourceIp>(initialData?.sourceIp || 'proxy');
+  const [udpIdleSecs, setUdpIdleSecs] = useState<number | ''>(initialData?.udpIdleSecs || DEFAULT_UDP_IDLE_SECS);
+  const [supportedSourceIps, setSupportedSourceIps] = useState<SourceIp[]>(['proxy']);
+  const [capabilitiesError, setCapabilitiesError] = useState('');
+  const editMode = initialData ? true : false;
 
   const [errors, setErrors] = useState({
     srcAddr: '',
     srcPort: '',
     distAddr: '',
     distPort: '',
+    sourceIp: '',
+    udpIdleSecs: '',
   });
 
   useEffect(() => {
     if (initialData) {
+      setProtocol(initialData.protocol);
       setSrcAddr(initialData.srcAddr);
       setSrcPort(initialData.srcPort);
       setDistAddr(initialData.distAddr);
       setDistPort(initialData.distPort);
+      setSourceIp(initialData.sourceIp);
+      setUdpIdleSecs(initialData.udpIdleSecs);
     }
   }, [initialData]);
 
+  useEffect(() => {
+    if (editMode) return;
+    const getCapabilities = async () => {
+      try {
+        const res = await fetch('/api/forward/capabilities');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setSupportedSourceIps(Array.isArray(data.source_ip) && data.source_ip.length > 0 ? data.source_ip : ['proxy']);
+      } catch (err) {
+        setCapabilitiesError(`rproxy の対応機能を取得できませんでした（proxy のみ選択できます）: ${err instanceof Error ? err.message : err}`);
+      }
+    };
+    getCapabilities();
+  }, [editMode]);
+
+  // proxy_v1 / proxy_v2 は TCP のみ、transparent は IPv4 のみ
+  const availableSourceIps = useMemo(() => supportedSourceIps.filter((s) => {
+    if (protocol === 'udp' && TCP_ONLY_SOURCE_IPS.includes(s)) return false;
+    if (s === 'transparent' && isIPv6(srcAddr)) return false;
+    return true;
+  }), [supportedSourceIps, protocol, srcAddr]);
+
+  useEffect(() => {
+    if (!editMode && !availableSourceIps.includes(sourceIp)) {
+      setSourceIp('proxy');
+    }
+  }, [editMode, availableSourceIps, sourceIp]);
+
   if (!isOpen) return null;
 
-  const validateAddress = (address: string): string => {
-    const ipPattern = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-    const domainPattern = /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})(\.[A-Za-z0-9-]{2,63})*$/;
-
-    if (ipPattern.test(address)) {
+  const validateSrcAddress = (address: string): string => {
+    if (isIPv4(address) || isIPv6(address)) {
       return '';
-    } else if (domainPattern.test(address) || address === '') {
-      return '';
-    } else {
-      return '無効なアドレス形式です。';
     }
+    return 'IP アドレスを指定してください。';
+  };
+
+  const validateDistAddress = (address: string): string => {
+    if (isIPv4(address) || isIPv6(address) || domainPattern.test(address)) {
+      return '';
+    }
+    return '無効なアドレス形式です。';
   };
 
   const validatePort = (port: number | ''): string => {
-    if (port === '' || (port >= 0 && port <= 49151)) {
+    if (port !== '' && Number.isInteger(port) && port >= 1 && port <= 65535) {
       return '';
     }
-    return 'ポート番号は0から49151の範囲で指定してください。';
+    return 'ポート番号は1から65535の範囲で指定してください。';
+  };
+
+  const validateUdpIdleSecs = (secs: number | ''): string => {
+    if (protocol !== 'udp' || (secs !== '' && Number.isInteger(secs) && secs >= 1 && secs <= 86400)) {
+      return '';
+    }
+    return '1から86400秒の範囲で指定してください。';
   };
 
   const handleSubmit = () => {
-    const srcAddrError = validateAddress(srcAddr);
-    const srcPortError = validatePort(srcPort);
-    const distAddrError = validateAddress(distAddr);
-    const distPortError = validatePort(distPort);
+    const newErrors = {
+      srcAddr: validateSrcAddress(srcAddr),
+      srcPort: validatePort(srcPort),
+      distAddr: validateDistAddress(distAddr),
+      distPort: validatePort(distPort),
+      sourceIp: editMode || availableSourceIps.includes(sourceIp) ? '' : 'この送信元 IP の扱いは選択できません。',
+      udpIdleSecs: validateUdpIdleSecs(udpIdleSecs),
+    };
 
-    if (srcAddrError || srcPortError || distAddrError || distPortError) {
-      setErrors({
-        srcAddr: srcAddrError,
-        srcPort: srcPortError,
-        distAddr: distAddrError,
-        distPort: distPortError,
-      });
+    if (Object.values(newErrors).some((e) => e !== '')) {
+      setErrors(newErrors);
       return;
     }
-
-    const srcPortNumber = typeof srcPort === 'number' ? srcPort : parseInt(srcPort, 10);
-    const distPortNumber = typeof distPort === 'number' ? distPort : parseInt(distPort, 10);
 
     const rule: ForwardRule = {
       protocol: protocol,
       srcAddr: srcAddr,
-      srcPort: srcPortNumber,
+      srcPort: Number(srcPort),
       distAddr: distAddr,
-      distPort: distPortNumber,
+      distPort: Number(distPort),
+      sourceIp: sourceIp,
+      udpIdleSecs: protocol === 'udp' ? Number(udpIdleSecs) : DEFAULT_UDP_IDLE_SECS,
     };
 
     onSubmit(rule);
     onClose();
   };
+
+  const toNumber = (value: string): number | '' => (value === '' ? '' : Number(value));
 
   return (
     <div className="fixed inset-0 flex items-center justify-center z-50">
@@ -91,29 +150,33 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
         <h2 className="text-xl mb-4">{editMode ? 'Edit Forward Rule' : 'Add Forward Rule'}</h2>
         <div className="mb-4">
           <label className="block text-sm font-medium mb-1">Protocol:</label>
-          {editMode ? 
+          {editMode ?
             <input type='text' value={protocol} className='border rounded px-2 py-1 w-full' readOnly /> :
-            <select className="border rounded px-2 py-1 w-full" onChange={(e) => setProtocol(e.target.value)}>
+            <select
+              className="border rounded px-2 py-1 w-full"
+              value={protocol}
+              onChange={(e) => setProtocol(e.target.value as Protocol)}
+            >
               <option value="tcp">TCP</option>
               <option value="udp">UDP</option>
             </select>
           }
         </div>
         <div className="mb-4">
-          
+
           <label className="block text-sm font-medium mb-1">Source Address:</label>
           {editMode ?
             <input type='text' value={srcAddr} className='border rounded px-2 py-1 w-full' readOnly /> :
             <input
               type="text"
               value={srcAddr}
-              onChange={(e) => setSrcAddr(e.target.value)}
+              onChange={(e) => setSrcAddr(e.target.value.trim())}
               className="border rounded px-2 py-1 w-full"
-              placeholder="例: 192.168.1.1 または example.com"
+              placeholder="例: 0.0.0.0 または ::"
             />
           }
           {errors.srcAddr && <p className="text-red-500 text-xs">{errors.srcAddr}</p>}
-          
+
         </div>
         <div className="mb-4">
           <label className="block text-sm font-medium mb-1">Source Port:</label>
@@ -121,12 +184,12 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
             <input type='number' value={srcPort} className='border rounded px-2 py-1 w-full' readOnly /> :
             <input
               type="number"
-              value={srcPort === '' ? '' : srcPort}
-              onChange={(e) => setSrcPort(Number(e.target.value))}
+              value={srcPort}
+              onChange={(e) => setSrcPort(toNumber(e.target.value))}
               className="border rounded px-2 py-1 w-full"
-              placeholder="ポート番号（0-49151）"
-              min="0"
-              max="49151"
+              placeholder="ポート番号（1-65535）"
+              min="1"
+              max="65535"
             />
           }
           {errors.srcPort && <p className="text-red-500 text-xs">{errors.srcPort}</p>}
@@ -136,7 +199,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
           <input
             type="text"
             value={distAddr}
-            onChange={(e) => setDistAddr(e.target.value)}
+            onChange={(e) => setDistAddr(e.target.value.trim())}
             className="border rounded px-2 py-1 w-full"
             placeholder="例: 192.168.1.1 または example.com"
           />
@@ -146,15 +209,47 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
           <label className="block text-sm font-medium mb-1">Destination Port:</label>
           <input
             type="number"
-            value={distPort === '' ? '' : distPort}
-            onChange={(e) => setDistPort(Number(e.target.value))}
+            value={distPort}
+            onChange={(e) => setDistPort(toNumber(e.target.value))}
             className="border rounded px-2 py-1 w-full"
-            placeholder="ポート番号（0-49151）"
-            min="0"
-            max="49151"
+            placeholder="ポート番号（1-65535）"
+            min="1"
+            max="65535"
           />
           {errors.distPort && <p className="text-red-500 text-xs">{errors.distPort}</p>}
         </div>
+        <div className="mb-4">
+          <label className="block text-sm font-medium mb-1">Source IP:</label>
+          {editMode ?
+            <input type='text' value={sourceIp} className='border rounded px-2 py-1 w-full' readOnly /> :
+            <select
+              className="border rounded px-2 py-1 w-full"
+              value={sourceIp}
+              onChange={(e) => setSourceIp(e.target.value as SourceIp)}
+            >
+              {availableSourceIps.map((s) => (
+                <option key={s} value={s}>{SOURCE_IP_LABELS[s] ?? s}</option>
+              ))}
+            </select>
+          }
+          {capabilitiesError && <p className="text-yellow-600 text-xs">{capabilitiesError}</p>}
+          {errors.sourceIp && <p className="text-red-500 text-xs">{errors.sourceIp}</p>}
+        </div>
+        {protocol === 'udp' && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium mb-1">UDP Idle Timeout (秒):</label>
+            <input
+              type="number"
+              value={udpIdleSecs}
+              onChange={(e) => setUdpIdleSecs(toNumber(e.target.value))}
+              className="border rounded px-2 py-1 w-full"
+              placeholder="秒数（1-86400）"
+              min="1"
+              max="86400"
+            />
+            {errors.udpIdleSecs && <p className="text-red-500 text-xs">{errors.udpIdleSecs}</p>}
+          </div>
+        )}
         <div className="flex justify-end space-x-2">
           <button
             type="button"
