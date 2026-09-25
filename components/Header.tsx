@@ -19,7 +19,7 @@ const Header: React.FC = () => {
           </>
         ) : (
           <span className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-4 rounded cursor-pointer">
-            <button onClick={() => signIn('auth0')}>
+            <button onClick={() => signIn('keycloak')}>
               Sign In
             </button>
           </span>
