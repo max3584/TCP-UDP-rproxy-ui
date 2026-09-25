@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listenOptions, reservedClash, type InterfacesInfo } from '@/components/listen';
-import { explainError } from '@/components/messages';
+import { STATIC_RULE_MESSAGE, explainError } from '@/components/messages';
 
 const info: InterfacesInfo = {
   interfaces: [
@@ -42,6 +42,16 @@ describe('reservedClash', () => {
 });
 
 describe('explainError', () => {
+  it('explains that static rules cannot be changed or deleted from the UI (409 static)', () => {
+    expect(STATIC_RULE_MESSAGE).toBe('固定ルールは rproxy の設定ファイルで管理されているため、画面からは変更・削除できません。');
+    // UI の API の本文（modify / delete）
+    expect(explainError('static', 'このルールは rproxy の固定ルールです。')).toBe(`${STATIC_RULE_MESSAGE}（詳細: このルールは rproxy の固定ルールです。）`);
+    // rproxy の 409 static をそのまま返した場合
+    expect(explainError('static', 'rule is static')).toContain(STATIC_RULE_MESSAGE);
+    // 詳細が説明と同じなら繰り返さない
+    expect(explainError('static', STATIC_RULE_MESSAGE)).toBe(STATIC_RULE_MESSAGE);
+  });
+
   it('explains known codes and keeps the detail', () => {
     const msg = explainError('resolve_failed', 'box.home:25: failed to lookup address information');
     expect(msg).toContain('名前解決できませんでした');

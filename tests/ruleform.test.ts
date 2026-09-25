@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import RuleForm, { CHAIN_HELP } from '@/components/RuleForm';
+import RuleForm, { ALLOW_FROM_HELP, CHAIN_HELP } from '@/components/RuleForm';
 import { PROFILES } from '@/components/profiles';
 import { DEFAULT_MAX_RANGE_PORTS, ForwardRule } from '@/components/lib';
 import { checkTls, portCount } from '@/components/tls';
@@ -12,12 +12,12 @@ const render = (initialData?: ForwardRule, submitting = false) =>
 
 const udpRule: ForwardRule = {
   protocol: 'udp', srcAddr: '0.0.0.0', srcPort: 8000, srcPortEnd: 8001, distAddr: '10.0.0.30', distPort: 8000,
-  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true,
+  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [],
 };
 
 const terminateRule: ForwardRule = {
   protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null, distAddr: '10.0.0.5', distPort: 8080,
-  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true,
+  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true, allowFrom: [],
   tls: {
     mode: 'terminate',
     certificates: [
@@ -88,6 +88,51 @@ describe('RuleForm', () => {
     expect(html).toContain('id="rule-cert-0-chain"');
     expect(html).not.toContain('id="rule-client-auth-chain"');
     expect(html).not.toContain('id="rule-upstream-chain"');
+  });
+});
+
+describe('RuleForm: allow_from and unmatched', () => {
+  const route = { server_name: 'dashboard.proxy.home', remote_addr: '127.0.0.1', remote_port: 3001 };
+  const sniRule: ForwardRule = { ...terminateRule, tls: { mode: 'sni', routes: [route], unmatched: 'reject' }, allowFrom: ['172.16.0.0/16', '10.0.0.5/32'] };
+  const panel = (html: string, tab: string) => {
+    const start = html.indexOf(`id="rule-panel-${tab}"`);
+    const next = html.indexOf('role="tabpanel"', start + 1);
+    return html.slice(start, next < 0 ? undefined : next);
+  };
+
+  it('puts a labelled allow_from textarea with its help text in the advanced tab', () => {
+    const html = render();
+    const advanced = panel(html, 'advanced');
+    expect(advanced).toContain('<label for="rule-allow-from"');
+    expect(advanced).toContain('接続を許可する送信元（allow_from）');
+    expect(advanced).toMatch(/<textarea[^>]*id="rule-allow-from"[^>]*aria-describedby="rule-allow-from-help"/);
+    expect(advanced).toContain(ALLOW_FROM_HELP);
+    expect(ALLOW_FROM_HELP).toBe('空欄ならすべて許可。範囲外からの接続は TLS より前に切断します');
+    expect(panel(html, 'basic')).not.toContain('rule-allow-from');
+  });
+
+  it('fills the textarea with one CIDR per line when editing', () => {
+    const html = render(sniRule);
+    expect(html).toMatch(/<textarea[^>]*id="rule-allow-from"[^>]*>172\.16\.0\.0\/16\n10\.0\.0\.5\/32<\/textarea>/);
+  });
+
+  it('offers the unmatched choice in the TLS tab for tcp sni / terminate with routes', () => {
+    const html = render(sniRule);
+    const tls = panel(html, 'tls');
+    expect(tls).toContain('<label for="rule-tls-unmatched"');
+    expect(tls).toContain('どのサーバ名にも一致しない接続');
+    expect(tls).toMatch(/<option value="default"[^>]*>基本の転送先へ送る<\/option>/);
+    expect(tls).toMatch(/<option value="reject" selected=""[^>]*>切断する<\/option>/);
+    const terminate = render({ ...terminateRule, tls: { ...terminateRule.tls, routes: [route] } });
+    expect(terminate).toMatch(/<option value="default" selected=""[^>]*>基本の転送先へ送る<\/option>/);
+  });
+
+  it('hides the unmatched choice without routes, for passthrough and for UDP', () => {
+    expect(render({ ...sniRule, tls: { mode: 'sni' } })).not.toContain('rule-tls-unmatched');
+    expect(render(terminateRule)).not.toContain('rule-tls-unmatched');
+    expect(render()).not.toContain('rule-tls-unmatched');
+    expect(render({ ...udpRule, srcPortEnd: null, tls: { mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], routes: [route] } }))
+      .not.toContain('rule-tls-unmatched');
   });
 });
 
