@@ -1,20 +1,27 @@
 // rproxy-api の HTTP クライアント（契約は ../rproxy-api/docs/API.md）
 
-import type { Protocol, SourceIp } from './lib';
+import type { Protocol, SourceIp, StartTls, TlsMode, TlsSpec } from './lib';
 
-export type { Protocol, SourceIp };
+export type { Protocol, SourceIp, StartTls, TlsMode, TlsSpec };
 
 export interface RproxyRule {
   protocol: Protocol;
   listen_addr: string;
   listen_port: number;
+  listen_port_end?: number;
   remote_addr: string;
   remote_port: number;
   source_ip?: SourceIp;
   udp_idle_secs?: number;
+  tls?: TlsSpec;
+  starttls?: StartTls;
+  starttls_required?: boolean;
 }
 
-export interface RproxyRuleStatus extends RproxyRule {
+// 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）
+export interface RproxyRuleStatus extends Omit<RproxyRule, 'listen_port_end' | 'starttls'> {
+  listen_port_end?: number | null;
+  starttls?: StartTls | null;
   state: 'running' | 'failed';
   error: string | null;
   resolved: string[];
@@ -27,15 +34,25 @@ export interface RproxyRuleKey {
   listen_port: number;
 }
 
+// tls を付けると TLS の設定（starttls / starttls_required を含む）を丸ごと置き換える。
+// source_ip とポート範囲は変えられない（listen_port_end は同じ値なら付けてもよい）
 export interface RproxyRulePatch {
   remote_addr: string;
   remote_port: number;
   udp_idle_secs?: number;
+  tls?: TlsSpec;
+  starttls?: StartTls;
+  starttls_required?: boolean;
+  listen_port_end?: number;
 }
 
 export interface Capabilities {
   source_ip: SourceIp[];
   transparent?: boolean;
+  tls_modes?: TlsMode[];
+  dtls?: boolean;
+  starttls?: StartTls[];
+  max_range_ports?: number;
 }
 
 export class RproxyError extends Error {
