@@ -31,6 +31,8 @@ function echoThrough(port: number, msg: string): Promise<string> {
     c.setTimeout(3000, () => reject(new Error('timeout')));
     c.on('data', (d) => { resolve(d.toString()); c.end(); });
     c.on('error', reject);
+    // 拒否された接続は RST ではなく FIN で閉じることもある（データより先に閉じたら失敗。resolve の後なら何もしない）
+    c.on('close', () => reject(new Error('closed without a reply')));
   });
 }
 
