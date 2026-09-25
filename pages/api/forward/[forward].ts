@@ -38,14 +38,23 @@ import {
 import mariadb, { PoolConnection } from 'mariadb';
 
 // MariaDBのコネクションプールを作成
-const pool = mariadb.createPool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT) || 3306,
-  database: process.env.DB_DATABASE,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  connectionLimit: 10,
-});
+function createPool() {
+  return mariadb.createPool({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT) || 3306,
+    database: process.env.DB_DATABASE,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    connectionLimit: 10,
+  });
+}
+
+// next dev はファイルを変えるたびにこのモジュールを読み直すので、プールを使い回さないと
+// 古いプールの接続が DB に残り続ける（Too many connections になる）
+const globalForPool = globalThis as unknown as { rproxyPool?: ReturnType<typeof createPool> };
+const pool = process.env.NODE_ENV === 'development'
+  ? (globalForPool.rproxyPool ??= createPool())
+  : createPool();
 
 type Action = 'ADD' | 'UPDATE' | 'DELETE';
 type AppLogger = ReturnType<typeof Logger>;

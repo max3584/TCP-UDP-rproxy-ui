@@ -13,6 +13,8 @@ npm test        # vitest（tests/ 配下）
 ```
 
 - 開発機 con0 では 3000 番（別サービス）と 8080 番（code-server）が使用中。UI は `./node_modules/.bin/next dev -p 3001`、rproxy は 8081 で動かす（`.env.local` の `NEXTAUTH_URL` と `RPROXY_API_URL` もこのポートに合わせてある）。
+- `next dev` が動いている間に同じディレクトリで `npm run build` を実行しない（`.next` を上書きして開発サーバが 404 を返すようになる）。
+- DB の接続プールは、開発モードでは `globalThis` に置いて使い回す（読み直しのたびにプールが増えて Too many connections になるのを防ぐ）。
 
 - `package-lock.json` と `pnpm-lock.yaml` の両方がある。依存関係を変えるときはどちらも更新すること（`pnpm install --lockfile-only`）。
 - 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`。
