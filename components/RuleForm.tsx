@@ -16,12 +16,18 @@ import {
 import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount } from './tls';
 import { PROFILES } from './profiles';
 
-interface ModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSubmit: (data: ForwardRule) => void;
+// ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
+// 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
+export interface RuleFormProps {
+  onSubmit: (data: ForwardRule) => void | Promise<void>;
+  onCancel: () => void;
   initialData?: ForwardRule | null;
+  // 送信中はボタンを押せなくする
+  submitting?: boolean;
 }
+
+// 3 階層以上の PKI でも使えるように、中間 CA の欄は常に表示する
+export const CHAIN_HELP = '中間 CA（サーバ証明書を発行した CA からルートへ向かう順。ルートは不要）';
 
 const SOURCE_IP_LABELS: Record<SourceIp, string> = {
   proxy: 'proxy（送信元 IP を引き渡さない）',
@@ -109,10 +115,11 @@ const EMPTY_ERRORS: FieldErrors = {
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
 
-const inputClass = 'border rounded px-2 py-1 w-full';
-const smallButtonClass = 'bg-gray-200 text-gray-800 px-2 py-1 rounded text-sm';
+const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
 
-const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData }) => {
+const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
   const [profileId, setProfileId] = useState('');
   const [protocol, setProtocol] = useState<Protocol>(initialData?.protocol || 'tcp');
@@ -128,12 +135,14 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
   const [certificates, setCertificates] = useState<TlsCertificate[]>(tls.certificates ?? []);
   const [clientAuthMode, setClientAuthMode] = useState<ClientAuthMode>(tls.client_auth?.mode ?? 'none');
   const [clientAuthCa, setClientAuthCa] = useState(tls.client_auth?.ca_file ?? '');
+  const [clientAuthChain, setClientAuthChain] = useState(tls.client_auth?.chain_file ?? '');
   const [alpnText, setAlpnText] = useState((tls.alpn ?? []).join(', '));
   const [upstreamTls, setUpstreamTls] = useState(tls.upstream?.tls ?? false);
   const [upstreamServerName, setUpstreamServerName] = useState(tls.upstream?.server_name ?? '');
   const [upstreamCa, setUpstreamCa] = useState(tls.upstream?.ca_file ?? '');
   const [upstreamInsecure, setUpstreamInsecure] = useState(tls.upstream?.insecure_skip_verify ?? false);
   const [upstreamCert, setUpstreamCert] = useState(tls.upstream?.cert_file ?? '');
+  const [upstreamChain, setUpstreamChain] = useState(tls.upstream?.chain_file ?? '');
   const [upstreamKey, setUpstreamKey] = useState(tls.upstream?.key_file ?? '');
   const [starttls, setStarttls] = useState<StartTls | ''>(initialData?.starttls ?? '');
   const [starttlsRequired, setStarttlsRequired] = useState(initialData?.starttlsRequired ?? true);
@@ -202,8 +211,6 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
       setTlsMode('passthrough');
     }
   }, [availableTlsModes, tlsMode]);
-
-  if (!isOpen) return null;
 
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate';
   const profile = PROFILES.find((p) => p.id === profileId);
@@ -278,8 +285,11 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
       }));
     }
     if (tlsMode === 'terminate') {
-      spec.certificates = certificates;
-      spec.client_auth = { mode: clientAuthMode, ca_file: clientAuthMode === 'none' ? '' : clientAuthCa };
+      spec.certificates = certificates.map((c) => ({ cert_file: c.cert_file, chain_file: c.chain_file ?? '', key_file: c.key_file }));
+      // none のときは CA も中間 CA も送らない（欄は隠れている）
+      spec.client_auth = clientAuthMode === 'none'
+        ? { mode: 'none' }
+        : { mode: clientAuthMode, ca_file: clientAuthCa, chain_file: clientAuthChain };
       if (protocol === 'tcp') {
         spec.alpn = alpnText.split(',').map((a) => a.trim()).filter((a) => a !== '');
       }
@@ -290,6 +300,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
           ca_file: upstreamCa,
           insecure_skip_verify: upstreamInsecure,
           cert_file: upstreamCert,
+          chain_file: upstreamChain,
           key_file: upstreamKey,
         };
       }
@@ -343,8 +354,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
       starttlsRequired: normalizeStartTlsRequired(starttlsRequired, starttlsValue),
     };
 
-    onSubmit(rule);
-    onClose();
+    void onSubmit(rule);
   };
 
   const toNumber = (value: string): number | '' => (value === '' ? '' : Number(value));
@@ -395,350 +405,406 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, onSubmit, initialData })
     className: 'pt-4 focus:outline-none',
   });
 
+  const labelClass = 'block text-sm font-medium text-gray-800 mb-1';
+  const helpClass = 'mt-1 text-xs text-gray-600';
+  const errorClass = 'text-red-700 text-xs mt-1';
+
   return (
-    <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/40">
-      <div className="bg-white text-gray-900 p-4 rounded shadow-lg w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-        <h2 className="text-xl mb-2">{editMode ? 'Edit Forward Rule' : 'Add Forward Rule'}</h2>
-
-        <div role="tablist" aria-label="ルールの設定" className="flex flex-wrap border-b border-gray-300">
-          {TAB_IDS.map((tab) => {
-            const count = errorCount(errors, tab);
-            return (
-              <button
-                key={tab}
-                type="button"
-                role="tab"
-                id={`rule-tab-${tab}`}
-                aria-selected={activeTab === tab}
-                aria-controls={`rule-panel-${tab}`}
-                aria-disabled={tabDisabled(tab) || undefined}
-                tabIndex={activeTab === tab ? 0 : -1}
-                onClick={() => setActiveTab(tab)}
-                onKeyDown={handleTabKeyDown}
-                className={tabClass(tab)}
-              >
-                {tabLabel(tab)}
-                {count > 0 && (
-                  <span className="ml-1 inline-block rounded-full bg-red-600 text-white text-xs leading-4 px-1.5" aria-label={`エラー ${count} 件`}>
-                    {count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        <div {...panelProps('basic')}>
-          {!editMode && (
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-1">プロファイル:</label>
-              <select className={inputClass} value={profileId} onChange={(e) => applyProfile(e.target.value)}>
-                <option value="">カスタム（手動で入力）</option>
-                {PROFILES.map((p) => (
-                  <option key={p.id} value={p.id}>{p.label}</option>
-                ))}
-              </select>
-              {profile && (
-                <p className="mt-1 text-xs text-gray-700 bg-yellow-50 border border-yellow-300 rounded px-2 py-1">
-                  {profile.description}
-                  <br />
-                  アドレスと証明書のパスは環境に合わせて入力してください（ほかのタブの項目も設定されます）。
-                </p>
+    <form
+      noValidate
+      aria-label={editMode ? 'ルールの変更' : 'ルールの追加'}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!submitting) handleSubmit();
+      }}
+      className="card p-4 md:p-6"
+    >
+      <div role="tablist" aria-label="ルールの設定" className="flex flex-wrap border-b border-gray-300">
+        {TAB_IDS.map((tab) => {
+          const count = errorCount(errors, tab);
+          return (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              id={`rule-tab-${tab}`}
+              aria-selected={activeTab === tab}
+              aria-controls={`rule-panel-${tab}`}
+              aria-disabled={tabDisabled(tab) || undefined}
+              tabIndex={activeTab === tab ? 0 : -1}
+              onClick={() => setActiveTab(tab)}
+              onKeyDown={handleTabKeyDown}
+              className={tabClass(tab)}
+            >
+              {tabLabel(tab)}
+              {count > 0 && (
+                <span className="ml-1 inline-block rounded-full bg-red-600 text-white text-xs leading-4 px-1.5" aria-label={`エラー ${count} 件`}>
+                  {count}
+                </span>
               )}
-            </div>
-          )}
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">Protocol:</label>
-            {editMode ?
-              <input type='text' value={protocol} className={inputClass} readOnly /> :
-              <select
-                className={inputClass}
-                value={protocol}
-                onChange={(e) => setProtocol(e.target.value as Protocol)}
-              >
-                <option value="tcp">TCP</option>
-                <option value="udp">UDP</option>
-              </select>
-            }
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">Source Address:</label>
-            {editMode ?
-              <input type='text' value={srcAddr} className={inputClass} readOnly /> :
-              <input
-                type="text"
-                value={srcAddr}
-                onChange={(e) => setSrcAddr(e.target.value.trim())}
-                className={inputClass}
-                placeholder="例: 0.0.0.0 または ::"
-              />
-            }
-            {errors.srcAddr && <p className="text-red-600 text-xs">{errors.srcAddr}</p>}
-          </div>
-          <div className="mb-4 flex space-x-2">
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-1">Source Port:</label>
-              {editMode ?
-                <input type='number' value={srcPort} className={inputClass} readOnly /> :
-                <input
-                  type="number"
-                  value={srcPort}
-                  onChange={(e) => setSrcPort(toNumber(e.target.value))}
-                  className={inputClass}
-                  placeholder="ポート番号（1-65535）"
-                  min="1"
-                  max="65535"
-                />
-              }
-              {errors.srcPort && <p className="text-red-600 text-xs">{errors.srcPort}</p>}
-            </div>
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-1">範囲の終わり（任意）:</label>
-              {editMode ?
-                <input type='text' value={srcPortEnd === '' ? '（単一ポート）' : srcPortEnd} className={inputClass} readOnly /> :
-                <input
-                  type="number"
-                  value={srcPortEnd}
-                  onChange={(e) => setSrcPortEnd(toNumber(e.target.value))}
-                  className={inputClass}
-                  placeholder="空欄なら単一ポート"
-                  min="1"
-                  max="65535"
-                />
-              }
-              {errors.srcPortEnd && <p className="text-red-600 text-xs">{errors.srcPortEnd}</p>}
-            </div>
-          </div>
-          {!editMode && srcPortEnd !== '' && (
-            <p className="-mt-3 mb-4 text-xs text-gray-600">
-              各ポートを、転送先ポートから順に同じ数だけずらして転送します（最大 {caps.maxRangePorts} ポート）。範囲は作成後に変更できません。
-            </p>
-          )}
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">Destination Address:</label>
-            <input
-              type="text"
-              value={distAddr}
-              onChange={(e) => setDistAddr(e.target.value.trim())}
-              className={inputClass}
-              placeholder="例: 192.168.1.1 または example.com"
-            />
-            {errors.distAddr && <p className="text-red-600 text-xs">{errors.distAddr}</p>}
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">Destination Port{srcPortEnd !== '' ? '（範囲の先頭）' : ''}:</label>
-            <input
-              type="number"
-              value={distPort}
-              onChange={(e) => setDistPort(toNumber(e.target.value))}
-              className={inputClass}
-              placeholder="ポート番号（1-65535）"
-              min="1"
-              max="65535"
-            />
-            {errors.distPort && <p className="text-red-600 text-xs">{errors.distPort}</p>}
-          </div>
-        </div>
+            </button>
+          );
+        })}
+      </div>
 
-        <div {...panelProps('tls')}>
-          <div className="mb-3">
-            <label className="block text-sm font-medium mb-1">モード:</label>
-            <select className={inputClass} value={tlsMode} onChange={(e) => setTlsMode(e.target.value as TlsMode)}>
-              {availableTlsModes.map((m) => (
-                <option key={m} value={m}>{tlsModeLabel(m, protocol)}</option>
+      <div {...panelProps('basic')}>
+        {!editMode && (
+          <div className="mb-4">
+            <label htmlFor="rule-profile" className={labelClass}>プロファイル:</label>
+            <select id="rule-profile" className={inputClass} value={profileId} onChange={(e) => applyProfile(e.target.value)}>
+              <option value="">カスタム（手動で入力）</option>
+              {PROFILES.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
               ))}
             </select>
-            {protocol === 'udp' && tlsMode === 'terminate' && (
-              <p className="text-xs text-yellow-700">WebRTC のメディアには使えません（DTLS-SRTP の鍵がブラウザとメディアサーバの間で結びついているため）。</p>
+            {profile && (
+              <p className="mt-1 text-xs text-gray-800 bg-yellow-50 border border-yellow-300 rounded px-2 py-1">
+                {profile.description}
+                <br />
+                アドレスと証明書のパスは環境に合わせて入力してください（ほかのタブの項目も設定されます）。
+              </p>
             )}
-            {capabilitiesError && <p className="text-yellow-700 text-xs">{capabilitiesError}</p>}
           </div>
-
-          {(tlsMode === 'sni' || tlsMode === 'terminate') && (
-            <div className="mb-3">
-              <label className="block text-sm font-medium mb-1">サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:</label>
-              {routes.map((r, i) => (
-                <div key={i} className="flex space-x-1 mb-1">
-                  <input type="text" value={r.server_name} onChange={(e) => updateRoute(i, { server_name: e.target.value.trim() })}
-                    className={inputClass} placeholder="例: git.example.com / *.example.com" aria-label={`サーバ名 ${i + 1}`} />
-                  <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
-                    className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
-                  <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
-                    className="border rounded px-2 py-1 w-28" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
-                  <button type="button" onClick={() => setRoutes(routes.filter((_, j) => j !== i))} className="text-red-600 text-sm px-1">削除</button>
-                </div>
-              ))}
-              <button type="button" onClick={() => setRoutes([...routes, { server_name: '', remote_addr: '', remote_port: '' }])} className={smallButtonClass}>
-                ＋ 転送先を追加
-              </button>
-            </div>
-          )}
-
-          {tlsMode === 'terminate' && (
-            <>
-              <div className="mb-3">
-                <label className="block text-sm font-medium mb-1">証明書（PEM。複数あれば SNI で選び、一致しなければ先頭を使う）:</label>
-                {certificates.map((c, i) => (
-                  <div key={i} className="flex space-x-1 mb-1">
-                    <input type="text" value={c.cert_file} onChange={(e) => updateCertificate(i, { cert_file: e.target.value.trim() })}
-                      className={inputClass} placeholder="証明書チェーン 例: /etc/rproxy/certs/example.pem" aria-label={`証明書 ${i + 1}`} />
-                    <input type="text" value={c.key_file} onChange={(e) => updateCertificate(i, { key_file: e.target.value.trim() })}
-                      className={inputClass} placeholder="秘密鍵 例: /etc/rproxy/certs/example.key" aria-label={`秘密鍵 ${i + 1}`} />
-                    <button type="button" onClick={() => setCertificates(certificates.filter((_, j) => j !== i))} className="text-red-600 text-sm px-1">削除</button>
-                  </div>
-                ))}
-                <button type="button" onClick={() => setCertificates([...certificates, { cert_file: '', key_file: '' }])} className={smallButtonClass}>
-                  ＋ 証明書を追加
-                </button>
-                {protocol === 'udp' && <p className="text-xs text-gray-600">DTLS の秘密鍵は PKCS#8（-----BEGIN PRIVATE KEY-----）に限ります。</p>}
-              </div>
-
-              <div className="mb-3">
-                <label className="block text-sm font-medium mb-1">クライアント証明書の検証（mTLS）:</label>
-                <select className={inputClass} value={clientAuthMode} onChange={(e) => setClientAuthMode(e.target.value as ClientAuthMode)}>
-                  {CLIENT_AUTH_MODES.map((m) => (
-                    <option key={m} value={m}>{CLIENT_AUTH_LABELS[m]}</option>
-                  ))}
-                </select>
-                {clientAuthMode !== 'none' && (
-                  <input type="text" value={clientAuthCa} onChange={(e) => setClientAuthCa(e.target.value.trim())}
-                    className={`${inputClass} mt-1`} placeholder="CA ファイル 例: /etc/rproxy/clients-ca.pem" aria-label="クライアント証明書の CA ファイル" />
-                )}
-              </div>
-
-              {protocol === 'tcp' && (
-                <div className="mb-3">
-                  <label className="block text-sm font-medium mb-1">ALPN（任意。カンマ区切り）:</label>
-                  <input type="text" value={alpnText} onChange={(e) => setAlpnText(e.target.value)}
-                    className={inputClass} placeholder="例: h2, http/1.1" />
-                </div>
-              )}
-
-              <div className="mb-3">
-                <label className="inline-flex items-center text-sm font-medium">
-                  <input type="checkbox" checked={upstreamTls} onChange={(e) => setUpstreamTls(e.target.checked)} className="mr-2" />
-                  転送先へ{protocol === 'udp' ? ' DTLS' : ' TLS'} で再暗号化する
-                </label>
-                {upstreamTls && (
-                  <div className="mt-1 space-y-1">
-                    <input type="text" value={upstreamServerName} onChange={(e) => setUpstreamServerName(e.target.value.trim())}
-                      className={inputClass} placeholder="検証するサーバ名（空欄なら転送先のホスト名）" aria-label="転送先の検証するサーバ名" />
-                    <input type="text" value={upstreamCa} onChange={(e) => setUpstreamCa(e.target.value.trim())}
-                      className={inputClass} placeholder="CA ファイル（空欄なら Mozilla のルート証明書）" aria-label="転送先の CA ファイル" />
-                    <label className="inline-flex items-center text-sm">
-                      <input type="checkbox" checked={upstreamInsecure} onChange={(e) => setUpstreamInsecure(e.target.checked)} className="mr-2" />
-                      転送先の証明書を検証しない（テスト用）
-                    </label>
-                    <div className="flex space-x-1">
-                      <input type="text" value={upstreamCert} onChange={(e) => setUpstreamCert(e.target.value.trim())}
-                        className={inputClass} placeholder="転送先へのクライアント証明書（任意）" aria-label="転送先へのクライアント証明書" />
-                      <input type="text" value={upstreamKey} onChange={(e) => setUpstreamKey(e.target.value.trim())}
-                        className={inputClass} placeholder="その秘密鍵" aria-label="転送先へのクライアント証明書の秘密鍵" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-          {errors.tls && <p className="text-red-600 text-xs">{errors.tls}</p>}
+        )}
+        <div className="mb-4">
+          <label htmlFor="rule-protocol" className={labelClass}>プロトコル:</label>
+          {editMode ?
+            <input id="rule-protocol" type='text' value={protocol} className={inputClass} readOnly /> :
+            <select
+              id="rule-protocol"
+              className={inputClass}
+              value={protocol}
+              onChange={(e) => setProtocol(e.target.value as Protocol)}
+            >
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          }
         </div>
-
-        <div {...panelProps('mail')}>
-          {!showStartTls ? (
-            <p className="text-sm text-gray-600">
-              STARTTLS は TCP で、TLS のモードが「終端」のときだけ使えます（「TLS / DTLS」タブで設定してください）。
-            </p>
-          ) : (
-            <div className="mb-3">
-              <label className="block text-sm font-medium mb-1">STARTTLS:</label>
-              <select
-                className={inputClass}
-                value={starttls}
-                onChange={(e) => {
-                  const value = e.target.value as StartTls | '';
-                  setStarttls(value);
-                  if (value !== 'smtp') setStarttlsRequired(true);
-                }}
-              >
-                <option value="">使わない（接続直後から TLS）</option>
-                {availableStartTls.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-              {starttls !== '' && (
-                <label className="inline-flex items-center text-sm mt-1">
-                  <input
-                    type="checkbox"
-                    checked={starttlsRequired}
-                    disabled={starttls !== 'smtp'}
-                    onChange={(e) => setStarttlsRequired(e.target.checked)}
-                    className="mr-2"
-                  />
-                  STARTTLS を必須にする
-                  {starttls !== 'smtp' && <span className="ml-1 text-xs text-gray-600">（IMAP / POP3 では常に必須）</span>}
-                </label>
-              )}
-              {starttls === 'smtp' && !starttlsRequired && (
-                <p className="text-xs text-yellow-700">STARTTLS をしないクライアントも平文のまま通します（MTA 間の 25 番向け）。</p>
-              )}
-            </div>
-          )}
+        <div className="mb-4">
+          <label htmlFor="rule-src-addr" className={labelClass}>待ち受けアドレス:</label>
+          {editMode ?
+            <input id="rule-src-addr" type='text' value={srcAddr} className={inputClass} readOnly /> :
+            <input
+              id="rule-src-addr"
+              type="text"
+              value={srcAddr}
+              onChange={(e) => setSrcAddr(e.target.value.trim())}
+              className={inputClass}
+              placeholder="例: 0.0.0.0 または ::"
+              aria-invalid={errors.srcAddr !== '' || undefined}
+            />
+          }
+          {errors.srcAddr && <p className={errorClass}>{errors.srcAddr}</p>}
         </div>
-
-        <div {...panelProps('advanced')}>
-          <div className="mb-4">
-            <label className="block text-sm font-medium mb-1">Source IP:</label>
+        <div className="mb-4 flex flex-col sm:flex-row gap-2">
+          <div className="flex-1">
+            <label htmlFor="rule-src-port" className={labelClass}>待ち受けポート:</label>
             {editMode ?
-              <input type='text' value={sourceIp} className={inputClass} readOnly /> :
-              <select
-                className={inputClass}
-                value={sourceIp}
-                onChange={(e) => setSourceIp(e.target.value as SourceIp)}
-              >
-                {availableSourceIps.map((s) => (
-                  <option key={s} value={s}>{SOURCE_IP_LABELS[s] ?? s}</option>
-                ))}
-              </select>
-            }
-            {capabilitiesError && <p className="text-yellow-700 text-xs">{capabilitiesError}</p>}
-            {errors.sourceIp && <p className="text-red-600 text-xs">{errors.sourceIp}</p>}
-          </div>
-          {protocol === 'udp' && (
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-1">UDP Idle Timeout (秒):</label>
+              <input id="rule-src-port" type='number' value={srcPort} className={inputClass} readOnly /> :
               <input
+                id="rule-src-port"
                 type="number"
-                value={udpIdleSecs}
-                onChange={(e) => setUdpIdleSecs(toNumber(e.target.value))}
+                value={srcPort}
+                onChange={(e) => setSrcPort(toNumber(e.target.value))}
                 className={inputClass}
-                placeholder="秒数（1-86400）"
+                placeholder="ポート番号（1-65535）"
                 min="1"
-                max="86400"
+                max="65535"
+                aria-invalid={errors.srcPort !== '' || undefined}
               />
-              {errors.udpIdleSecs && <p className="text-red-600 text-xs">{errors.udpIdleSecs}</p>}
-            </div>
-          )}
+            }
+            {errors.srcPort && <p className={errorClass}>{errors.srcPort}</p>}
+          </div>
+          <div className="flex-1">
+            <label htmlFor="rule-src-port-end" className={labelClass}>範囲の終わり（任意）:</label>
+            {editMode ?
+              <input id="rule-src-port-end" type='text' value={srcPortEnd === '' ? '（単一ポート）' : srcPortEnd} className={inputClass} readOnly /> :
+              <input
+                id="rule-src-port-end"
+                type="number"
+                value={srcPortEnd}
+                onChange={(e) => setSrcPortEnd(toNumber(e.target.value))}
+                className={inputClass}
+                placeholder="空欄なら単一ポート"
+                min="1"
+                max="65535"
+                aria-invalid={errors.srcPortEnd !== '' || undefined}
+              />
+            }
+            {errors.srcPortEnd && <p className={errorClass}>{errors.srcPortEnd}</p>}
+          </div>
         </div>
-
-        <div className="flex justify-end space-x-2 mt-2">
-          <button
-            type="button"
-            onClick={handleSubmit}
-            className="bg-blue-500 text-white px-4 py-2 rounded"
-          >
-            {initialData ? 'Save Changes' : 'Add Rule'}
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="bg-gray-300 text-gray-800 px-4 py-2 rounded"
-          >
-            Cancel
-          </button>
+        {!editMode && srcPortEnd !== '' && (
+          <p className="-mt-3 mb-4 text-xs text-gray-600">
+            各ポートを、転送先ポートから順に同じ数だけずらして転送します（最大 {caps.maxRangePorts} ポート）。範囲は作成後に変更できません。
+          </p>
+        )}
+        <div className="mb-4">
+          <label htmlFor="rule-dist-addr" className={labelClass}>転送先アドレス:</label>
+          <input
+            id="rule-dist-addr"
+            type="text"
+            value={distAddr}
+            onChange={(e) => setDistAddr(e.target.value.trim())}
+            className={inputClass}
+            placeholder="例: 192.168.1.1 または example.com"
+            aria-invalid={errors.distAddr !== '' || undefined}
+          />
+          {errors.distAddr && <p className={errorClass}>{errors.distAddr}</p>}
+        </div>
+        <div className="mb-4">
+          <label htmlFor="rule-dist-port" className={labelClass}>転送先ポート{srcPortEnd !== '' ? '（範囲の先頭）' : ''}:</label>
+          <input
+            id="rule-dist-port"
+            type="number"
+            value={distPort}
+            onChange={(e) => setDistPort(toNumber(e.target.value))}
+            className={inputClass}
+            placeholder="ポート番号（1-65535）"
+            min="1"
+            max="65535"
+            aria-invalid={errors.distPort !== '' || undefined}
+          />
+          {errors.distPort && <p className={errorClass}>{errors.distPort}</p>}
         </div>
       </div>
-    </div>
+
+      <div {...panelProps('tls')}>
+        <div className="mb-4">
+          <label htmlFor="rule-tls-mode" className={labelClass}>モード:</label>
+          <select id="rule-tls-mode" className={inputClass} value={tlsMode} onChange={(e) => setTlsMode(e.target.value as TlsMode)}>
+            {availableTlsModes.map((m) => (
+              <option key={m} value={m}>{tlsModeLabel(m, protocol)}</option>
+            ))}
+          </select>
+          {protocol === 'udp' && tlsMode === 'terminate' && (
+            <p className="text-xs text-yellow-800 mt-1">WebRTC のメディアには使えません（DTLS-SRTP の鍵がブラウザとメディアサーバの間で結びついているため）。</p>
+          )}
+          {capabilitiesError && <p className="text-yellow-800 text-xs mt-1">{capabilitiesError}</p>}
+        </div>
+
+        {(tlsMode === 'sni' || tlsMode === 'terminate') && (
+          <fieldset className="mb-4">
+            <legend className={labelClass}>サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:</legend>
+            {routes.map((r, i) => (
+              <div key={i} className="flex flex-col sm:flex-row gap-1 mb-1">
+                <input type="text" value={r.server_name} onChange={(e) => updateRoute(i, { server_name: e.target.value.trim() })}
+                  className={inputClass} placeholder="例: git.example.com / *.example.com" aria-label={`サーバ名 ${i + 1}`} />
+                <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
+                  className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
+                <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
+                  className="border border-gray-300 rounded px-2 py-1 sm:w-28" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
+                <button type="button" onClick={() => setRoutes(routes.filter((_, j) => j !== i))} className={removeButtonClass}
+                  aria-label={`転送先 ${i + 1} を削除`}>削除</button>
+              </div>
+            ))}
+            <button type="button" onClick={() => setRoutes([...routes, { server_name: '', remote_addr: '', remote_port: '' }])} className={smallButtonClass}>
+              ＋ 転送先を追加
+            </button>
+          </fieldset>
+        )}
+
+        {tlsMode === 'terminate' && (
+          <>
+            <fieldset className="mb-4">
+              <legend className={labelClass}>証明書（PEM。複数あれば SNI で選び、一致しなければ先頭を使う）:</legend>
+              {certificates.map((c, i) => (
+                <div key={i} className="border border-gray-300 rounded p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-semibold text-gray-800">証明書 {i + 1}</span>
+                    <button type="button" onClick={() => setCertificates(certificates.filter((_, j) => j !== i))} className={removeButtonClass}
+                      aria-label={`証明書 ${i + 1} を削除`}>削除</button>
+                  </div>
+                  <label htmlFor={`rule-cert-${i}-cert`} className="block text-xs font-medium text-gray-800">サーバ証明書</label>
+                  <input id={`rule-cert-${i}-cert`} type="text" value={c.cert_file} onChange={(e) => updateCertificate(i, { cert_file: e.target.value.trim() })}
+                    className={`${inputClass} mb-2`} placeholder="例: /etc/rproxy/certs/example.pem" />
+                  <label htmlFor={`rule-cert-${i}-chain`} className="block text-xs font-medium text-gray-800">中間 CA（任意）</label>
+                  <input id={`rule-cert-${i}-chain`} type="text" value={c.chain_file ?? ''} onChange={(e) => updateCertificate(i, { chain_file: e.target.value.trim() })}
+                    className={inputClass} placeholder="例: /etc/rproxy/certs/intermediates.pem" aria-describedby={`rule-cert-${i}-chain-help`} />
+                  <p id={`rule-cert-${i}-chain-help`} className={`${helpClass} mb-2`}>{CHAIN_HELP}</p>
+                  <label htmlFor={`rule-cert-${i}-key`} className="block text-xs font-medium text-gray-800">秘密鍵</label>
+                  <input id={`rule-cert-${i}-key`} type="text" value={c.key_file} onChange={(e) => updateCertificate(i, { key_file: e.target.value.trim() })}
+                    className={inputClass} placeholder="例: /etc/rproxy/certs/example.key" />
+                </div>
+              ))}
+              <button type="button" onClick={() => setCertificates([...certificates, { cert_file: '', chain_file: '', key_file: '' }])} className={smallButtonClass}>
+                ＋ 証明書を追加
+              </button>
+              <p className={helpClass}>サーバ証明書のファイルにチェーンを連結してある場合は、中間 CA は空欄のままで構いません。</p>
+              {protocol === 'udp' && <p className={helpClass}>DTLS の秘密鍵は PKCS#8（-----BEGIN PRIVATE KEY-----）に限ります。</p>}
+            </fieldset>
+
+            <div className="mb-4">
+              <label htmlFor="rule-client-auth" className={labelClass}>クライアント証明書の検証（mTLS）:</label>
+              <select id="rule-client-auth" className={inputClass} value={clientAuthMode} onChange={(e) => setClientAuthMode(e.target.value as ClientAuthMode)}>
+                {CLIENT_AUTH_MODES.map((m) => (
+                  <option key={m} value={m}>{CLIENT_AUTH_LABELS[m]}</option>
+                ))}
+              </select>
+              {clientAuthMode !== 'none' && (
+                <div className="mt-2 space-y-2">
+                  <div>
+                    <label htmlFor="rule-client-auth-ca" className="block text-xs font-medium text-gray-800">CA ファイル（ルート CA。信頼の起点）</label>
+                    <input id="rule-client-auth-ca" type="text" value={clientAuthCa} onChange={(e) => setClientAuthCa(e.target.value.trim())}
+                      className={inputClass} placeholder="例: /etc/rproxy/clients-root.pem" />
+                  </div>
+                  <div>
+                    <label htmlFor="rule-client-auth-chain" className="block text-xs font-medium text-gray-800">中間 CA（任意）</label>
+                    <input id="rule-client-auth-chain" type="text" value={clientAuthChain} onChange={(e) => setClientAuthChain(e.target.value.trim())}
+                      className={inputClass} placeholder="例: /etc/rproxy/clients-intermediates.pem" aria-describedby="rule-client-auth-chain-help" />
+                    <p id="rule-client-auth-chain-help" className={helpClass}>
+                      クライアント証明書を発行した中間 CA。中間 CA を送ってこないクライアントのために検証の経路を補います（信頼の起点にはしません）。
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {protocol === 'tcp' && (
+              <div className="mb-4">
+                <label htmlFor="rule-alpn" className={labelClass}>ALPN（任意。カンマ区切り）:</label>
+                <input id="rule-alpn" type="text" value={alpnText} onChange={(e) => setAlpnText(e.target.value)}
+                  className={inputClass} placeholder="例: h2, http/1.1" />
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="inline-flex items-center text-sm font-medium text-gray-800">
+                <input type="checkbox" checked={upstreamTls} onChange={(e) => setUpstreamTls(e.target.checked)} className="mr-2" />
+                転送先へ{protocol === 'udp' ? ' DTLS' : ' TLS'} で再暗号化する
+              </label>
+              {upstreamTls && (
+                <div className="mt-2 space-y-2 border-l-2 border-gray-300 pl-3">
+                  <div>
+                    <label htmlFor="rule-upstream-name" className="block text-xs font-medium text-gray-800">検証するサーバ名</label>
+                    <input id="rule-upstream-name" type="text" value={upstreamServerName} onChange={(e) => setUpstreamServerName(e.target.value.trim())}
+                      className={inputClass} placeholder="空欄なら転送先のホスト名" />
+                  </div>
+                  <div>
+                    <label htmlFor="rule-upstream-ca" className="block text-xs font-medium text-gray-800">CA ファイル</label>
+                    <input id="rule-upstream-ca" type="text" value={upstreamCa} onChange={(e) => setUpstreamCa(e.target.value.trim())}
+                      className={inputClass} placeholder="空欄なら Mozilla のルート証明書" />
+                  </div>
+                  <label className="inline-flex items-center text-sm text-gray-800">
+                    <input type="checkbox" checked={upstreamInsecure} onChange={(e) => setUpstreamInsecure(e.target.checked)} className="mr-2" />
+                    転送先の証明書を検証しない（テスト用）
+                  </label>
+                  <div>
+                    <label htmlFor="rule-upstream-cert" className="block text-xs font-medium text-gray-800">転送先へのクライアント証明書（任意）</label>
+                    <input id="rule-upstream-cert" type="text" value={upstreamCert} onChange={(e) => setUpstreamCert(e.target.value.trim())}
+                      className={inputClass} placeholder="例: /etc/rproxy/upstream-client.pem" />
+                  </div>
+                  <div>
+                    <label htmlFor="rule-upstream-chain" className="block text-xs font-medium text-gray-800">その中間 CA（任意）</label>
+                    <input id="rule-upstream-chain" type="text" value={upstreamChain} onChange={(e) => setUpstreamChain(e.target.value.trim())}
+                      className={inputClass} placeholder="例: /etc/rproxy/upstream-intermediates.pem" aria-describedby="rule-upstream-chain-help" />
+                    <p id="rule-upstream-chain-help" className={helpClass}>{CHAIN_HELP}。クライアント証明書を指定したときだけ使えます。</p>
+                  </div>
+                  <div>
+                    <label htmlFor="rule-upstream-key" className="block text-xs font-medium text-gray-800">その秘密鍵</label>
+                    <input id="rule-upstream-key" type="text" value={upstreamKey} onChange={(e) => setUpstreamKey(e.target.value.trim())}
+                      className={inputClass} placeholder="例: /etc/rproxy/upstream-client.key" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+        {errors.tls && <p className={errorClass} role="alert">{errors.tls}</p>}
+      </div>
+
+      <div {...panelProps('mail')}>
+        {!showStartTls ? (
+          <p className="text-sm text-gray-700">
+            STARTTLS は TCP で、TLS のモードが「終端」のときだけ使えます（「TLS / DTLS」タブで設定してください）。
+          </p>
+        ) : (
+          <div className="mb-4">
+            <label htmlFor="rule-starttls" className={labelClass}>STARTTLS:</label>
+            <select
+              id="rule-starttls"
+              className={inputClass}
+              value={starttls}
+              onChange={(e) => {
+                const value = e.target.value as StartTls | '';
+                setStarttls(value);
+                if (value !== 'smtp') setStarttlsRequired(true);
+              }}
+            >
+              <option value="">使わない（接続直後から TLS）</option>
+              {availableStartTls.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            {starttls !== '' && (
+              <label className="inline-flex items-center text-sm text-gray-800 mt-2">
+                <input
+                  type="checkbox"
+                  checked={starttlsRequired}
+                  disabled={starttls !== 'smtp'}
+                  onChange={(e) => setStarttlsRequired(e.target.checked)}
+                  className="mr-2"
+                />
+                STARTTLS を必須にする
+                {starttls !== 'smtp' && <span className="ml-1 text-xs text-gray-600">（IMAP / POP3 では常に必須）</span>}
+              </label>
+            )}
+            {starttls === 'smtp' && !starttlsRequired && (
+              <p className="text-xs text-yellow-800 mt-1">STARTTLS をしないクライアントも平文のまま通します（MTA 間の 25 番向け）。</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div {...panelProps('advanced')}>
+        <div className="mb-4">
+          <label htmlFor="rule-source-ip" className={labelClass}>送信元 IP の扱い（source_ip）:</label>
+          {editMode ?
+            <input id="rule-source-ip" type='text' value={sourceIp} className={inputClass} readOnly /> :
+            <select
+              id="rule-source-ip"
+              className={inputClass}
+              value={sourceIp}
+              onChange={(e) => setSourceIp(e.target.value as SourceIp)}
+            >
+              {availableSourceIps.map((s) => (
+                <option key={s} value={s}>{SOURCE_IP_LABELS[s] ?? s}</option>
+              ))}
+            </select>
+          }
+          {capabilitiesError && <p className="text-yellow-800 text-xs mt-1">{capabilitiesError}</p>}
+          {errors.sourceIp && <p className={errorClass}>{errors.sourceIp}</p>}
+        </div>
+        {protocol === 'udp' && (
+          <div className="mb-4">
+            <label htmlFor="rule-udp-idle" className={labelClass}>UDP のアイドルタイムアウト（秒）:</label>
+            <input
+              id="rule-udp-idle"
+              type="number"
+              value={udpIdleSecs}
+              onChange={(e) => setUdpIdleSecs(toNumber(e.target.value))}
+              className={inputClass}
+              placeholder="秒数（1-86400）"
+              min="1"
+              max="86400"
+              aria-invalid={errors.udpIdleSecs !== '' || undefined}
+            />
+            {errors.udpIdleSecs && <p className={errorClass}>{errors.udpIdleSecs}</p>}
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-end gap-2 mt-4 border-t border-gray-200 pt-4">
+        <button type="button" onClick={onCancel} className="btn-secondary">
+          キャンセル
+        </button>
+        <button type="submit" disabled={submitting} className="btn-primary">
+          {submitting ? '保存中…' : editMode ? '変更を保存' : 'ルールを追加'}
+        </button>
+      </div>
+    </form>
   );
 };
 
-export default Modal;
+export default RuleForm;
