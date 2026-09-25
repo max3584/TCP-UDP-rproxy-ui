@@ -17,7 +17,8 @@ import {
   toRule,
   uptimeSecs,
 } from '@/components/dashboard';
-import { AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
+import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, StaticBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
+import { STATIC_RULE_NOTE } from '@/components/messages';
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
   <section className="card p-4" aria-labelledby={id}>
@@ -63,6 +64,13 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
               ))}
             </tbody>
           </table>
+          {rule.protocol === 'tcp' && (
+            <div className="mt-2">
+              <Fields items={[['どのサーバ名にも一致しない接続', tls.unmatched === 'reject'
+                ? <span className="font-semibold text-red-800">切断する（unmatched: reject）</span>
+                : '基本の転送先へ送る（unmatched: default）']]} />
+            </div>
+          )}
         </div>
       )}
 
@@ -160,7 +168,13 @@ const RuleDetailPage: React.FC = () => {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold text-gray-900 font-mono break-all mr-auto">{title}</h1>
         {rule && <AutoRefreshToggle enabled={autoRefresh} onChange={setAutoRefresh} lastUpdated={lastUpdated} />}
-        {rule && key && (
+        {rule && key && rule.origin === 'static' && (
+          <p className="inline-flex items-center gap-2 text-sm text-gray-800" data-testid="static-note">
+            <StaticBadge />
+            {STATIC_RULE_NOTE}
+          </p>
+        )}
+        {rule && key && rule.origin !== 'static' && (
           <div className="flex gap-2">
             <Link href={ruleEditHref(key)} className="btn-primary">編集</Link>
             <button type="button" className="btn-danger" onClick={() => setConfirming(true)}>削除</button>
@@ -198,8 +212,12 @@ const RuleDetailPage: React.FC = () => {
                 ['rx（受信）', rule.stats ? formatBytes(rule.stats.rx_bytes) : null],
                 ['tx（送信）', rule.stats ? formatBytes(rule.stats.tx_bytes) : null],
                 ['TLS 失敗', rule.stats ? formatCount(rule.stats.tls_failures) : null],
+                ['拒否した接続', rule.stats ? formatCount(rule.stats.denied ?? 0) : null],
               ]} />
-              <p className="mt-2 text-xs text-gray-600">rx はクライアント → 転送先、tx は転送先 → クライアントのバイト数です。</p>
+              <p className="mt-2 text-xs text-gray-600">
+                rx はクライアント → 転送先、tx は転送先 → クライアントのバイト数です。
+                拒否した接続は、許可する送信元（allow_from）の範囲外か、どのサーバ名にも一致しない（unmatched: reject）ため切断した接続です。
+              </p>
             </Section>
 
             <Section id="section-listen" title="待ち受け">
@@ -237,6 +255,14 @@ const RuleDetailPage: React.FC = () => {
               <Fields items={[
                 ['送信元 IP の扱い', <Mono key="s">{rule.sourceIp}</Mono>],
                 ...(rule.protocol === 'udp' ? [['UDP のアイドルタイムアウト', `${rule.udpIdleSecs} 秒`] as [string, React.ReactNode]] : []),
+                ['接続を許可する送信元', rule.allowFrom.length > 0
+                  ? (
+                    <div key="af" data-testid="allow-from">
+                      <AllowFromBadge allowFrom={rule.allowFrom} />
+                      <ul className="font-mono mt-1">{rule.allowFrom.map((c) => <li key={c}>{c}</li>)}</ul>
+                    </div>
+                  )
+                  : 'すべて許可'],
               ]} />
             </Section>
           </div>

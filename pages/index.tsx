@@ -26,7 +26,7 @@ import {
   tlsBreakdown,
   uptimeSecs,
 } from '@/components/dashboard';
-import { AutoRefreshToggle, ErrorBanner, StateBadge, TlsBadge, errorDetail, useAutoRefresh } from '@/components/ui';
+import { AllowFromBadge, AutoRefreshToggle, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, useAutoRefresh } from '@/components/ui';
 
 const StatTile: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({ label, value, sub }) => (
   <div className="card p-4">
@@ -81,6 +81,8 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
         <Metric label="TLS 失敗" value={reachable ? formatCount(summary.tlsFailures) : '-'} title="TLS / DTLS のハンドシェイクと STARTTLS の失敗" />
         <Metric label="rx（受信）" value={reachable ? formatBytes(summary.rxBytes) : '-'} title="クライアント → 転送先" />
         <Metric label="tx（送信）" value={reachable ? formatBytes(summary.txBytes) : '-'} title="転送先 → クライアント" />
+        <Metric label="拒否" value={reachable ? formatCount(summary.denied) : '-'}
+          title="allow_from の範囲外、またはどのサーバ名にも一致しない（unmatched: reject）ため切断した接続" />
       </dl>
     </section>
   );
@@ -137,6 +139,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
             <div className="flex items-center gap-2 shrink-0">
               <StateBadge state={r.state} />
               <span className="badge bg-gray-100 text-gray-800 uppercase">{r.protocol}</span>
+              {r.origin === 'static' && <StaticBadge />}
             </div>
             <div className="min-w-0 flex-1 text-sm">
               <Link href={ruleHref(ruleKeyOf(r))} className="link font-mono break-all">
@@ -225,6 +228,12 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
                     <Link href={href} className="link" onClick={(e) => e.stopPropagation()}>
                       {hostPort(r.srcAddr, portsLabel(r.srcPort, r.srcPortEnd))}
                     </Link>
+                    {(r.origin === 'static' || r.allowFrom.length > 0) && (
+                      <div className="mt-0.5 flex gap-1 font-sans">
+                        {r.origin === 'static' && <StaticBadge />}
+                        <AllowFromBadge allowFrom={r.allowFrom} />
+                      </div>
+                    )}
                   </td>
                   <td className="font-mono whitespace-nowrap">
                     {hostPort(r.distAddr, targetPortsLabel(r))}
@@ -234,6 +243,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
                   <td className="text-right tabular-nums whitespace-nowrap">
                     {formatCount(r.connections)}
                     {r.stats && <div className="text-xs text-gray-600">累計 {formatCount(r.stats.total_connections)}</div>}
+                    {(r.stats?.denied ?? 0) > 0 && <div className="text-xs text-orange-900">拒否 {formatCount(r.stats?.denied)}</div>}
                   </td>
                   <td className="text-right tabular-nums whitespace-nowrap text-xs">
                     {r.stats ? (
@@ -323,7 +333,8 @@ const DashboardPage: React.FC = () => {
               }
               sub={reachable ? '稼働状態を取得しました' : <span className="break-all">{data.rproxyError ?? '稼働状態を取得できません'}</span>}
             />
-            <StatTile label="ルール" value={formatCount(summary.all.total)} sub={`TCP ${summary.tcp.counts.total} / UDP ${summary.udp.counts.total}`} />
+            <StatTile label="ルール" value={formatCount(summary.all.total)}
+              sub={`TCP ${summary.tcp.counts.total} / UDP ${summary.udp.counts.total}${summary.staticRules > 0 ? `（うち固定 ${summary.staticRules}）` : ''}`} />
             <StatTile label="稼働中" value={<span className="text-green-700">{formatCount(summary.all.running)}</span>}
               sub={`失敗 ${summary.all.failed} / 未登録 ${summary.all.missing} / 不明 ${summary.all.unknown}`} />
             <StatTile label="現在の接続" value={reachable ? formatCount(summary.connections) : '-'} sub="UDP はセッション数" />

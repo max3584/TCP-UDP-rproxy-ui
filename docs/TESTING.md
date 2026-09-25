@@ -46,7 +46,7 @@
 | forces starttls_required for imap and pop3 | 必須にしない指定は SMTP だけ |
 | treats a range that ends at its start as a single port | 終わり = 開始 は単一ポート（NULL） |
 | passes the rproxy tls_config error through as 400 | 証明書が読めないなどの `tls_config` は 400 のまま返し、ROLLBACK する |
-| modify replaces the TLS settings with PATCH and stores options | PATCH に `tls` / `starttls` を付け、`options` を更新する |
+| modify replaces the TLS settings with PATCH and stores options | PATCH に `tls` / `starttls` / `allow_from` を付け、`options` を更新する |
 | modify restores the previous TLS settings when COMMIT fails / modify restores STARTTLS too when COMMIT fails | undo は元の TLS・STARTTLS の設定で PATCH する（`options` がオブジェクトで返る場合も） |
 | modify keeps the range from the DB and rejects a changed range | 範囲の変更は 400（`unsupported`） |
 | modify checks the new target port against the stored range | DB の範囲で転送先ポートの上限を確かめる |
@@ -60,9 +60,42 @@
 | list leaves stats empty when rproxy is unreachable or an old rproxy omits them | `unknown` と、`stats` を返さない古い rproxy では null |
 | dashboard reports whether rproxy was reachable | `dashboard` の `reachable` / `rproxyError` |
 | rule returns one own rule with its live state (IPv6 address normalized) | 1 件取得。IPv6 を圧縮表記にし、`auth_id` で絞って DB を引く |
-| rule returns 404 for a rule of another user without asking rproxy | ほかの利用者のルールは 404 |
+| rule returns 404 for a rule of another user (a dynamic rule in rproxy is not shown) | ほかの利用者のルールは 404（DB になければ rproxy に問い合わせるが、`origin` が `static` でなければ見せない。`origin` のない古い rproxy も同じ） |
 | rule reports missing and unknown like list | rproxy の `not_found` は `missing`、接続できなければ `unknown` |
 | rule rejects an invalid key（5 パターン） / rule returns 401 without a session | キーが不正なら 400、未ログインは 401。どちらも DB に触れない |
+
+## 単体テスト：allow_from・unmatched・固定ルール（`tests/forward.test.ts` の後半）
+
+| テスト | 確かめること |
+|---|---|
+| add normalizes allow_from, stores it in options and sends it to rproxy | `10.0.0.5` → `10.0.0.5/32` などに正規化し、TLS が既定でも `options` に `{tls, starttls, starttls_required, allow_from}` を保存して POST に付ける |
+| add leaves allow_from out of the POST and options when empty | 空なら POST に付けず、`options` は NULL のまま |
+| rejects invalid allow_from / unmatched（6 パターン） | 配列でない、ホスト名、長すぎるプレフィックス（IPv4 / IPv6）、65 件、未知の `unmatched`（`invalid`）。DB に触れない |
+| rejects unmatched: reject for …（3 パターン） | routes のない sni、passthrough、UDP の terminate では `tls_config` |
+| passes unmatched: reject through and drops the default | `reject` は rproxy と `options` にそのまま、`default` は省く |
+| modify replaces allow_from when given and keeps the stored value when omitted | 指定があれば置き換え、なければ DB の値を保つ。`[]` で解除（PATCH にも `[]`、`options` は NULL） |
+| modify restores the previous allow_from and tls (with unmatched) when COMMIT fails | undo は元の `allow_from` と `tls`（`unmatched` を含む）で PATCH する |
+| delete re-adds the rule with its allow_from when COMMIT fails | 削除の undo は `allow_from` ごと作り直す |
+| list returns allowFrom, origin dynamic and stats.denied for DB rules, but no static rules | `list` は自分の DB のルールだけ。`origin: dynamic`、`allowFrom`、`stats.denied` |
+| dashboard merges static rules from rproxy as read-only rows after the own rules | 自分のルールの後ろに固定ルール（id は負の数）を足す。ほかの利用者の dynamic なルールは足さない。`tls` は既定値を省いた形 |
+| dashboard has no static rows when rproxy is unreachable | 接続できなければ固定ルールは出ない |
+| rule returns a static rule that is not in the DB | DB になければ rproxy の固定ルールを返す |
+| rule reports an unreachable rproxy instead of 404 for a rule that is not in the DB | DB になく rproxy に接続できなければ 502 `unreachable` |
+| rule returns an own DB rule with origin dynamic | DB の行は DB の設定を返す |
+| modify / delete refuses a static rule with 409 static without touching rproxy | 固定ルールの変更・削除は 409 `static`（PATCH / DELETE は呼ばず ROLLBACK） |
+| modify / delete still returns 404 for a rule that is neither own nor static | dynamic なほかの利用者のルールや、rproxy に問い合わせできないときは 404 |
+| passes a 409 static from rproxy through and rolls back | rproxy の 409 `static` はそのまま返す |
+
+## 単体テスト：CIDR・options・unmatched（`tests/cidr.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| parseCidr: normalizes …（18 パターン） | rproxy の `src/cidr.rs` と同じ正規化（単一 IP は /32・/128、ホスト部を落とす、IPv6 の圧縮表記、IPv4-mapped は IPv4、`[ ]` を無視、埋め込み IPv4） |
+| parseCidr: rejects …（19 パターン） | 空、ホスト名、/33・/129、数字でないプレフィックス、255 を超えるオクテット、先頭の 0、グループ数の誤り、`::` が 2 つ、ゾーン ID、IPv4-mapped に /104 |
+| explains a too long prefix separately / formats IPv6 like RFC 5952 | エラーメッセージ、`::` にする 0 の並びの選び方 |
+| allow_from lists | 1 行に 1 件（空行は無視）、64 件まで、最初の誤りを返す、`normalizeAllowFrom` は `invalid` |
+| options JSON with allow_from | 空なら省いて既定なら NULL、あれば 4 つのキー。文字列・オブジェクトから読み戻し、未知のキーは拒否 |
+| tls.unmatched | `reject` を残して `default` を省く。tcp の sni / terminate で routes があるときだけ許す。rproxy の応答（既定値の項目を含む）も読める |
 
 ## 単体テスト：入力フォームとプロファイル（`tests/ruleform.test.ts`）
 
@@ -76,6 +109,10 @@
 | hides the client auth chain field when client auth is none | クライアント認証が none のときは、その中間 CA の欄を出さない |
 | <プロファイル名> is a valid rule | すべてのプロファイルが範囲の上限と TLS の組み合わせの規則を満たす |
 | follows the PROFILES.md warnings | WebRTC のメディアは passthrough、SMTP は passthrough + proxy_v2 など |
+| puts a labelled allow_from textarea with its help text in the advanced tab | 「詳細」タブに `<label for>` つきの textarea と説明文（空欄ならすべて許可…） |
+| fills the textarea with one CIDR per line when editing | 編集では 1 行に 1 件で入る |
+| offers the unmatched choice in the TLS tab for tcp sni / terminate with routes | 「どのサーバ名にも一致しない接続」（基本の転送先へ送る / 切断する）と、選んでいる値 |
+| hides the unmatched choice without routes, for passthrough and for UDP | routes がない・passthrough・UDP では出さない |
 
 ## 単体テスト：ダッシュボード（`tests/dashboard.test.ts`）
 
@@ -89,7 +126,9 @@
 | donut | 状態ごとの `conic-gradient` とスクリーンリーダー向けの内訳。0 件は灰色 |
 | rule URLs | 詳細・変更画面と 1 件取得の API の URL（IPv6 をエンコード）と、画面の query からキーを読む（不正なら null） |
 | toRule | API に送るときに稼働情報を落とす |
-| badges | 状態のバッジは文字でも表し、文字色を指定する。DTLS と STARTTLS の表示 |
+| badges | 状態のバッジは文字でも表し、文字色を指定する。DTLS と STARTTLS の表示。「固定」と「IP 制限」（allow_from が空なら出さない） |
+| summarize: adds up denied connections … and counts static rules | `stats.denied` の合計（古い rproxy の欠けは 0）と固定ルールの件数 |
+| static rules | `ruleFromStatus`（rproxy の応答から行を作る。範囲・古い rproxy）、`mergeStaticRules`（自分のルールの後ろに負の id で足す。dynamic・`origin` なし・同じキーは足さない。集計にも入る） |
 
 ## E2E（`tests/e2e.test.ts`）
 
@@ -101,6 +140,7 @@
 | modifies and deletes the rule | 変更後も転送でき、削除すると接続できなくなる |
 | records who changed what in forward_rules_log | 履歴に `auth_id` と ADD / UPDATE / DELETE が残る |
 | forwards a two-port range one to one | 2 ポートの TCP 範囲ルールが、連続する 2 つのエコーサーバ（`E2E_BACKEND_PORT` + 1、+ 2）へ 1 対 1 で転送する。`src_port_end` が保存され `options` は NULL |
+| round-trips allow_from through the DB and rproxy and drops connections outside it | `allowFrom` が正規化されて DB の `options` と rproxy（`GET /rules/{key}` の `allow_from`、`origin: dynamic`）に入り、範囲外にすると接続が切られて `stats.denied` が増える。省いた変更では保ち、`[]` で解除（`options` は NULL） |
 | rejects a terminate rule whose certificate cannot be read without leaving rows | 存在しない証明書の terminate は 400 `tls_config` で、DB に行が残らない |
 | deletes the range rule | 範囲ルールを削除すると接続できなくなる |
 
@@ -112,6 +152,8 @@
 - 証明書を使う TLS の終端・STARTTLS・DTLS の実際の通信（E2E には証明書がない。rproxy 側のテストで確認している）。
   UI が書いた `options` を rproxy が再起動時に読めることは手動で確認した
 - Keycloak との実際のログイン（手動では確認済み）
+- 固定ルール（`--static-rules`）は E2E にない（CI の rproxy は固定ルールなしで起動する。固定ルールがあると E2E の `dashboard` の件数の確認が合わなくなる）。
+  `unmatched: reject` の実際の切断も E2E にない（証明書と SNI を使う接続が要る。rproxy 側のテストで確認する）
 
 ## 単体テスト：待ち受けアドレスとエラーの説明（`tests/listen.test.ts`）
 
@@ -120,4 +162,5 @@
 | listenOptions | 全インターフェース（0.0.0.0 / ::）を先頭に、各インターフェース、最後にループバック。リンクローカルは出さない |
 | reservedClash（8 パターン） | 制御 API と同じアドレス・ワイルドカード・ポート範囲で重なりを検出し、別のアドレス・別のポート・UDP では検出しない |
 | explainError | `resolve_failed` などのコードに説明を付け、詳細も残す。未知のコードはそのまま表示する |
+| explains that static rules cannot be changed or deleted from the UI (409 static) | `static` に「固定ルールは rproxy の設定ファイルで管理されているため…」を付ける（詳細が同じなら繰り返さない） |
 

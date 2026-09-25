@@ -188,7 +188,7 @@ describe('/api/forward/[forward]', () => {
     expect(status).toBe(200);
     expect(mocks.modifyRule).toHaveBeenCalledWith(
       { protocol: 'udp', listen_addr: '0.0.0.0', listen_port: 8888 },
-      { remote_addr: 'example.com', remote_port: 80, udp_idle_secs: 120, tls: { mode: 'passthrough' } },
+      { remote_addr: 'example.com', remote_port: 80, udp_idle_secs: 120, tls: { mode: 'passthrough' }, allow_from: [] },
     );
     const log = sqlCalls().find(([sql]) => sql.startsWith('INSERT INTO forward_rules_log'));
     expect(log?.[1]).toEqual(['user-1', 'udp', '0.0.0.0', 8888, null, 'example.com', 80, 'transparent', 120, null, 'UPDATE']);
@@ -213,6 +213,16 @@ describe('/api/forward/[forward]', () => {
     expect(mocks.deleteRule).toHaveBeenCalledWith({ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8888 });
     expect(conn.commit).toHaveBeenCalled();
     expect(conn.rollback).not.toHaveBeenCalled();
+  });
+
+  it('delete removes a DB rule shadowed by a static rule of the same key', async () => {
+    conn.query.mockResolvedValueOnce([{ dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30 }]);
+    mocks.deleteRule.mockRejectedValue(new RproxyError('tcp/0.0.0.0:8888 is a static rule', 'static', 409));
+
+    const { status } = await call('delete', tcpRule);
+    expect(status).toBe(200);
+    expect(conn.commit).toHaveBeenCalled();
+    expect(sqlCalls().some(([sql]) => sql.startsWith('DELETE FROM forward_rules'))).toBe(true);
   });
 
   it('delete rolls back on other rproxy errors', async () => {
@@ -268,7 +278,7 @@ describe('/api/forward/[forward]', () => {
     expect(mocks.modifyRule).toHaveBeenCalledTimes(2);
     expect(mocks.modifyRule.mock.calls[1]).toEqual([
       { protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8888 },
-      { remote_addr: 'old.example.com', remote_port: 81, tls: { mode: 'passthrough' } },
+      { remote_addr: 'old.example.com', remote_port: 81, tls: { mode: 'passthrough' }, allow_from: [] },
     ]);
   });
 
@@ -452,7 +462,7 @@ describe('/api/forward/[forward]: port ranges and TLS', () => {
     expect(status).toBe(200);
     expect(mocks.modifyRule).toHaveBeenCalledWith(
       { protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 587 },
-      { remote_addr: '10.0.0.20', remote_port: 587, tls: { mode: 'terminate', certificates: [cert] }, starttls: 'smtp', starttls_required: true },
+      { remote_addr: '10.0.0.20', remote_port: 587, tls: { mode: 'terminate', certificates: [cert] }, starttls: 'smtp', starttls_required: true, allow_from: [] },
     );
     const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
     expect(update?.[0]).toMatch(/options = \?/);
@@ -470,7 +480,7 @@ describe('/api/forward/[forward]: port ranges and TLS', () => {
     expect(mocks.modifyRule).toHaveBeenCalledTimes(2);
     expect(mocks.modifyRule.mock.calls[1]).toEqual([
       { protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 587 },
-      { remote_addr: 'old.example.com', remote_port: 81, tls: previous.tls },
+      { remote_addr: 'old.example.com', remote_port: 81, tls: previous.tls, allow_from: [] },
     ]);
   });
 
@@ -481,9 +491,9 @@ describe('/api/forward/[forward]: port ranges and TLS', () => {
     conn.commit.mockRejectedValueOnce(new Error('connection lost'));
 
     await call('modify', tcpRule);
-    expect(mocks.modifyRule.mock.calls[0][1]).toEqual({ remote_addr: 'example.com', remote_port: 80, tls: { mode: 'passthrough' } });
+    expect(mocks.modifyRule.mock.calls[0][1]).toEqual({ remote_addr: 'example.com', remote_port: 80, tls: { mode: 'passthrough' }, allow_from: [] });
     expect(mocks.modifyRule.mock.calls[1][1]).toEqual({
-      remote_addr: 'old.example.com', remote_port: 81, tls: { mode: 'terminate', certificates: [cert] }, starttls: 'smtp', starttls_required: false,
+      remote_addr: 'old.example.com', remote_port: 81, tls: { mode: 'terminate', certificates: [cert] }, starttls: 'smtp', starttls_required: false, allow_from: [],
     });
   });
 
@@ -648,13 +658,19 @@ describe('/api/forward/[forward]: live stats, dashboard and a single rule', () =
     expect(body).toMatchObject({ id: 7, srcAddr: '::1', srcPort: 443, state: 'running', stats: liveRule.stats, startedAt: 1790000000 });
   });
 
-  it('rule returns 404 for a rule of another user without asking rproxy', async () => {
+  it('rule returns 404 for a rule of another user (a dynamic rule in rproxy is not shown)', async () => {
     pool.query.mockResolvedValue([]);
+    mocks.getRule.mockResolvedValueOnce({ ...liveRule, listen_addr: '0.0.0.0', origin: 'dynamic' });
 
     const { status, body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' });
     expect(status).toBe(404);
-    expect(body.code).toBe('not_found');
-    expect(mocks.getRule).not.toHaveBeenCalled();
+    expect(body).toEqual({ error: 'ルールが見つかりません。', code: 'not_found' });
+
+    // rproxy にもなければ 404。古い rproxy（origin なし）の rule も見せない
+    mocks.getRule.mockRejectedValueOnce(new RproxyError('rule not found', 'not_found', 404));
+    expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' })).status).toBe(404);
+    mocks.getRule.mockResolvedValueOnce({ ...liveRule, listen_addr: '0.0.0.0' });
+    expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' })).status).toBe(404);
   });
 
   it('rule reports missing and unknown like list', async () => {
@@ -685,5 +701,244 @@ describe('/api/forward/[forward]: live stats, dashboard and a single rule', () =
     mocks.getServerSession.mockResolvedValue(null);
     expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' })).status).toBe(401);
     expect(pool.query).not.toHaveBeenCalled();
+  });
+});
+
+describe('/api/forward/[forward]: allow_from, unmatched and static rules', () => {
+  const route = { server_name: 'dashboard.proxy.home', remote_addr: '127.0.0.1', remote_port: 3001 };
+  const row = (over: Record<string, unknown> = {}) => ({
+    src_port_end: null, dist_addr: 'old.example.com', dist_port: 81, source_ip: 'proxy', udp_idle_secs: 30, options: null, ...over,
+  });
+  // rproxy-api の docs/API.md の「固定ルール」の例（応答の形）
+  const staticRule = {
+    protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 443, listen_port_end: null, remote_addr: '127.0.0.1', remote_port: 3001,
+    source_ip: 'proxy', udp_idle_secs: 30, allow_from: ['172.16.0.0/16'], starttls: null, starttls_required: true,
+    tls: {
+      mode: 'terminate', routes: [route], certificates: [{ cert_file: '/etc/rproxy/certs/dashboard.pem', chain_file: '/etc/rproxy/certs/intermediates.pem', key_file: '/etc/rproxy/certs/dashboard.key' }],
+      client_auth: { mode: 'none', ca_file: null }, alpn: [],
+      upstream: { tls: false, server_name: null, ca_file: null, insecure_skip_verify: false, cert_file: null, key_file: null },
+      unmatched: 'reject',
+    },
+    state: 'running', error: null, resolved: ['127.0.0.1:3001'], connections: 1,
+    stats: { total_connections: 9, rx_bytes: 100, tx_bytes: 200, tls_failures: 0, denied: 4 }, started_at: 1790000000, origin: 'static',
+  };
+  const staticKey = { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443 };
+
+  it('add normalizes allow_from, stores it in options and sends it to rproxy', async () => {
+    mocks.addRule.mockResolvedValue({});
+
+    const { status } = await call('add', { ...tcpRule, allowFrom: ['10.0.0.5', '172.16.9.9/16', 'fd00::1/8'] });
+    expect(status).toBe(200);
+    const allow = ['10.0.0.5/32', '172.16.0.0/16', 'fd00::/8'];
+    // TLS が既定でも allow_from があれば options を保存する（キーは rproxy が読む 4 つ）
+    expect(JSON.parse(sqlCalls()[0][1][9] as string)).toEqual({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, allow_from: allow });
+    expect(JSON.parse(sqlCalls()[1][1][9] as string).allow_from).toEqual(allow);
+    expect(mocks.addRule.mock.calls[0][0].allow_from).toEqual(allow);
+  });
+
+  it('add leaves allow_from out of the POST and options when empty', async () => {
+    mocks.addRule.mockResolvedValue({});
+
+    await call('add', { ...tcpRule, allowFrom: [] });
+    expect(sqlCalls()[0][1][9]).toBeNull();
+    expect(mocks.addRule.mock.calls[0][0]).not.toHaveProperty('allow_from');
+  });
+
+  it.each([
+    ['not an array', { allowFrom: '10.0.0.0/8' }],
+    ['a hostname', { allowFrom: ['example.com'] }],
+    ['a too long prefix', { allowFrom: ['10.0.0.0/33'] }],
+    ['a too long IPv6 prefix', { allowFrom: ['fd00::/129'] }],
+    ['65 entries', { allowFrom: Array.from({ length: 65 }, (_, i) => `10.0.0.${i}`) }],
+    ['unmatched with an unknown value', { tls: { mode: 'sni', routes: [route], unmatched: 'drop' } }],
+  ])('rejects invalid allow_from / unmatched: %s', async (_name, override) => {
+    const { status, body } = await call('add', { ...tcpRule, ...override });
+    expect(status).toBe(400);
+    expect(body.code).toBe('invalid');
+    expect(pool.getConnection).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['sni without routes', { tls: { mode: 'sni', unmatched: 'reject' } }],
+    ['passthrough', { tls: { mode: 'passthrough', unmatched: 'reject' } }],
+    ['udp terminate (DTLS)', { protocol: 'udp', tls: { mode: 'terminate', certificates: [{ cert_file: '/c.pem', key_file: '/k.pem' }], routes: [route], unmatched: 'reject' } }],
+  ])('rejects unmatched: reject for %s as tls_config', async (_name, override) => {
+    const { status, body } = await call('add', { ...tcpRule, ...override });
+    expect(status).toBe(400);
+    expect(body.code).toBe('tls_config');
+    expect(body.error).toContain('unmatched: reject');
+  });
+
+  it('passes unmatched: reject through and drops the default', async () => {
+    mocks.addRule.mockResolvedValue({});
+
+    await call('add', { ...tcpRule, srcPort: 443, tls: { mode: 'sni', routes: [route], unmatched: 'reject' } });
+    expect(mocks.addRule.mock.calls[0][0].tls).toEqual({ mode: 'sni', routes: [route], unmatched: 'reject' });
+    expect(JSON.parse(sqlCalls()[0][1][9] as string).tls.unmatched).toBe('reject');
+
+    await call('add', { ...tcpRule, srcPort: 444, tls: { mode: 'sni', routes: [route], unmatched: 'default' } });
+    expect(mocks.addRule.mock.calls[1][0].tls).toEqual({ mode: 'sni', routes: [route] });
+  });
+
+  it('modify replaces allow_from when given and keeps the stored value when omitted', async () => {
+    const stored = { tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, allow_from: ['10.0.0.0/8'] };
+    conn.query.mockResolvedValueOnce([row({ options: JSON.stringify(stored) })]);
+    mocks.modifyRule.mockResolvedValue({});
+
+    await call('modify', { ...tcpRule, allowFrom: ['192.168.1.7'] });
+    expect(mocks.modifyRule.mock.calls[0][1].allow_from).toEqual(['192.168.1.7/32']);
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(JSON.parse(update?.[1][3] as string).allow_from).toEqual(['192.168.1.7/32']);
+
+    vi.clearAllMocks();
+    pool.getConnection.mockResolvedValue(conn);
+    conn.query.mockResolvedValue({ affectedRows: 1 });
+    conn.query.mockResolvedValueOnce([row({ options: JSON.stringify(stored) })]);
+    mocks.modifyRule.mockResolvedValue({});
+    await call('modify', tcpRule);
+    expect(mocks.modifyRule.mock.calls[0][1].allow_from).toEqual(['10.0.0.0/8']);
+
+    // [] ですべて許可に戻す（PATCH にも [] を付ける。options は NULL に戻る）
+    vi.clearAllMocks();
+    pool.getConnection.mockResolvedValue(conn);
+    conn.query.mockResolvedValue({ affectedRows: 1 });
+    conn.query.mockResolvedValueOnce([row({ options: JSON.stringify(stored) })]);
+    mocks.modifyRule.mockResolvedValue({});
+    await call('modify', { ...tcpRule, allowFrom: [] });
+    expect(mocks.modifyRule.mock.calls[0][1].allow_from).toEqual([]);
+    expect(sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'))?.[1][3]).toBeNull();
+  });
+
+  it('modify restores the previous allow_from and tls (with unmatched) when COMMIT fails', async () => {
+    const previous = { tls: { mode: 'sni', routes: [route], unmatched: 'reject' }, starttls: null, starttls_required: true, allow_from: ['172.16.0.0/16'] };
+    conn.query.mockResolvedValueOnce([row({ options: JSON.stringify(previous) })]);
+    mocks.modifyRule.mockResolvedValue({});
+    conn.commit.mockRejectedValueOnce(new Error('connection lost'));
+
+    const { status } = await call('modify', { ...tcpRule, allowFrom: [] });
+    expect(status).toBe(500);
+    expect(mocks.modifyRule.mock.calls[0][1]).toEqual({ remote_addr: 'example.com', remote_port: 80, tls: { mode: 'passthrough' }, allow_from: [] });
+    expect(mocks.modifyRule.mock.calls[1][1]).toEqual({
+      remote_addr: 'old.example.com', remote_port: 81, tls: previous.tls, allow_from: ['172.16.0.0/16'],
+    });
+  });
+
+  it('delete re-adds the rule with its allow_from when COMMIT fails', async () => {
+    const opts = { tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, allow_from: ['10.0.0.0/8'] };
+    conn.query.mockResolvedValueOnce([row({ options: JSON.stringify(opts) })]);
+    mocks.deleteRule.mockResolvedValue(undefined);
+    mocks.addRule.mockResolvedValue({});
+    conn.commit.mockRejectedValueOnce(new Error('connection lost'));
+
+    await call('delete', tcpRule);
+    expect(mocks.addRule).toHaveBeenCalledWith(expect.objectContaining({ allow_from: ['10.0.0.0/8'] }));
+  });
+
+  it('list returns allowFrom, origin dynamic and stats.denied for DB rules, but no static rules', async () => {
+    pool.query.mockResolvedValue([
+      { id: 1, protocol: 'tcp', src_addr: '0.0.0.0', src_port: 80, src_port_end: null, dist_addr: 'a', dist_port: 8080, source_ip: 'proxy', udp_idle_secs: 30,
+        options: JSON.stringify({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, allow_from: ['10.0.0.0/8'] }) },
+    ]);
+    mocks.listRules.mockResolvedValue([
+      { protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 80, remote_addr: 'a', remote_port: 8080, state: 'running', error: null, resolved: [], connections: 0,
+        stats: { total_connections: 3, rx_bytes: 0, tx_bytes: 0, tls_failures: 0, denied: 2 }, origin: 'dynamic' },
+      staticRule,
+    ]);
+
+    const { body } = await call('list', undefined, 'GET');
+    expect(body).toHaveLength(1);
+    expect(body[0]).toMatchObject({ id: 1, origin: 'dynamic', allowFrom: ['10.0.0.0/8'], stats: { denied: 2 } });
+  });
+
+  it('dashboard merges static rules from rproxy as read-only rows after the own rules', async () => {
+    pool.query.mockResolvedValue([
+      { id: 5, protocol: 'tcp', src_addr: '0.0.0.0', src_port: 80, src_port_end: null, dist_addr: 'a', dist_port: 8080, source_ip: 'proxy', udp_idle_secs: 30, options: null },
+    ]);
+    mocks.listRules.mockResolvedValue([
+      { protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 80, remote_addr: 'a', remote_port: 8080, state: 'running', error: null, resolved: [], connections: 0, origin: 'dynamic' },
+      // ほかの利用者の dynamic なルールは出さない
+      { protocol: 'udp', listen_addr: '0.0.0.0', listen_port: 53, remote_addr: 'b', remote_port: 53, state: 'running', error: null, resolved: [], connections: 0, origin: 'dynamic' },
+      staticRule,
+    ]);
+
+    const { status, body } = await call('dashboard', undefined, 'GET');
+    expect(status).toBe(200);
+    expect(body.reachable).toBe(true);
+    expect(body.rules.map((r: any) => [r.id, r.origin, r.srcPort])).toEqual([[5, 'dynamic', 80], [-1, 'static', 443]]);
+    expect(body.rules[1]).toMatchObject({
+      protocol: 'tcp', srcAddr: '0.0.0.0', srcPortEnd: null, distAddr: '127.0.0.1', distPort: 3001, allowFrom: ['172.16.0.0/16'],
+      tls: { mode: 'terminate', routes: [route], unmatched: 'reject' }, starttls: null, starttlsRequired: true,
+      state: 'running', connections: 1, stats: { denied: 4 }, startedAt: 1790000000, resolved: ['127.0.0.1:3001'],
+    });
+    // 既定値の項目は省いた形（client_auth / alpn / upstream なし）
+    expect(Object.keys(body.rules[1].tls).sort()).toEqual(['certificates', 'mode', 'routes', 'unmatched']);
+  });
+
+  it('dashboard has no static rows when rproxy is unreachable', async () => {
+    pool.query.mockResolvedValue([]);
+    mocks.listRules.mockRejectedValueOnce(new RproxyError('down', 'unreachable', 0));
+
+    expect((await call('dashboard', undefined, 'GET')).body).toEqual({ reachable: false, rproxyError: 'down', rules: [] });
+  });
+
+  it('rule returns a static rule that is not in the DB', async () => {
+    pool.query.mockResolvedValue([]);
+    mocks.getRule.mockResolvedValue(staticRule);
+
+    const { status, body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' });
+    expect(status).toBe(200);
+    expect(mocks.getRule).toHaveBeenCalledWith({ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 443 });
+    expect(body).toMatchObject({ id: -1, origin: 'static', srcPort: 443, allowFrom: ['172.16.0.0/16'], state: 'running', stats: { denied: 4 } });
+  });
+
+  it('rule reports an unreachable rproxy instead of 404 for a rule that is not in the DB', async () => {
+    pool.query.mockResolvedValue([]);
+    mocks.getRule.mockRejectedValue(new RproxyError('rproxy に接続できません', 'unreachable', 0));
+
+    const { status, body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' });
+    expect(status).toBe(502);
+    expect(body.code).toBe('unreachable');
+  });
+
+  it('rule returns an own DB rule with origin dynamic', async () => {
+    pool.query.mockResolvedValue([{ id: 3, protocol: 'tcp', src_addr: '0.0.0.0', src_port: 443, src_port_end: null, dist_addr: 'a', dist_port: 1, source_ip: 'proxy', udp_idle_secs: 30, options: null }]);
+    mocks.getRule.mockResolvedValue({ ...staticRule, origin: 'dynamic' });
+
+    const { body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' });
+    // DB の設定を返す（稼働情報だけ rproxy から）
+    expect(body).toMatchObject({ id: 3, origin: 'dynamic', distAddr: 'a', allowFrom: [], tls: { mode: 'passthrough' } });
+  });
+
+  it.each(['modify', 'delete'])('%s refuses a static rule with 409 static without touching rproxy', async (action) => {
+    conn.query.mockResolvedValueOnce([]);
+    mocks.getRule.mockResolvedValue(staticRule);
+
+    const { status, body } = await call(action, action === 'delete' ? staticKey : { ...tcpRule, ...staticKey });
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: 'このルールは rproxy の固定ルールです。', code: 'static' });
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+    expect(conn.rollback).toHaveBeenCalled();
+    expect(conn.commit).not.toHaveBeenCalled();
+  });
+
+  it.each(['modify', 'delete'])('%s still returns 404 for a rule that is neither own nor static', async (action) => {
+    conn.query.mockResolvedValueOnce([]);
+    mocks.getRule.mockResolvedValue({ ...staticRule, origin: 'dynamic' });
+    expect((await call(action, action === 'delete' ? staticKey : { ...tcpRule, ...staticKey })).status).toBe(404);
+
+    conn.query.mockResolvedValueOnce([]);
+    mocks.getRule.mockRejectedValue(new RproxyError('down', 'unreachable', 0));
+    expect((await call(action, action === 'delete' ? staticKey : { ...tcpRule, ...staticKey })).status).toBe(404);
+  });
+
+  it('passes a 409 static from rproxy through and rolls back', async () => {
+    conn.query.mockResolvedValueOnce([row()]);
+    mocks.modifyRule.mockRejectedValue(new RproxyError('rule is static', 'static', 409));
+
+    const { status, body } = await call('modify', tcpRule);
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: 'rule is static', code: 'static' });
+    expect(conn.rollback).toHaveBeenCalled();
   });
 });

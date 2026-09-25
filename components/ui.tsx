@@ -32,6 +32,18 @@ export const TlsBadge: React.FC<{ rule: Pick<ForwardRule, 'protocol' | 'tls' | '
   );
 };
 
+// 固定ルール（rproxy の設定ファイルで管理。画面からは変更・削除できない）
+export const StaticBadge: React.FC = () => (
+  <span className="badge bg-slate-700 text-white" title="固定ルール（rproxy の設定ファイルで管理）">固定</span>
+);
+
+// allow_from で送信元を絞っているルール
+export const AllowFromBadge: React.FC<{ allowFrom: string[] }> = ({ allowFrom }) => (
+  allowFrom.length === 0 ? null : (
+    <span className="badge bg-orange-100 text-orange-900" title={`接続を許可する送信元: ${allowFrom.join(', ')}`}>IP 制限</span>
+  )
+);
+
 export const ErrorBanner: React.FC<{ message: string; onClose?: () => void }> = ({ message, onClose }) => (
   <div role="alert" className="bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded mb-4 flex justify-between items-start">
     <span className="break-all">{message}</span>

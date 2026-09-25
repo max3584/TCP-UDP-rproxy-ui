@@ -120,6 +120,44 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     ]);
   });
 
+  it('round-trips allow_from through the DB and rproxy and drops connections outside it', async () => {
+    const allowRule = { ...rule, srcPort: listenPort + 3 };
+    const key = { protocol: 'tcp' as const, listen_addr: '127.0.0.1', listen_port: listenPort + 3 };
+    const { getRule } = await import('@/components/rproxy');
+    const storedAllowFrom = async () => {
+      const rows = await withDb((conn) => conn.query('SELECT options FROM forward_rules WHERE src_port = ?', [listenPort + 3]));
+      const opts = rows[0].options;
+      return opts === null ? null : (typeof opts === 'string' ? JSON.parse(opts) : opts).allow_from;
+    };
+
+    expect((await call('add', { ...allowRule, allowFrom: ['127.0.0.1', '10.9.8.7/8'] })).status).toBe(200);
+    const normalized = ['127.0.0.1/32', '10.0.0.0/8'];
+    expect(await storedAllowFrom()).toEqual(normalized);
+    const live = await getRule(key);
+    expect(live.allow_from).toEqual(normalized);
+    expect(live.origin).toBe('dynamic');
+    const one = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(listenPort + 3) });
+    expect(one.json).toMatchObject({ origin: 'dynamic', allowFrom: normalized });
+    expect(await echoThrough(listenPort + 3, 'in')).toBe('echo:in');
+
+    // 127.0.0.1 を外すと切断される（拒否した接続として数える）
+    expect((await call('modify', { ...allowRule, allowFrom: ['10.0.0.0/8'] })).status).toBe(200);
+    expect((await getRule(key)).allow_from).toEqual(['10.0.0.0/8']);
+    await expect(echoThrough(listenPort + 3, 'out')).rejects.toThrow();
+    expect((await getRule(key)).stats?.denied).toBeGreaterThanOrEqual(1);
+
+    // allowFrom を省いた変更では元の値を保ち、[] ですべて許可に戻す（options は NULL）
+    expect((await call('modify', { ...allowRule })).status).toBe(200);
+    expect((await getRule(key)).allow_from).toEqual(['10.0.0.0/8']);
+    expect((await call('modify', { ...allowRule, allowFrom: [] })).status).toBe(200);
+    expect((await getRule(key)).allow_from).toEqual([]);
+    expect(await storedAllowFrom()).toBeNull();
+    expect(await echoThrough(listenPort + 3, 'again')).toBe('echo:again');
+
+    expect((await call('delete', allowRule)).status).toBe(200);
+    expect((await call('list', undefined, 'GET')).json).toEqual([]);
+  });
+
   const rangeRule = {
     protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: rangePort, srcPortEnd: rangePort + 1,
     distAddr: '127.0.0.1', distPort: backendPort + 1, sourceIp: 'proxy', udpIdleSecs: 30,

@@ -14,8 +14,10 @@ import {
   TlsMode,
   TlsRoute,
   TlsSpec,
+  TlsUnmatched,
   TlsUpstream,
 } from './lib';
+import { checkAllowFrom } from './cidr';
 
 export type TlsErrorCode = 'invalid' | 'tls_config' | 'unsupported';
 
@@ -92,7 +94,7 @@ function list(value: unknown, where: string): unknown[] {
 export function normalizeTls(input: unknown): TlsSpec {
   if (input === undefined || input === null) return { ...DEFAULT_TLS };
   if (!isObject(input)) throw invalid('TLS の設定の形式が不正です。');
-  checkKeys(input, ['mode', 'routes', 'certificates', 'client_auth', 'alpn', 'upstream'], 'tls');
+  checkKeys(input, ['mode', 'routes', 'certificates', 'client_auth', 'alpn', 'upstream', 'unmatched'], 'tls');
 
   const mode = input.mode ?? 'passthrough';
   if (!TLS_MODES.includes(mode as TlsMode)) throw invalid('TLS のモードは passthrough / sni / terminate から選んでください。');
@@ -169,6 +171,13 @@ export function normalizeTls(input: unknown): TlsSpec {
     if (Object.keys(upstream).length > 0) tls.upstream = upstream;
   }
 
+  // 既定の default は省く（rproxy の応答には常に含まれる）
+  const unmatched = input.unmatched ?? 'default';
+  if (unmatched !== 'default' && unmatched !== 'reject') {
+    throw invalid('どのサーバ名にも一致しない接続の扱い（unmatched）は default か reject で指定してください。');
+  }
+  if ((unmatched as TlsUnmatched) === 'reject') tls.unmatched = 'reject';
+
   return tls;
 }
 
@@ -238,6 +247,21 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
   if (starttls !== null && (protocol !== 'tcp' || tls.mode !== 'terminate')) {
     throw new TlsError('STARTTLS は TCP で終端（terminate）のときだけ使えます。', 'tls_config');
   }
+  if (tls.unmatched !== undefined && tls.unmatched !== 'default'
+    && (protocol !== 'tcp' || tls.mode === 'passthrough' || routes.length === 0)) {
+    throw new TlsError('どのサーバ名にも一致しない接続を切断する（unmatched: reject）のは、TCP の sni / 終端（terminate）で、サーバ名ごとの転送先があるときだけ指定できます。', 'tls_config');
+  }
+}
+
+// allow_from（接続を許可する送信元）。CIDR か単一の IP の配列で、最大 64 件。正規化した形（10.0.0.5 → 10.0.0.5/32）にする
+export function normalizeAllowFrom(value: unknown): string[] {
+  const items = list(value, 'allow_from').map((v) => {
+    if (typeof v !== 'string') throw invalid('接続を許可する送信元は文字列（CIDR か IP アドレス）で指定してください。');
+    return v;
+  });
+  const r = checkAllowFrom(items);
+  if (!r.ok) throw invalid(r.error);
+  return r.value;
 }
 
 // ポート範囲のポート数。範囲の終わりが不正なら TlsError（invalid）
@@ -252,31 +276,41 @@ export function portCount(srcPort: number, srcPortEnd: number | null, distPort: 
   return count;
 }
 
-// DB の options 列（{"tls", "starttls", "starttls_required"} の JSON）。既定のままなら null を保存する。
-// rproxy は deny_unknown_fields で読むので、この 3 つ以外のキーを入れてはいけない
-export function optionsJson(tls: TlsSpec, starttls: StartTls | null, starttlsRequired: boolean): string | null {
-  if (isDefaultTls(tls) && starttls === null) return null;
-  return JSON.stringify({ tls: tls, starttls: starttls, starttls_required: starttlsRequired });
+// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from"} の JSON）。既定のままなら null を保存する。
+// allow_from は空なら省く。rproxy は deny_unknown_fields で読むので、この 4 つ以外のキーを入れてはいけない
+export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from'];
+
+export function optionsJson(tls: TlsSpec, starttls: StartTls | null, starttlsRequired: boolean, allowFrom: string[] = []): string | null {
+  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0) return null;
+  return JSON.stringify({
+    tls: tls,
+    starttls: starttls,
+    starttls_required: starttlsRequired,
+    ...(allowFrom.length > 0 ? { allow_from: allowFrom } : {}),
+  });
 }
 
 export interface RuleOptions {
   tls: TlsSpec;
   starttls: StartTls | null;
   starttlsRequired: boolean;
+  allowFrom: string[];
 }
 
 // options 列を読む。ドライバによっては JSON がオブジェクトで返るので両方を受け付ける
 export function parseOptions(value: unknown): RuleOptions {
-  if (value === undefined || value === null || value === '') {
-    return { tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true };
-  }
+  const empty = (): RuleOptions => ({ tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [] });
+  if (value === undefined || value === null || value === '') return empty();
   const data = typeof value === 'string' ? JSON.parse(value) : value;
-  if (data === null) return { tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true };
+  if (data === null) return empty();
   if (!isObject(data)) throw invalid('options 列の形式が不正です。');
+  // rproxy と同じく未知のキーは拒否する
+  checkKeys(data, OPTIONS_KEYS, 'options');
   const starttls = normalizeStartTls(data.starttls);
   return {
     tls: normalizeTls(data.tls),
     starttls: starttls,
     starttlsRequired: normalizeStartTlsRequired(data.starttls_required, starttls),
+    allowFrom: normalizeAllowFrom(data.allow_from),
   };
 }

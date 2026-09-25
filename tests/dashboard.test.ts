@@ -12,11 +12,13 @@ import {
   formatCount,
   formatDuration,
   hostPort,
+  mergeStaticRules,
   needsAttention,
   parseRuleKey,
   portsLabel,
   ruleApiUrl,
   ruleEditHref,
+  ruleFromStatus,
   ruleHref,
   summarize,
   targetPortsLabel,
@@ -25,11 +27,13 @@ import {
   toRule,
   uptimeSecs,
 } from '@/components/dashboard';
-import { StateBadge, TlsBadge } from '@/components/ui';
+import { AllowFromBadge, StateBadge, StaticBadge, TlsBadge } from '@/components/ui';
+import type { RproxyRuleStatus } from '@/components/rproxy';
 
 let nextId = 1;
 const rule = (over: Partial<ForwardRules> = {}): ForwardRules => ({
   id: nextId++,
+  origin: 'dynamic',
   protocol: 'tcp',
   srcAddr: '0.0.0.0',
   srcPort: 443,
@@ -41,6 +45,7 @@ const rule = (over: Partial<ForwardRules> = {}): ForwardRules => ({
   tls: { mode: 'passthrough' },
   starttls: null,
   starttlsRequired: true,
+  allowFrom: [],
   state: 'running',
   error: null,
   connections: 0,
@@ -80,6 +85,66 @@ describe('summarize', () => {
     const s = summarize([]);
     expect(s.tcp.counts).toEqual(emptyCounts());
     expect(s.connections).toBe(0);
+    expect(s.staticRules).toBe(0);
+  });
+
+  it('adds up denied connections (missing from old rproxy counts as 0) and counts static rules', () => {
+    const rules = [
+      rule({ stats: { total_connections: 1, rx_bytes: 0, tx_bytes: 0, tls_failures: 0, denied: 3 } }),
+      rule({ origin: 'static', stats: { total_connections: 1, rx_bytes: 0, tx_bytes: 0, tls_failures: 0, denied: 2 } }),
+      rule({ protocol: 'udp', stats: { total_connections: 1, rx_bytes: 0, tx_bytes: 0, tls_failures: 0, denied: 7 } }),
+      rule(),
+    ];
+    const s = summarize(rules);
+    expect(s.tcp.denied).toBe(5);
+    expect(s.udp.denied).toBe(7);
+    expect(s.staticRules).toBe(1);
+    expect(s.all.total).toBe(4);
+  });
+});
+
+describe('static rules', () => {
+  const status = (over: Partial<RproxyRuleStatus> = {}): RproxyRuleStatus => ({
+    protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 443, listen_port_end: null, remote_addr: '127.0.0.1', remote_port: 3001,
+    source_ip: 'proxy', udp_idle_secs: 30, starttls: null, starttls_required: true, allow_from: ['172.16.0.0/16'],
+    tls: { mode: 'sni', routes: [{ server_name: 'dashboard.proxy.home', remote_addr: '127.0.0.1', remote_port: 3001 }], unmatched: 'reject' },
+    state: 'running', error: null, resolved: [], connections: 0, origin: 'static', ...over,
+  });
+
+  it('builds a read-only row from the rproxy response', () => {
+    const r = ruleFromStatus(status({ stats: { total_connections: 2, rx_bytes: 1, tx_bytes: 1, tls_failures: 0, denied: 1 }, started_at: 1_790_000_000 }), -1);
+    expect(r).toMatchObject({
+      id: -1, origin: 'static', protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null, distAddr: '127.0.0.1', distPort: 3001,
+      allowFrom: ['172.16.0.0/16'], tls: { mode: 'sni', unmatched: 'reject' }, starttls: null, starttlsRequired: true,
+      stats: { denied: 1 }, startedAt: 1_790_000_000,
+    });
+    // 範囲ルール・古い rproxy（stats / started_at / allow_from なし）
+    const old = ruleFromStatus(status({ listen_port_end: 450, allow_from: undefined, tls: { mode: 'passthrough' } }), -2);
+    expect(old).toMatchObject({ srcPortEnd: 450, allowFrom: [], stats: null, startedAt: null, tls: { mode: 'passthrough' } });
+  });
+
+  it('appends static rules after the own rules with negative ids and skips dynamic rules of other users', () => {
+    const own = [rule({ id: 10, srcPort: 80 })];
+    const merged = mergeStaticRules(own, [
+      status({ listen_port: 80, origin: 'dynamic' }),
+      status({ protocol: 'udp', listen_port: 53, origin: 'dynamic' }),
+      status(),
+      status({ listen_addr: '::', listen_port: 8443 }),
+      // 古い rproxy（origin なし）は固定ルールとして扱わない
+      status({ listen_port: 9000, origin: undefined }),
+    ]);
+    expect(merged.map((r) => [r.id, r.origin, r.srcAddr, r.srcPort])).toEqual([
+      [10, 'dynamic', '0.0.0.0', 80], [-1, 'static', '0.0.0.0', 443], [-2, 'static', '::', 8443],
+    ]);
+    // 集計にも入る
+    expect(summarize(merged).all.total).toBe(3);
+    expect(summarize(merged).staticRules).toBe(2);
+  });
+
+  it('does not add a static rule twice when the key is already listed', () => {
+    const own = [rule({ id: 1, srcPort: 443 })];
+    expect(mergeStaticRules(own, [status()]).map((r) => r.id)).toEqual([1]);
+    expect(mergeStaticRules([], [])).toEqual([]);
   });
 });
 
@@ -211,12 +276,21 @@ describe('toRule', () => {
   it('drops the live state before sending a rule back to the API', () => {
     const r = toRule(sample[0]);
     expect(Object.keys(r).sort()).toEqual([
-      'distAddr', 'distPort', 'protocol', 'sourceIp', 'srcAddr', 'srcPort', 'srcPortEnd', 'starttls', 'starttlsRequired', 'tls', 'udpIdleSecs',
+      'allowFrom', 'distAddr', 'distPort', 'protocol', 'sourceIp', 'srcAddr', 'srcPort', 'srcPortEnd', 'starttls', 'starttlsRequired', 'tls', 'udpIdleSecs',
     ]);
   });
 });
 
 describe('badges', () => {
+  it('marks static rules and rules with allow_from', () => {
+    expect(renderToStaticMarkup(createElement(StaticBadge))).toMatch(/class="badge bg-slate-700 text-white"[^>]*>固定</);
+    const allow = renderToStaticMarkup(createElement(AllowFromBadge, { allowFrom: ['10.0.0.0/8', 'fd00::/8'] }));
+    expect(allow).toContain('IP 制限');
+    expect(allow).toContain('title="接続を許可する送信元: 10.0.0.0/8, fd00::/8"');
+    expect(allow).toMatch(/class="badge bg-orange-100 text-orange-900"/);
+    expect(renderToStaticMarkup(createElement(AllowFromBadge, { allowFrom: [] }))).toBe('');
+  });
+
   it('shows the state with text and an explicit text colour', () => {
     const html = renderToStaticMarkup(createElement(StateBadge, { state: 'missing' }));
     expect(html).toContain('未登録');

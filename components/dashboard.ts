@@ -1,6 +1,9 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
-import type { ForwardRule, ForwardRules, Protocol, RuleState } from './lib';
+import { DEFAULT_UDP_IDLE_SECS } from './lib';
+import type { ForwardRule, ForwardRules, Protocol, RuleState, TlsSpec } from './lib';
+import type { RproxyRuleStatus } from './rproxy';
+import { normalizeTls } from './tls';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown'];
 
@@ -30,6 +33,8 @@ export interface ProtocolSummary {
   rxBytes: number;
   txBytes: number;
   tlsFailures: number;
+  // allow_from の範囲外、または unmatched: reject で切断した接続
+  denied: number;
 }
 
 export interface TlsBreakdown {
@@ -66,6 +71,7 @@ export function summarizeProtocol(rules: ForwardRules[], protocol: Protocol): Pr
     rxBytes: 0,
     txBytes: 0,
     tlsFailures: 0,
+    denied: 0,
   };
   for (const r of own) {
     summary.connections += r.connections ?? 0;
@@ -73,14 +79,71 @@ export function summarizeProtocol(rules: ForwardRules[], protocol: Protocol): Pr
     summary.rxBytes += r.stats?.rx_bytes ?? 0;
     summary.txBytes += r.stats?.tx_bytes ?? 0;
     summary.tlsFailures += r.stats?.tls_failures ?? 0;
+    summary.denied += r.stats?.denied ?? 0;
   }
   return summary;
 }
 
-export function summarize(rules: ForwardRules[]): { tcp: ProtocolSummary; udp: ProtocolSummary; all: StateCounts; connections: number } {
+export function summarize(rules: ForwardRules[]): {
+  tcp: ProtocolSummary; udp: ProtocolSummary; all: StateCounts; connections: number; staticRules: number;
+} {
   const tcp = summarizeProtocol(rules, 'tcp');
   const udp = summarizeProtocol(rules, 'udp');
-  return { tcp: tcp, udp: udp, all: countStates(rules), connections: tcp.connections + udp.connections };
+  return {
+    tcp: tcp,
+    udp: udp,
+    all: countStates(rules),
+    connections: tcp.connections + udp.connections,
+    staticRules: rules.filter((r) => r.origin === 'static').length,
+  };
+}
+
+// rproxy の応答のルールを画面の形にする（固定ルールは DB にないので、rproxy の応答だけから作る）。
+// tls は既定値の項目を省いた形に揃える（読めない形なら受け取ったまま使う）
+export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRules {
+  let tls: TlsSpec;
+  try {
+    tls = normalizeTls(status.tls);
+  } catch {
+    tls = (status.tls ?? { mode: 'passthrough' }) as TlsSpec;
+  }
+  const starttls = status.starttls ?? null;
+  return {
+    id: id,
+    origin: status.origin === 'static' ? 'static' : 'dynamic',
+    protocol: String(status.protocol).toLowerCase() as Protocol,
+    srcAddr: status.listen_addr,
+    srcPort: status.listen_port,
+    srcPortEnd: status.listen_port_end ?? null,
+    distAddr: status.remote_addr,
+    distPort: status.remote_port,
+    sourceIp: status.source_ip ?? 'proxy',
+    udpIdleSecs: status.udp_idle_secs ?? DEFAULT_UDP_IDLE_SECS,
+    tls: tls,
+    starttls: starttls,
+    starttlsRequired: starttls === null ? true : status.starttls_required ?? true,
+    allowFrom: status.allow_from ?? [],
+    state: status.state,
+    error: status.error ?? null,
+    connections: status.connections ?? null,
+    stats: status.stats ?? null,
+    startedAt: status.started_at ?? null,
+    resolved: status.resolved ?? [],
+  };
+}
+
+function keyString(protocol: string, addr: string, port: number): string {
+  return `${protocol.toLowerCase()}|${addr.toLowerCase()}|${port}`;
+}
+
+// ダッシュボードの一覧：自分のルール（DB）のあとに、rproxy の固定ルール（origin: static）を読み取り専用の行として足す。
+// 固定ルールの id は -1, -2, …（DB の id と重ならない）。同じキーの行が既にあれば足さない
+export function mergeStaticRules(rules: ForwardRules[], live: RproxyRuleStatus[]): ForwardRules[] {
+  const seen = new Set(rules.map((r) => keyString(r.protocol, r.srcAddr, r.srcPort)));
+  const statics = live
+    .filter((s) => s.origin === 'static' && !seen.has(keyString(s.protocol, s.listen_addr, s.listen_port)))
+    .map((s, i) => ruleFromStatus(s, -(i + 1)));
+  return [...rules, ...statics];
 }
 
 export function tlsBreakdown(rules: ForwardRule[]): TlsBreakdown {
@@ -287,5 +350,6 @@ export function toRule(rule: ForwardRule): ForwardRule {
     tls: rule.tls,
     starttls: rule.starttls,
     starttlsRequired: rule.starttlsRequired,
+    allowFrom: rule.allowFrom,
   };
 }
