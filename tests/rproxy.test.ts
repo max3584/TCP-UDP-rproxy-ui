@@ -46,6 +46,20 @@ describe('rproxy client', () => {
     expect(JSON.parse(init.body as string)).toEqual(rule);
   });
 
+  it('posts a range rule with TLS and STARTTLS as JSON', async () => {
+    const rule = {
+      protocol: 'tcp' as const, listen_addr: '0.0.0.0', listen_port: 587, listen_port_end: 588, remote_addr: '10.0.0.20', remote_port: 587,
+      tls: { mode: 'terminate' as const, certificates: [{ cert_file: '/c.pem', key_file: '/k.pem' }] }, starttls: 'smtp' as const, starttls_required: false,
+    };
+    fetchMock.mockResolvedValueOnce(json({ error: '/c.pem: No such file or directory (os error 2)', code: 'tls_config' }, 400));
+
+    const err = await addRule(rule).catch((e) => e);
+    expect(JSON.parse(lastCall().init.body as string)).toEqual(rule);
+    expect(err).toBeInstanceOf(RproxyError);
+    expect(err.code).toBe('tls_config');
+    expect(err.status).toBe(400);
+  });
+
   it('maps the error body to RproxyError', async () => {
     fetchMock.mockResolvedValueOnce(json({ error: 'address already in use (os error 98)', code: 'bind_failed' }, 409));
 
