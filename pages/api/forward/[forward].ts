@@ -4,6 +4,7 @@ import { getServerSession } from 'next-auth';
 import { isIP } from 'net';
 import {
   DEFAULT_UDP_IDLE_SECS,
+  DashboardData,
   ForwardRule,
   ForwardRules,
   Logger,
@@ -32,6 +33,7 @@ import {
   RproxyRuleStatus,
   addRule,
   deleteRule,
+  getRule,
   listRules,
   modifyRule,
 } from '@/components/rproxy';
@@ -272,31 +274,77 @@ async function lockOwnRule(conn: PoolConnection, authId: string, key: ForwardRul
   return fromRow({ ...rows[0], protocol: key.protocol, src_addr: key.srcAddr, src_port: key.srcPort });
 }
 
-async function listForwardingRules(authId: string, logger: AppLogger): Promise<ForwardRules[]> {
+// DB のルールに rproxy の稼働情報を付ける。status が undefined なら rproxy にない（missing）、
+// live が false なら rproxy に問い合わせできなかった（unknown）
+function withLiveState(id: number, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined): ForwardRules {
+  return {
+    id: id,
+    ...rule,
+    state: !live ? 'unknown' : status ? status.state : 'missing',
+    error: status?.error ?? null,
+    connections: status?.connections ?? null,
+    stats: status?.stats ?? null,
+    startedAt: status?.started_at ?? null,
+    resolved: status?.resolved ?? [],
+  };
+}
+
+async function listForwardingRules(authId: string, logger: AppLogger): Promise<DashboardData> {
   const rows = await pool.query(
     'SELECT id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE auth_id = ? ORDER BY id',
     [authId]
   );
 
   let live: Map<string, RproxyRuleStatus> | null = null;
+  let rproxyError: string | null = null;
   try {
     const status = await listRules();
     live = new Map(status.map((r) => [ruleKeyString(r.protocol, r.listen_addr, r.listen_port), r]));
   } catch (err) {
     logger.warn(`rproxy からルールの状態を取得できません: ${err}`);
+    rproxyError = err instanceof Error ? err.message : String(err);
   }
 
-  return rows.map((row: any): ForwardRules => {
+  const rules = rows.map((row: any): ForwardRules => {
     const rule = fromRow(row);
-    const status = live?.get(ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort));
-    return {
-      id: Number(row.id),
-      ...rule,
-      state: live === null ? 'unknown' : status ? status.state : 'missing',
-      error: status?.error ?? null,
-      connections: status?.connections ?? null,
-    };
+    return withLiveState(Number(row.id), rule, live !== null, live?.get(ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort)));
   });
+  return { reachable: live !== null, rproxyError: rproxyError, rules: rules };
+}
+
+function queryString(value: string | string[] | undefined): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+// GET /api/forward/rule?protocol=&addr=&port= の 1 件。自分のルールでなければ 404
+async function getForwardingRule(authId: string, query: NextApiRequest['query'], logger: AppLogger): Promise<ForwardRules> {
+  const protocol = queryString(query.protocol).toLowerCase();
+  if (protocol !== 'tcp' && protocol !== 'udp') throw invalid('プロトコルは tcp か udp を指定してください。');
+  const addr = queryString(query.addr);
+  if (isIP(addr) === 0) throw invalid('addr には IP アドレスを指定してください。');
+  const portText = queryString(query.port);
+  const port = /^[0-9]+$/.test(portText) ? Number(portText) : NaN;
+  if (!isPort(port)) throw invalid('ポート番号は1から65535の範囲で指定してください。');
+  const key: RproxyRuleKey = { protocol: protocol as Protocol, listen_addr: normalizeAddr(addr), listen_port: port };
+
+  const rows = await pool.query(
+    'SELECT id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
+    [authId, key.protocol, key.listen_addr, key.listen_port]
+  );
+  if (rows.length === 0) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
+  const rule = fromRow(rows[0]);
+
+  let live = true;
+  let status: RproxyRuleStatus | undefined;
+  try {
+    status = await getRule(key);
+  } catch (err) {
+    if (!isNotFound(err)) {
+      logger.warn(`rproxy からルールの状態を取得できません: ${err}`);
+      live = false;
+    }
+  }
+  return withLiveState(Number(rows[0].id), rule, live, status);
 }
 
 async function addForwardingRule(authId: string, rule: ForwardRule, logger: AppLogger): Promise<void> {
@@ -403,8 +451,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     if (req.method === 'GET' && query === 'list') {
-      const rules = await listForwardingRules(id, logger);
-      return res.status(200).json(rules);
+      const data = await listForwardingRules(id, logger);
+      return res.status(200).json(data.rules);
+    }
+    if (req.method === 'GET' && query === 'dashboard') {
+      const data = await listForwardingRules(id, logger);
+      return res.status(200).json(data);
+    }
+    if (req.method === 'GET' && query === 'rule') {
+      // 先に取得してから status を呼ぶ（失敗したら sendError がステータスを決める）
+      const rule = await getForwardingRule(id, req.query, logger);
+      return res.status(200).json(rule);
     }
 
     if (req.method === 'POST') {

@@ -13,7 +13,7 @@ vi.mock('next-auth', () => ({
 }));
 vi.mock('@/pages/api/auth/[...nextauth]', () => ({ authOptions: {} }));
 
-async function call(action: string, body?: unknown, method = 'POST') {
+async function call(action: string, body?: unknown, method = 'POST', query: Record<string, string> = {}) {
   const { default: handler } = await import('@/pages/api/forward/[forward]');
   let status = 0;
   let json: any;
@@ -21,7 +21,7 @@ async function call(action: string, body?: unknown, method = 'POST') {
     status(s: number) { status = s; return res; },
     json(j: unknown) { json = j; return res; },
   } as unknown as NextApiResponse;
-  await handler({ method, query: { forward: action }, body } as unknown as NextApiRequest, res);
+  await handler({ method, query: { ...query, forward: action }, body } as unknown as NextApiRequest, res);
   return { status, json };
 }
 
@@ -85,6 +85,24 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     const list = await call('list', undefined, 'GET');
     expect(list.json.map((r: any) => r.srcPort)).toEqual([listenPort]);
     expect(list.json[0].state).toBe('running');
+    // rproxy の累計（前のテストで 1 回接続した）と開始時刻
+    expect(list.json[0].stats).toMatchObject({
+      total_connections: expect.any(Number), rx_bytes: expect.any(Number), tx_bytes: expect.any(Number), tls_failures: 0,
+    });
+    expect(list.json[0].stats.total_connections).toBeGreaterThanOrEqual(1);
+    expect(list.json[0].stats.rx_bytes).toBeGreaterThanOrEqual(2);
+    expect(list.json[0].startedAt).toBeGreaterThan(1_600_000_000);
+    expect(list.json[0].resolved).toEqual([`127.0.0.1:${backendPort}`]);
+  });
+
+  it('returns one rule and the dashboard with live state', async () => {
+    const one = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(listenPort) });
+    expect(one.status).toBe(200);
+    expect(one.json).toMatchObject({ srcPort: listenPort, state: 'running', stats: { tls_failures: 0 } });
+    expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(listenPort + 50) })).status).toBe(404);
+    const dash = await call('dashboard', undefined, 'GET');
+    expect(dash.json.reachable).toBe(true);
+    expect(dash.json.rules.map((r: any) => r.srcPort)).toEqual([listenPort]);
   });
 
   it('modifies and deletes the rule', async () => {

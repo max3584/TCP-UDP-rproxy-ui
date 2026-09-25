@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
     modifyRule: vi.fn(),
     deleteRule: vi.fn(),
     listRules: vi.fn(),
+    getRule: vi.fn(),
   };
 });
 
@@ -37,6 +38,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => ({
   modifyRule: mocks.modifyRule,
   deleteRule: mocks.deleteRule,
   listRules: mocks.listRules,
+  getRule: mocks.getRule,
 }));
 
 import handler from '@/pages/api/forward/[forward]';
@@ -56,8 +58,8 @@ const tcpRule = {
   udpIdleSecs: 30,
 };
 
-function call(action: string, body?: unknown, method = 'POST') {
-  const req = { method, query: { forward: action }, body } as unknown as NextApiRequest;
+function call(action: string, body?: unknown, method = 'POST', query: Record<string, string> = {}) {
+  const req = { method, query: { ...query, forward: action }, body } as unknown as NextApiRequest;
   const res: any = {};
   res.status = vi.fn(() => res);
   res.json = vi.fn(() => res);
@@ -357,6 +359,11 @@ describe('/api/forward/[forward]: port ranges and TLS', () => {
     ['alpn with sni', { tls: { mode: 'sni', alpn: ['h2'] } }, 'tls_config'],
     ['client_auth without ca_file', { tls: { mode: 'terminate', certificates: [cert], client_auth: { mode: 'required' } } }, 'tls_config'],
     ['upstream cert without key', { tls: { mode: 'terminate', certificates: [cert], upstream: { tls: true, cert_file: '/c.pem' } } }, 'tls_config'],
+    ['upstream chain_file without cert_file', { tls: { mode: 'terminate', certificates: [cert], upstream: { tls: true, chain_file: '/chain.pem' } } }, 'tls_config'],
+    ['client_auth chain_file with mode none', { tls: { mode: 'terminate', certificates: [cert], client_auth: { mode: 'none', chain_file: '/chain.pem' } } }, 'tls_config'],
+    ['client_auth chain_file with passthrough', { tls: { mode: 'passthrough', client_auth: { chain_file: '/chain.pem' } } }, 'tls_config'],
+    ['unknown key in a certificate', { tls: { mode: 'terminate', certificates: [{ ...cert, chains: '/c.pem' }] } }, 'invalid'],
+    ['chain_file that is not a string', { tls: { mode: 'terminate', certificates: [{ ...cert, chain_file: 1 }] } }, 'invalid'],
     ['invalid server_name', { tls: { mode: 'sni', routes: [{ server_name: 'a..b', remote_addr: '10.0.0.1', remote_port: 443 }] } }, 'tls_config'],
     ['starttls without terminate', { starttls: 'smtp' }, 'tls_config'],
     ['starttls with udp', { protocol: 'udp', tls: { mode: 'terminate', certificates: [cert] }, starttls: 'smtp' }, 'tls_config'],
@@ -537,5 +544,146 @@ describe('/api/forward/[forward]: port ranges and TLS', () => {
     const { body } = await call('list', undefined, 'GET');
     expect(body[0]).toMatchObject({ srcPort: 8000, srcPortEnd: 8001, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, state: 'running' });
     expect(body[1]).toMatchObject({ srcPortEnd: null, tls: { mode: 'terminate', certificates: [cert] }, starttls: 'smtp', starttlsRequired: true, state: 'missing' });
+  });
+
+  it('stores certificate, client_auth and upstream chain files in the exact rproxy shape', async () => {
+    mocks.addRule.mockResolvedValue({});
+    const chained = {
+      mode: 'terminate',
+      certificates: [
+        { cert_file: '/etc/rproxy/certs/leaf.pem', chain_file: ' /etc/rproxy/certs/intermediates.pem ', key_file: '/etc/rproxy/certs/leaf.key' },
+        { cert_file: '/etc/rproxy/certs/other.pem', chain_file: '', key_file: '/etc/rproxy/certs/other.key' },
+      ],
+      client_auth: { mode: 'required', ca_file: '/etc/rproxy/clients-root.pem', chain_file: '/etc/rproxy/clients-intermediates.pem' },
+      upstream: { tls: true, cert_file: '/etc/rproxy/up.pem', chain_file: '/etc/rproxy/up-chain.pem', key_file: '/etc/rproxy/up.key' },
+    };
+
+    const { status } = await call('add', { ...tcpRule, srcPort: 443, tls: chained });
+    expect(status).toBe(200);
+    // 空の chain_file は省く。キーは rproxy と同じ名前・順番
+    const expected = {
+      mode: 'terminate',
+      certificates: [
+        { cert_file: '/etc/rproxy/certs/leaf.pem', chain_file: '/etc/rproxy/certs/intermediates.pem', key_file: '/etc/rproxy/certs/leaf.key' },
+        { cert_file: '/etc/rproxy/certs/other.pem', key_file: '/etc/rproxy/certs/other.key' },
+      ],
+      client_auth: { mode: 'required', ca_file: '/etc/rproxy/clients-root.pem', chain_file: '/etc/rproxy/clients-intermediates.pem' },
+      upstream: { tls: true, cert_file: '/etc/rproxy/up.pem', chain_file: '/etc/rproxy/up-chain.pem', key_file: '/etc/rproxy/up.key' },
+    };
+    const options = sqlCalls()[0][1][9] as string;
+    expect(JSON.parse(options)).toEqual({ tls: expected, starttls: null, starttls_required: true });
+    expect(options).toContain('{"cert_file":"/etc/rproxy/certs/leaf.pem","chain_file":"/etc/rproxy/certs/intermediates.pem","key_file":"/etc/rproxy/certs/leaf.key"}');
+    expect(mocks.addRule.mock.calls[0][0].tls).toEqual(expected);
+  });
+
+  it('reads chain files back from the options column', async () => {
+    const tls = {
+      mode: 'terminate',
+      certificates: [{ ...cert, chain_file: '/etc/rproxy/certs/intermediates.pem' }],
+      client_auth: { mode: 'optional', ca_file: '/root.pem', chain_file: '/int.pem' },
+    };
+    pool.query.mockResolvedValue([
+      { id: 1, protocol: 'tcp', src_addr: '0.0.0.0', src_port: 993, src_port_end: null, dist_addr: 'b', dist_port: 143, source_ip: 'proxy', udp_idle_secs: 30,
+        options: JSON.stringify({ tls: tls, starttls: null, starttls_required: true }) },
+    ]);
+    mocks.listRules.mockResolvedValue([]);
+
+    const { body } = await call('list', undefined, 'GET');
+    expect(body[0].tls).toEqual(tls);
+  });
+});
+
+describe('/api/forward/[forward]: live stats, dashboard and a single rule', () => {
+  const dbRow = { id: 7, protocol: 'tcp', src_addr: '::1', src_port: 443, src_port_end: null, dist_addr: 'a', dist_port: 8443, source_ip: 'proxy', udp_idle_secs: 30, options: null };
+  const liveRule = {
+    protocol: 'tcp', listen_addr: '::1', listen_port: 443, remote_addr: 'a', remote_port: 8443, state: 'running', error: null,
+    resolved: ['10.0.0.1:8443'], connections: 2,
+    stats: { total_connections: 10, rx_bytes: 1234, tx_bytes: 5678, tls_failures: 1 }, started_at: 1790000000,
+  };
+
+  it('list passes stats, started_at and resolved through from rproxy', async () => {
+    pool.query.mockResolvedValue([dbRow, { ...dbRow, id: 8, src_port: 444 }]);
+    mocks.listRules.mockResolvedValue([liveRule]);
+
+    const { status, body } = await call('list', undefined, 'GET');
+    expect(status).toBe(200);
+    expect(body[0]).toMatchObject({
+      id: 7, state: 'running', connections: 2, resolved: ['10.0.0.1:8443'],
+      stats: { total_connections: 10, rx_bytes: 1234, tx_bytes: 5678, tls_failures: 1 }, startedAt: 1790000000,
+    });
+    // rproxy にないルールは稼働情報なし
+    expect(body[1]).toMatchObject({ id: 8, state: 'missing', connections: null, stats: null, startedAt: null, resolved: [] });
+  });
+
+  it('list leaves stats empty when rproxy is unreachable or an old rproxy omits them', async () => {
+    pool.query.mockResolvedValue([dbRow]);
+    mocks.listRules.mockRejectedValueOnce(new RproxyError('down', 'unreachable', 0));
+    expect((await call('list', undefined, 'GET')).body[0]).toMatchObject({ state: 'unknown', stats: null, startedAt: null, resolved: [] });
+
+    const { stats: _s, started_at: _t, ...old } = liveRule;
+    mocks.listRules.mockResolvedValueOnce([old]);
+    expect((await call('list', undefined, 'GET')).body[0]).toMatchObject({ state: 'running', stats: null, startedAt: null, resolved: ['10.0.0.1:8443'] });
+  });
+
+  it('dashboard reports whether rproxy was reachable', async () => {
+    pool.query.mockResolvedValue([]);
+    mocks.listRules.mockResolvedValueOnce([]);
+    expect((await call('dashboard', undefined, 'GET')).body).toEqual({ reachable: true, rproxyError: null, rules: [] });
+
+    mocks.listRules.mockRejectedValueOnce(new RproxyError('rproxy に接続できません: ECONNREFUSED', 'unreachable', 0));
+    const { status, body } = await call('dashboard', undefined, 'GET');
+    expect(status).toBe(200);
+    expect(body).toEqual({ reachable: false, rproxyError: 'rproxy に接続できません: ECONNREFUSED', rules: [] });
+  });
+
+  it('rule returns one own rule with its live state (IPv6 address normalized)', async () => {
+    pool.query.mockResolvedValue([dbRow]);
+    mocks.getRule.mockResolvedValue(liveRule);
+
+    const { status, body } = await call('rule', undefined, 'GET', { protocol: 'TCP', addr: '0:0:0:0:0:0:0:1', port: '443' });
+    expect(status).toBe(200);
+    expect(pool.query.mock.calls[0][1]).toEqual(['user-1', 'tcp', '::1', 443]);
+    expect(pool.query.mock.calls[0][0]).toMatch(/WHERE auth_id = \? AND protocol = \? AND src_addr = \? AND src_port = \?/);
+    expect(mocks.getRule).toHaveBeenCalledWith({ protocol: 'tcp', listen_addr: '::1', listen_port: 443 });
+    expect(body).toMatchObject({ id: 7, srcAddr: '::1', srcPort: 443, state: 'running', stats: liveRule.stats, startedAt: 1790000000 });
+  });
+
+  it('rule returns 404 for a rule of another user without asking rproxy', async () => {
+    pool.query.mockResolvedValue([]);
+
+    const { status, body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' });
+    expect(status).toBe(404);
+    expect(body.code).toBe('not_found');
+    expect(mocks.getRule).not.toHaveBeenCalled();
+  });
+
+  it('rule reports missing and unknown like list', async () => {
+    pool.query.mockResolvedValue([dbRow]);
+    mocks.getRule.mockRejectedValueOnce(new RproxyError('rule not found', 'not_found', 404));
+    expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '::1', port: '443' })).body).toMatchObject({ state: 'missing', stats: null });
+
+    mocks.getRule.mockRejectedValueOnce(new RproxyError('down', 'unreachable', 0));
+    const { status, body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '::1', port: '443' });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ state: 'unknown', stats: null, connections: null });
+  });
+
+  it.each([
+    ['no protocol', { addr: '0.0.0.0', port: '443' }],
+    ['unknown protocol', { protocol: 'sctp', addr: '0.0.0.0', port: '443' }],
+    ['hostname as addr', { protocol: 'tcp', addr: 'example.com', port: '443' }],
+    ['port 0', { protocol: 'tcp', addr: '0.0.0.0', port: '0' }],
+    ['port not a number', { protocol: 'tcp', addr: '0.0.0.0', port: '44x' }],
+  ])('rule rejects an invalid key: %s', async (_name, query) => {
+    const { status, body } = await call('rule', undefined, 'GET', query as Record<string, string>);
+    expect(status).toBe(400);
+    expect(body.code).toBe('invalid');
+    expect(pool.query).not.toHaveBeenCalled();
+  });
+
+  it('rule returns 401 without a session', async () => {
+    mocks.getServerSession.mockResolvedValue(null);
+    expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '443' })).status).toBe(401);
+    expect(pool.query).not.toHaveBeenCalled();
   });
 });

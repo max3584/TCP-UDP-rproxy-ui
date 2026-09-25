@@ -30,14 +30,19 @@ export interface TlsRoute {
   remote_port: number;
 }
 
+// chain_file は中間 CA の証明書（サーバ証明書を発行した CA からルートへ向かう順。ルートは不要）
 export interface TlsCertificate {
   cert_file: string;
+  chain_file?: string;
   key_file: string;
 }
 
+// ca_file はルート CA（信頼の起点）、chain_file はクライアント証明書の中間 CA（経路を補うだけ）。
+// chain_file は mode が optional / required のときだけ使える
 export interface TlsClientAuth {
   mode: ClientAuthMode;
   ca_file?: string;
+  chain_file?: string;
 }
 
 export interface TlsUpstream {
@@ -46,6 +51,8 @@ export interface TlsUpstream {
   ca_file?: string;
   insecure_skip_verify?: boolean;
   cert_file?: string;
+  // cert_file の中間 CA（cert_file があるときだけ）
+  chain_file?: string;
   key_file?: string;
 }
 
@@ -77,11 +84,34 @@ export interface ForwardRule {
 // missing: DB にはあるが rproxy にない / unknown: rproxy に問い合わせできなかった
 export type RuleState = 'running' | 'failed' | 'missing' | 'unknown';
 
+// rproxy がルールを開始してからの累計（rproxy の応答の stats をそのまま渡す）
+export interface RuleStats {
+  total_connections: number;
+  rx_bytes: number;
+  tx_bytes: number;
+  tls_failures: number;
+}
+
+// 稼働情報は rproxy に問い合わせできない（unknown）か rproxy にない（missing）ときは null / 空
 export interface ForwardRules extends ForwardRule {
   id: number;
   state: RuleState;
   error: string | null;
   connections: number | null;
+  stats: RuleStats | null;
+  // 待ち受けを始めた時刻（Unix 秒）
+  startedAt: number | null;
+  // 最後に名前解決できた転送先（"ip:port"）
+  resolved: string[];
+}
+
+// GET /api/forward/dashboard の応答
+export interface DashboardData {
+  // rproxy の稼働状態を取得できたか
+  reachable: boolean;
+  // 取得できなかった理由
+  rproxyError: string | null;
+  rules: ForwardRules[];
 }
 
 export interface PageAuthrized {

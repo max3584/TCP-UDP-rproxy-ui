@@ -1,4 +1,4 @@
-// TLS / STARTTLS / ポート範囲の入力の正規化と検証。画面（Modal）と API route の両方から使う。
+// TLS / STARTTLS / ポート範囲の入力の正規化と検証。画面（RuleForm）と API route の両方から使う。
 // 組み合わせの規則は rproxy-api の src/tlsconf.rs の validate と同じにしてある（最終的な判定は rproxy）。
 // エラーコードも rproxy に揃える（組み合わせの誤りは tls_config、UDP の sni は unsupported、形の誤りは invalid）。
 
@@ -113,25 +113,31 @@ export function normalizeTls(input: unknown): TlsSpec {
 
   const certificates = list(input.certificates, 'tls.certificates').map((c): TlsCertificate => {
     if (!isObject(c)) throw invalid('証明書の指定の形式が不正です。');
-    checkKeys(c, ['cert_file', 'key_file'], 'tls.certificates');
-    return {
-      cert_file: requiredString(c.cert_file, '証明書のファイル'),
-      key_file: requiredString(c.key_file, '秘密鍵のファイル'),
-    };
+    checkKeys(c, ['cert_file', 'chain_file', 'key_file'], 'tls.certificates');
+    // キーの順番も rproxy の応答（cert_file, chain_file, key_file）に揃える
+    const certFile = requiredString(c.cert_file, '証明書のファイル');
+    const chain = optionalString(c.chain_file, '中間 CA のファイル');
+    const keyFile = requiredString(c.key_file, '秘密鍵のファイル');
+    return chain === undefined
+      ? { cert_file: certFile, key_file: keyFile }
+      : { cert_file: certFile, chain_file: chain, key_file: keyFile };
   });
   if (certificates.length > 0) tls.certificates = certificates;
 
   if (input.client_auth !== undefined && input.client_auth !== null) {
     if (!isObject(input.client_auth)) throw invalid('クライアント認証の設定の形式が不正です。');
-    checkKeys(input.client_auth, ['mode', 'ca_file'], 'tls.client_auth');
+    checkKeys(input.client_auth, ['mode', 'ca_file', 'chain_file'], 'tls.client_auth');
     const authMode = input.client_auth.mode ?? 'none';
     if (!CLIENT_AUTH_MODES.includes(authMode as ClientAuthMode)) {
       throw invalid('クライアント認証は none / optional / required から選んでください。');
     }
-    if (authMode !== 'none') {
+    const ca = optionalString(input.client_auth.ca_file, 'クライアント認証の CA ファイル');
+    const chain = optionalString(input.client_auth.chain_file, 'クライアント証明書の中間 CA のファイル');
+    // none でも chain_file があれば残して、checkTls で組み合わせの誤り（tls_config）にする（rproxy と同じ）
+    if (authMode !== 'none' || chain !== undefined) {
       const auth: TlsClientAuth = { mode: authMode as ClientAuthMode };
-      const ca = optionalString(input.client_auth.ca_file, 'クライアント認証の CA ファイル');
-      if (ca !== undefined) auth.ca_file = ca;
+      if (ca !== undefined && authMode !== 'none') auth.ca_file = ca;
+      if (chain !== undefined) auth.chain_file = chain;
       tls.client_auth = auth;
     }
   }
@@ -146,7 +152,7 @@ export function normalizeTls(input: unknown): TlsSpec {
   if (input.upstream !== undefined && input.upstream !== null) {
     if (!isObject(input.upstream)) throw invalid('転送先の TLS の設定の形式が不正です。');
     const u = input.upstream;
-    checkKeys(u, ['tls', 'server_name', 'ca_file', 'insecure_skip_verify', 'cert_file', 'key_file'], 'tls.upstream');
+    checkKeys(u, ['tls', 'server_name', 'ca_file', 'insecure_skip_verify', 'cert_file', 'chain_file', 'key_file'], 'tls.upstream');
     const upstream: TlsUpstream = {};
     if (optionalBool(u.tls, 'upstream.tls')) upstream.tls = true;
     const serverName = optionalString(u.server_name, '転送先のサーバ名');
@@ -156,6 +162,8 @@ export function normalizeTls(input: unknown): TlsSpec {
     if (optionalBool(u.insecure_skip_verify, 'upstream.insecure_skip_verify')) upstream.insecure_skip_verify = true;
     const cert = optionalString(u.cert_file, '転送先へのクライアント証明書');
     if (cert !== undefined) upstream.cert_file = cert;
+    const upstreamChain = optionalString(u.chain_file, '転送先へのクライアント証明書の中間 CA');
+    if (upstreamChain !== undefined) upstream.chain_file = upstreamChain;
     const key = optionalString(u.key_file, '転送先へのクライアント証明書の秘密鍵');
     if (key !== undefined) upstream.key_file = key;
     if (Object.keys(upstream).length > 0) tls.upstream = upstream;
@@ -200,11 +208,17 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
   if (tls.mode !== 'terminate' && (tls.client_auth || tls.upstream || tls.alpn)) {
     throw new TlsError('クライアント認証・ALPN・転送先の TLS は終端（terminate）でのみ使えます。', 'tls_config');
   }
-  if (tls.client_auth && !tls.client_auth.ca_file) {
-    throw new TlsError('クライアント証明書を検証するには CA ファイルを指定してください。', 'tls_config');
+  if (tls.client_auth && tls.client_auth.mode !== 'none' && !tls.client_auth.ca_file) {
+    throw new TlsError('クライアント証明書を検証するには CA ファイル（ルート CA）を指定してください。', 'tls_config');
+  }
+  if (tls.client_auth && tls.client_auth.mode === 'none' && tls.client_auth.chain_file !== undefined) {
+    throw new TlsError('クライアント証明書の中間 CA は、クライアント証明書を検証する（optional / required）ときだけ指定できます。', 'tls_config');
   }
   if (tls.upstream && (tls.upstream.cert_file === undefined) !== (tls.upstream.key_file === undefined)) {
     throw new TlsError('転送先へのクライアント証明書と秘密鍵は両方とも指定してください。', 'tls_config');
+  }
+  if (tls.upstream && tls.upstream.chain_file !== undefined && tls.upstream.cert_file === undefined) {
+    throw new TlsError('転送先へのクライアント証明書の中間 CA は、クライアント証明書と一緒に指定してください。', 'tls_config');
   }
   if (protocol === 'udp' && tls.alpn) {
     throw new TlsError('ALPN は TCP でのみ使えます。', 'tls_config');

@@ -1,8 +1,9 @@
 // rproxy-api の HTTP クライアント（契約は ../rproxy-api/docs/API.md）
 
-import type { Protocol, SourceIp, StartTls, TlsMode, TlsSpec } from './lib';
+import type { Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec } from './lib';
+import type { InterfacesInfo } from './listen';
 
-export type { Protocol, SourceIp, StartTls, TlsMode, TlsSpec };
+export type { Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec };
 
 export interface RproxyRule {
   protocol: Protocol;
@@ -26,6 +27,9 @@ export interface RproxyRuleStatus extends Omit<RproxyRule, 'listen_port_end' | '
   error: string | null;
   resolved: string[];
   connections: number;
+  // 古い rproxy は返さない
+  stats?: RuleStats;
+  started_at?: number | null;
 }
 
 export interface RproxyRuleKey {
@@ -111,6 +115,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   } catch {
     throw new RproxyError(`rproxy の応答を解釈できません: ${text.slice(0, 200)}`, 'bad_response', res.status);
   }
+}
+
+export function getInterfaces(): Promise<InterfacesInfo> {
+  return request<InterfacesInfo>('GET', '/interfaces');
 }
 
 export function getCapabilities(): Promise<Capabilities> {

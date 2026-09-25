@@ -11,7 +11,7 @@ const Profile: React.FC = () => {
 
   if (!sessionUser) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-gray-100">
+      <div className="flex flex-col items-center py-12">
         <div className="bg-white text-gray-900 p-8 rounded-lg shadow-lg w-full max-w-md text-center">
           <p className="text-lg font-medium mb-4">You are not signed in</p>
           <button
@@ -26,7 +26,7 @@ const Profile: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gray-100">
+    <div className="flex flex-col items-center py-12">
       <div className="bg-white text-gray-900 p-8 rounded-lg shadow-lg w-full max-w-md">
         <h1 className="text-2xl font-bold mb-4 text-center">Profile</h1>
         <div className="mb-4">
