@@ -108,7 +108,7 @@ const IndexPage: React.FC = () => {
       </button>
       <div className="space-y-4">
         {rules.map((rule) => (
-          <div key={rule.id} className="border p-4 rounded shadow-sm flex items-center justify-between">
+          <div key={rule.id} className="bg-white text-gray-900 border p-4 rounded shadow-sm flex items-center justify-between">
             <div>
               <p>
                 <strong>Protocol:</strong> {rule.protocol}
