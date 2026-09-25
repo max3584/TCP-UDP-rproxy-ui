@@ -24,14 +24,31 @@ const STATE_STYLES: Record<RuleState, { label: string; className: string }> = {
   unknown: { label: 'unknown', className: 'bg-gray-200 text-gray-700' },
 };
 
+// UDP の terminate は DTLS
+const tlsBadge = (rule: ForwardRule): { label: string; className: string } => {
+  switch (rule.tls.mode) {
+    case 'passthrough': return { label: 'passthrough', className: 'bg-gray-100 text-gray-700' };
+    case 'sni': return { label: 'SNI', className: 'bg-blue-100 text-blue-800' };
+    case 'terminate': return rule.protocol === 'udp'
+      ? { label: 'DTLS', className: 'bg-purple-100 text-purple-800' }
+      : { label: 'TLS terminate', className: 'bg-purple-100 text-purple-800' };
+  }
+};
+
+const ports = (start: number, end: number | null): string => (end === null ? `${start}` : `${start}-${end}`);
+
 const toRule = (rule: ForwardRule): ForwardRule => ({
   protocol: rule.protocol,
   srcAddr: rule.srcAddr,
   srcPort: rule.srcPort,
+  srcPortEnd: rule.srcPortEnd,
   distAddr: rule.distAddr,
   distPort: rule.distPort,
   sourceIp: rule.sourceIp,
   udpIdleSecs: rule.udpIdleSecs,
+  tls: rule.tls,
+  starttls: rule.starttls,
+  starttlsRequired: rule.starttlsRequired,
 });
 
 const IndexPage: React.FC = () => {
@@ -115,14 +132,30 @@ const IndexPage: React.FC = () => {
                 <span className={`ml-2 px-2 py-0.5 rounded text-xs font-semibold ${STATE_STYLES[rule.state].className}`}>
                   {STATE_STYLES[rule.state].label}
                 </span>
+                <span className={`ml-2 px-2 py-0.5 rounded text-xs font-semibold ${tlsBadge(rule).className}`}>
+                  {tlsBadge(rule).label}
+                </span>
+                {rule.starttls && (
+                  <span className="ml-2 px-2 py-0.5 rounded text-xs font-semibold bg-indigo-100 text-indigo-800">
+                    STARTTLS {rule.starttls}{rule.starttlsRequired ? '' : '（任意）'}
+                  </span>
+                )}
                 {rule.connections !== null && (
                   <span className="ml-2 text-xs text-gray-600">
                     {rule.protocol === 'udp' ? 'sessions' : 'connections'}: {rule.connections}
                   </span>
                 )}
               </p>
-              <p><strong>Source:</strong> {rule.srcAddr}:{rule.srcPort}</p>
-              <p><strong>Destination:</strong> {rule.distAddr}:{rule.distPort}</p>
+              <p><strong>Source:</strong> {rule.srcAddr}:{ports(rule.srcPort, rule.srcPortEnd)}</p>
+              <p>
+                <strong>Destination:</strong> {rule.distAddr}:
+                {ports(rule.distPort, rule.srcPortEnd === null ? null : rule.distPort + rule.srcPortEnd - rule.srcPort)}
+              </p>
+              {rule.tls.routes && rule.tls.routes.length > 0 && (
+                <p className="text-sm text-gray-600 break-all">
+                  routes: {rule.tls.routes.map((r) => `${r.server_name} → ${r.remote_addr}:${r.remote_port}`).join(', ')}
+                </p>
+              )}
               <p className="text-sm text-gray-600">
                 source_ip: {rule.sourceIp}
                 {rule.protocol === 'udp' && <> / udp_idle_secs: {rule.udpIdleSecs}</>}
