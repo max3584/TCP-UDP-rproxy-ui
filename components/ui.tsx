@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ForwardRule, ForwardRules, RuleState } from './lib';
 import { RuleKey, STATE_LABELS, ruleApiUrl, tlsLabel } from './dashboard';
+import { explainError } from './messages';
 
 const STATE_BADGE: Record<RuleState, string> = {
   running: 'bg-green-100 text-green-800 border border-green-300',
@@ -141,7 +142,7 @@ export const AutoRefreshToggle: React.FC<{ enabled: boolean; onChange: (v: boole
 export async function errorDetail(res: Response): Promise<string> {
   const body: { error?: string; code?: string } = await res.json().catch(() => ({}));
   const detail = body.error || res.statusText || `HTTP ${res.status}`;
-  return body.code ? `${detail} (${body.code})` : detail;
+  return explainError(body.code, detail);
 }
 
 // 「キャンセル」: 履歴があれば戻り、直接開いた場合は fallback へ移る

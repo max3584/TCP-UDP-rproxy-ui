@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { InterfacesInfo, listenOptions, reservedClash } from './listen';
 import {
   CLIENT_AUTH_MODES,
   ClientAuthMode,
@@ -149,6 +150,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [caps, setCaps] = useState<Caps>(FALLBACK_CAPS);
   const [capabilitiesError, setCapabilitiesError] = useState('');
   const editMode = initialData ? true : false;
+  // 待ち受けアドレス：rproxy のホストのインターフェースから選ぶか、手入力（カスタム）
+  const [interfaces, setInterfaces] = useState<InterfacesInfo | null>(null);
+  const [interfacesError, setInterfacesError] = useState('');
+  const [addrCustom, setAddrCustom] = useState(false);
+  const addrOptions = listenOptions(interfaces);
 
   const [errors, setErrors] = useState<FieldErrors>(EMPTY_ERRORS);
   const [activeTab, setActiveTab] = useState<TabId>('basic');
@@ -173,6 +179,35 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     };
     getCapabilities();
   }, []);
+
+  useEffect(() => {
+    if (editMode) return;
+    const getInterfaces = async () => {
+      try {
+        const res = await fetch('/api/forward/interfaces');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setInterfaces({
+          interfaces: Array.isArray(data.interfaces) ? data.interfaces : [],
+          reserved: Array.isArray(data.reserved) ? data.reserved : [],
+        });
+      } catch (err) {
+        setInterfacesError(`インターフェースの一覧を取得できませんでした（手入力してください）: ${err instanceof Error ? err.message : err}`);
+        setAddrCustom(true);
+      }
+    };
+    getInterfaces();
+  }, [editMode]);
+
+  // プロファイルなどで一覧にないアドレスが入ったら手入力に切り替える
+  useEffect(() => {
+    if (interfaces && srcAddr !== '' && !listenOptions(interfaces).some((o) => o.value === srcAddr)) {
+      setAddrCustom(true);
+    }
+  }, [interfaces, srcAddr]);
+
+  const clash = reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', srcAddr,
+    srcPort === '' ? '' : Number(srcPort), srcPortEnd === '' || srcPortEnd === null ? null : Number(srcPortEnd));
 
   // proxy_v1 / proxy_v2 は TCP のみ、transparent は IPv4 のみ
   const availableSourceIps = useMemo(() => caps.sourceIps.filter((s) => {
@@ -310,7 +345,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
   const handleSubmit = () => {
     const newErrors: FieldErrors = {
-      srcAddr: validateSrcAddress(srcAddr),
+      srcAddr: validateSrcAddress(srcAddr) ||
+        (clash ? `rproxy の${clash.purpose === 'control API' ? '制御 API' : clash.purpose}（${clash.addr}:${clash.port}）と重なります。別のアドレスかポートを選んでください。` : ''),
       srcPort: validatePort(srcPort),
       srcPortEnd: validateRange(),
       distAddr: validateDistAddress(distAddr),
@@ -485,15 +521,51 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           <label htmlFor="rule-src-addr" className={labelClass}>待ち受けアドレス:</label>
           {editMode ?
             <input id="rule-src-addr" type='text' value={srcAddr} className={inputClass} readOnly /> :
-            <input
-              id="rule-src-addr"
-              type="text"
-              value={srcAddr}
-              onChange={(e) => setSrcAddr(e.target.value.trim())}
-              className={inputClass}
-              placeholder="例: 0.0.0.0 または ::"
-              aria-invalid={errors.srcAddr !== '' || undefined}
-            />
+            <>
+              {!addrCustom && (
+                <select
+                  id="rule-src-addr"
+                  value={addrOptions.some((o) => o.value === srcAddr) ? srcAddr : ''}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setAddrCustom(true);
+                    } else {
+                      setSrcAddr(e.target.value);
+                    }
+                  }}
+                  className={inputClass}
+                  aria-invalid={errors.srcAddr !== '' || undefined}
+                >
+                  <option value="" disabled>選択してください</option>
+                  {addrOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  <option value="__custom__">手入力（カスタム）…</option>
+                </select>
+              )}
+              {addrCustom && (
+                <div className="flex gap-2">
+                  <input
+                    id="rule-src-addr"
+                    type="text"
+                    value={srcAddr}
+                    onChange={(e) => setSrcAddr(e.target.value.trim())}
+                    className={inputClass}
+                    placeholder="例: 192.168.1.10、0.0.0.0、::"
+                    aria-invalid={errors.srcAddr !== '' || undefined}
+                  />
+                  {interfaces && (
+                    <button type="button" className="shrink-0 text-sm text-blue-700 underline" onClick={() => setAddrCustom(false)}>
+                      一覧から選ぶ
+                    </button>
+                  )}
+                </div>
+              )}
+              {interfacesError && <p className="text-yellow-800 text-xs mt-1">{interfacesError}</p>}
+              {clash && !errors.srcAddr && (
+                <p className="text-yellow-800 text-xs mt-1">
+                  rproxy の制御 API（{clash.addr}:{clash.port}）と重なります。別のアドレスかポートを選んでください。
+                </p>
+              )}
+            </>
           }
           {errors.srcAddr && <p className={errorClass}>{errors.srcAddr}</p>}
         </div>

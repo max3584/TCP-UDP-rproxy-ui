@@ -39,6 +39,9 @@ npm test        # vitest（tests/ 配下）
 | `pages/api/auth/[...nextauth].ts` | Keycloak の設定。サインイン時にアクセストークンの `realm_access.roles` を読んで JWT に保存する |
 | `pages/api/forward/[forward].ts` | `list` / `dashboard` / `rule`(GET)、`add` / `modify` / `delete`(POST) のエンドポイント |
 | `pages/api/forward/capabilities.ts` | rproxy の `GET /capabilities` をそのまま返す |
+| `pages/api/forward/interfaces.ts` | rproxy の `GET /interfaces`（待ち受けアドレスの候補と、制御 API が使う予約済みのアドレス）を返す |
+| `components/listen.ts` | 待ち受けアドレスの選択肢と、予約済みのアドレス・ポートとの重なりの判定 |
+| `components/messages.ts` | API のエラーコードを利用者向けの説明に直す（`resolve_failed` など） |
 | `keycloak/` | Keycloak のレルム定義（読み込み用の JSON。シークレットとユーザーは含めない） |
 | `db/` | テーブル定義（`schema.sql`）とマイグレーション。`db/README.md` を参照 |
 
