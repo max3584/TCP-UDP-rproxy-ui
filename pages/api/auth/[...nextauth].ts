@@ -1,67 +1,47 @@
-import NextAuth, {NextAuthOptions, Session, User as NextAuthUser } from 'next-auth';
-import Auth0Provider from "next-auth/providers/auth0";
+import NextAuth, { NextAuthOptions } from 'next-auth';
+import KeycloakProvider from 'next-auth/providers/keycloak';
 import { sessionUser } from '@/components/lib';
 
-
-const getAccessToken = async () => {
-  let res = await fetch(`${process.env.AUTH0_DOMAIN}/oauth/token`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      grant_type: 'client_credentials',
-      client_id: process.env.AUTH0_CLIENT_ID,
-      client_secret: process.env.AUTH0_CLIENT_SECRET,
-      audience: `${process.env.AUTH0_DOMAIN}/api/v2/`
-    })
-  });
-  let data = await res.json();
-  return data;
-}
-
-const getRole = async (id: string) => {
-  let token = await getAccessToken();
-  let option = {
-    headers: {
-      authorization: `${token.token_type} ${token.access_token}`,
-    },
+// アクセストークンは発行元からバックチャネルで受け取ったものなので、署名は検証せずに中身だけを読む
+export function realmRoles(accessToken: string): string[] {
+  try {
+    const payload = JSON.parse(Buffer.from(accessToken.split('.')[1] ?? '', 'base64url').toString('utf8'));
+    const roles = payload?.realm_access?.roles;
+    return Array.isArray(roles) ? roles.filter((r: unknown): r is string => typeof r === 'string') : [];
+  } catch {
+    return [];
   }
-  let res = await fetch(`${process.env.AUTH0_DOMAIN}/api/v2/users/${id}/roles`, option);
-  let data = await res.json();
-  return data[0]?.name;
 }
 
 export const authOptions: NextAuthOptions = {
   providers: [
-    Auth0Provider({
-      clientId: process.env.AUTH0_CLIENT_ID ?? '',
-      clientSecret: process.env.AUTH0_CLIENT_SECRET ?? '',
-      issuer: process.env.AUTH0_DOMAIN
+    KeycloakProvider({
+      clientId: process.env.KEYCLOAK_CLIENT_ID ?? '',
+      clientSecret: process.env.KEYCLOAK_CLIENT_SECRET ?? '',
+      issuer: process.env.KEYCLOAK_ISSUER,
     })
   ],
   callbacks: {
+    async jwt({ token, account }) {
+      // サインイン時だけ account が渡される
+      if (account?.access_token) {
+        token.roles = realmRoles(account.access_token);
+      }
+      return token;
+    },
     async session({ session, token }): Promise<sessionUser> {
-      let sessionUser: sessionUser = {
+      const roles = Array.isArray(token.roles) ? (token.roles as string[]) : [];
+      return {
         user: {
           name: token.name || '',
           email: token.email || '',
           image: token.picture || '',
           id: token.sub || '',
-          role: ''
+          role: roles.join(','),
         },
         expires: session.expires || ''
-      }
-
-        let role = await getRole(sessionUser.user.id);
-        if (!role || role !== 'undefined') {
-          sessionUser.user.role = role;
-        }
-      return sessionUser;
+      };
     },
-  },
-  pages: {
-    signIn: '/auth/signin',
   },
 }
 

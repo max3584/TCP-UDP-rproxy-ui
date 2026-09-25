@@ -12,10 +12,10 @@ const Profile: React.FC = () => {
   if (!sessionUser) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gray-100">
-        <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md text-center">
+        <div className="bg-white text-gray-900 p-8 rounded-lg shadow-lg w-full max-w-md text-center">
           <p className="text-lg font-medium mb-4">You are not signed in</p>
           <button
-            onClick={() => signIn('auth0')}
+            onClick={() => signIn('keycloak')}
             className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded transition duration-300 ease-in-out"
           >
             Sign In
@@ -27,7 +27,7 @@ const Profile: React.FC = () => {
 
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-gray-100">
-      <div className="bg-white p-8 rounded-lg shadow-lg w-full max-w-md">
+      <div className="bg-white text-gray-900 p-8 rounded-lg shadow-lg w-full max-w-md">
         <h1 className="text-2xl font-bold mb-4 text-center">Profile</h1>
         <div className="mb-4">
           <p className="text-lg font-medium"><strong>Name:</strong> {sessionUser.user?.name}</p>
