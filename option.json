@@ -1,9 +1,0 @@
-{
-  "db": {
-    "host": "test0.dev.home",
-    "port": 3307,
-    "database": "test1",
-    "user": "debug-user",
-    "password": "debug_password"
-  }
-}
