@@ -120,13 +120,22 @@ function parseRule(body: any, keyOnly: boolean): ForwardRule {
   };
 }
 
-async function withTransaction<T>(fn: (conn: PoolConnection) => Promise<T>): Promise<T> {
+type Undo = () => Promise<unknown>;
+
+// DB の変更 → rproxy への反映 → COMMIT の順に行う。rproxy が失敗したら ROLLBACK する。
+// rproxy に反映した後で COMMIT だけが失敗した場合は、undo で rproxy 側を元に戻す。
+async function withTransaction(logger: AppLogger, fn: (conn: PoolConnection) => Promise<Undo>): Promise<void> {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const result = await fn(conn);
-    await conn.commit();
-    return result;
+    const undo = await fn(conn);
+    try {
+      await conn.commit();
+    } catch (err) {
+      logger.error(`COMMIT に失敗したため rproxy の変更を取り消します: ${err}`);
+      await undo().catch((e) => logger.error(`rproxy の変更を取り消せませんでした（DB と rproxy が食い違っています）: ${e}`));
+      throw err;
+    }
   } catch (err) {
     await conn.rollback().catch(() => undefined);
     throw err;
@@ -135,10 +144,26 @@ async function withTransaction<T>(fn: (conn: PoolConnection) => Promise<T>): Pro
   }
 }
 
-async function insertLog(conn: PoolConnection, rule: ForwardRule, action: Action): Promise<void> {
+function toRproxyRule(rule: ForwardRule) {
+  return {
+    protocol: rule.protocol,
+    listen_addr: rule.srcAddr,
+    listen_port: rule.srcPort,
+    remote_addr: rule.distAddr,
+    remote_port: rule.distPort,
+    source_ip: rule.sourceIp,
+    udp_idle_secs: rule.udpIdleSecs,
+  };
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof RproxyError && err.code === 'not_found';
+}
+
+async function insertLog(conn: PoolConnection, authId: string, rule: ForwardRule, action: Action): Promise<void> {
   await conn.query(
-    'INSERT INTO forward_rules_log (protocol, src_addr, src_port, dist_addr, dist_port, source_ip, udp_idle_secs, update_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [rule.protocol, rule.srcAddr, rule.srcPort, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, action]
+    'INSERT INTO forward_rules_log (auth_id, protocol, src_addr, src_port, dist_addr, dist_port, source_ip, udp_idle_secs, update_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [authId, rule.protocol, rule.srcAddr, rule.srcPort, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, action]
   );
 }
 
@@ -193,27 +218,20 @@ async function listForwardingRules(authId: string, logger: AppLogger): Promise<F
   });
 }
 
-async function addForwardingRule(authId: string, rule: ForwardRule): Promise<void> {
-  await withTransaction(async (conn) => {
+async function addForwardingRule(authId: string, rule: ForwardRule, logger: AppLogger): Promise<void> {
+  await withTransaction(logger, async (conn) => {
     await conn.query(
       'INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, dist_addr, dist_port, source_ip, udp_idle_secs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [authId, rule.protocol, rule.srcAddr, rule.srcPort, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs]
     );
-    await insertLog(conn, rule, 'ADD');
-    await addRule({
-      protocol: rule.protocol,
-      listen_addr: rule.srcAddr,
-      listen_port: rule.srcPort,
-      remote_addr: rule.distAddr,
-      remote_port: rule.distPort,
-      source_ip: rule.sourceIp,
-      udp_idle_secs: rule.udpIdleSecs,
-    });
+    await insertLog(conn, authId, rule, 'ADD');
+    await addRule(toRproxyRule(rule));
+    return () => deleteRule(toKey(rule));
   });
 }
 
-async function editForwardingRule(authId: string, rule: ForwardRule): Promise<void> {
-  await withTransaction(async (conn) => {
+async function editForwardingRule(authId: string, rule: ForwardRule, logger: AppLogger): Promise<void> {
+  await withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, authId, rule);
     // source_ip は変更できないので DB の値を使う
     const updated: ForwardRule = { ...rule, sourceIp: current.sourceIp };
@@ -221,29 +239,41 @@ async function editForwardingRule(authId: string, rule: ForwardRule): Promise<vo
       'UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ? WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
       [updated.distAddr, updated.distPort, updated.udpIdleSecs, authId, updated.protocol, updated.srcAddr, updated.srcPort]
     );
-    await insertLog(conn, updated, 'UPDATE');
-    await modifyRule(toKey(updated), {
-      remote_addr: updated.distAddr,
-      remote_port: updated.distPort,
-      ...(updated.protocol === 'udp' ? { udp_idle_secs: updated.udpIdleSecs } : {}),
+    await insertLog(conn, authId, updated, 'UPDATE');
+    const patch = (r: ForwardRule) => ({
+      remote_addr: r.distAddr,
+      remote_port: r.distPort,
+      ...(r.protocol === 'udp' ? { udp_idle_secs: r.udpIdleSecs } : {}),
     });
+    try {
+      await modifyRule(toKey(updated), patch(updated));
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+      // rproxy にないルール（missing）は作り直す
+      logger.warn('rproxy にルールがないため、変更後の内容で作り直します');
+      await addRule(toRproxyRule(updated));
+      return () => deleteRule(toKey(updated));
+    }
+    return () => modifyRule(toKey(current), patch(current));
   });
 }
 
-async function deleteForwardingRule(authId: string, key: ForwardRule): Promise<void> {
-  await withTransaction(async (conn) => {
+async function deleteForwardingRule(authId: string, key: ForwardRule, logger: AppLogger): Promise<void> {
+  await withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, authId, key);
     await conn.query(
       'DELETE FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
       [authId, key.protocol, key.srcAddr, key.srcPort]
     );
-    await insertLog(conn, current, 'DELETE');
+    await insertLog(conn, authId, current, 'DELETE');
     try {
       await deleteRule(toKey(key));
     } catch (err) {
       // rproxy 側に既にないなら削除済みとして扱う
-      if (!(err instanceof RproxyError && err.code === 'not_found')) throw err;
+      if (!isNotFound(err)) throw err;
+      return async () => undefined;
     }
+    return () => addRule(toRproxyRule(current));
   });
 }
 
@@ -287,15 +317,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (req.method === 'POST') {
       if (query === 'add') {
-        await addForwardingRule(id, parseRule(req.body, false));
+        await addForwardingRule(id, parseRule(req.body, false), logger);
         logger.info('Forwarding rule added successfully');
         return res.status(200).json({ message: 'Forwarding rule added successfully' });
       } else if (query === 'modify') {
-        await editForwardingRule(id, parseRule(req.body, false));
+        await editForwardingRule(id, parseRule(req.body, false), logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json({ message: 'Forwarding rule modified successfully' });
       } else if (query === 'delete') {
-        await deleteForwardingRule(id, parseRule(req.body, true));
+        await deleteForwardingRule(id, parseRule(req.body, true), logger);
         logger.info('Forwarding rule deleted successfully');
         return res.status(200).json({ message: 'Forwarding rule deleted successfully' });
       }

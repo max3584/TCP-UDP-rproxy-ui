@@ -25,6 +25,11 @@ UPDATE forward_rules r
   JOIN auth_id_map m ON r.auth_id = m.auth0_sub
    SET r.auth_id = m.keycloak_sub;
 
+-- 004 を先に適用していて、履歴にも Auth0 の sub が記録されている場合は、履歴も置き換える。
+-- UPDATE forward_rules_log l
+--   JOIN auth_id_map m ON l.auth_id = m.auth0_sub
+--    SET l.auth_id = m.keycloak_sub;
+
 -- 未変換の行（対応表に載っていない Auth0 の sub）を確認する。0 行であること。
 SELECT id, auth_id, protocol, src_addr, src_port
   FROM forward_rules

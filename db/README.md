@@ -8,6 +8,7 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrations/001_initial.sql` | 初期状態（`source_ip` / `udp_idle_secs` 追加前）の定義 |
 | `migrations/002_source_ip_udp_idle.sql` | `source_ip`、`udp_idle_secs` 列の追加と `protocol` の小文字化 |
 | `migrations/003_auth_id_to_keycloak.sql` | `auth_id` を Auth0 の sub から Keycloak の sub に置き換えるテンプレート（一度だけ手動で実行） |
+| `migrations/004_log_auth_id.sql` | `forward_rules_log` に操作した利用者（`auth_id`）の列を追加 |
 
 既存の環境では `002` から順に適用する。`schema.sql` を変えたときは、同じ変更をする migration も追加すること。
 
@@ -19,7 +20,7 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 
 - `forward_rules`：転送ルール。`(protocol, src_addr, src_port)` で一意。`auth_id` は IdP（Keycloak）の `sub`。
   `protocol` は小文字の `tcp` / `udp`、IPv6 の `src_addr` は圧縮表記（例 `::1`）で保存する。
-- `forward_rules_log`：追加・変更・削除の履歴。`update_action` は `ADD` / `UPDATE` / `DELETE`。
+- `forward_rules_log`：追加・変更・削除の履歴。`update_action` は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者（`004` より前の行は NULL）。
 
 ## DB ユーザー
 

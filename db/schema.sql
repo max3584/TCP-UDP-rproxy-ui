@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS forward_rules (
 
 CREATE TABLE IF NOT EXISTS forward_rules_log (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  auth_id       VARCHAR(255) NULL COMMENT '操作した利用者（IdP の sub）',
   protocol      VARCHAR(3)   NOT NULL,
   src_addr      VARCHAR(45)  NOT NULL,
   src_port      INT          NOT NULL,
@@ -30,5 +31,6 @@ CREATE TABLE IF NOT EXISTS forward_rules_log (
   source_ip     VARCHAR(16)  NOT NULL DEFAULT 'proxy',
   udp_idle_secs INT          NOT NULL DEFAULT 30,
   PRIMARY KEY (id),
-  KEY idx_forward_rules_log_listen (protocol, src_addr, src_port)
+  KEY idx_forward_rules_log_listen (protocol, src_addr, src_port),
+  KEY idx_forward_rules_log_auth_id (auth_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -100,6 +100,7 @@ describe('/api/forward/[forward]', () => {
     expect(sqlCalls()[0][0]).toMatch(/^INSERT INTO forward_rules /);
     expect(sqlCalls()[0][1]).toEqual(['user-1', 'tcp', '0.0.0.0', 8888, 'example.com', 80, 'proxy', 30]);
     expect(sqlCalls()[1][0]).toMatch(/^INSERT INTO forward_rules_log /);
+    expect(sqlCalls()[1][1][0]).toBe('user-1');
     expect(mocks.addRule).toHaveBeenCalledWith({
       protocol: 'tcp',
       listen_addr: '0.0.0.0',
@@ -146,7 +147,7 @@ describe('/api/forward/[forward]', () => {
     const { status } = await call('add', { ...tcpRule, protocol: 'UDP' });
     expect(status).toBe(200);
     expect(sqlCalls()[0][1][1]).toBe('udp');
-    expect(sqlCalls()[1][1][0]).toBe('udp');
+    expect(sqlCalls()[1][1][1]).toBe('udp');
     expect(mocks.addRule.mock.calls[0][0].protocol).toBe('udp');
   });
 
@@ -186,7 +187,7 @@ describe('/api/forward/[forward]', () => {
       { remote_addr: 'example.com', remote_port: 80, udp_idle_secs: 120 },
     );
     const log = sqlCalls().find(([sql]) => sql.startsWith('INSERT INTO forward_rules_log'));
-    expect(log?.[1]).toEqual(['udp', '0.0.0.0', 8888, 'example.com', 80, 'transparent', 120, 'UPDATE']);
+    expect(log?.[1]).toEqual(['user-1', 'udp', '0.0.0.0', 8888, 'example.com', 80, 'transparent', 120, 'UPDATE']);
     expect(conn.commit).toHaveBeenCalled();
   });
 
@@ -219,6 +220,72 @@ describe('/api/forward/[forward]', () => {
     expect(body.code).toBe('internal');
     expect(conn.rollback).toHaveBeenCalled();
     expect(conn.commit).not.toHaveBeenCalled();
+  });
+
+  it('add undoes the rproxy change when COMMIT fails', async () => {
+    mocks.addRule.mockResolvedValue({});
+    mocks.deleteRule.mockResolvedValue(undefined);
+    conn.commit.mockRejectedValueOnce(new Error('connection lost'));
+
+    const { status, body } = await call('add', tcpRule);
+    expect(status).toBe(500);
+    expect(body.code).toBe('internal');
+    expect(mocks.deleteRule).toHaveBeenCalledWith({ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8888 });
+    expect(conn.rollback).toHaveBeenCalled();
+  });
+
+  it('modify re-creates a rule that rproxy does not have', async () => {
+    conn.query.mockResolvedValueOnce([{ dist_addr: 'old.example.com', dist_port: 81, source_ip: 'proxy_v2', udp_idle_secs: 30 }]);
+    mocks.modifyRule.mockRejectedValue(new RproxyError('rule not found', 'not_found', 404));
+    mocks.addRule.mockResolvedValue({});
+
+    const { status } = await call('modify', tcpRule);
+    expect(status).toBe(200);
+    expect(mocks.addRule).toHaveBeenCalledWith({
+      protocol: 'tcp',
+      listen_addr: '0.0.0.0',
+      listen_port: 8888,
+      remote_addr: 'example.com',
+      remote_port: 80,
+      source_ip: 'proxy_v2',
+      udp_idle_secs: 30,
+    });
+    expect(conn.commit).toHaveBeenCalled();
+  });
+
+  it('modify restores the previous target when COMMIT fails', async () => {
+    conn.query.mockResolvedValueOnce([{ dist_addr: 'old.example.com', dist_port: 81, source_ip: 'proxy', udp_idle_secs: 30 }]);
+    mocks.modifyRule.mockResolvedValue({});
+    conn.commit.mockRejectedValueOnce(new Error('connection lost'));
+
+    const { status } = await call('modify', tcpRule);
+    expect(status).toBe(500);
+    expect(mocks.modifyRule).toHaveBeenCalledTimes(2);
+    expect(mocks.modifyRule.mock.calls[1]).toEqual([
+      { protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8888 },
+      { remote_addr: 'old.example.com', remote_port: 81 },
+    ]);
+  });
+
+  it('delete re-adds the rule to rproxy when COMMIT fails', async () => {
+    conn.query.mockResolvedValueOnce([{ dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30 }]);
+    mocks.deleteRule.mockResolvedValue(undefined);
+    mocks.addRule.mockResolvedValue({});
+    conn.commit.mockRejectedValueOnce(new Error('connection lost'));
+
+    const { status } = await call('delete', tcpRule);
+    expect(status).toBe(500);
+    expect(mocks.addRule).toHaveBeenCalledWith(expect.objectContaining({ listen_port: 8888, remote_addr: 'example.com' }));
+  });
+
+  it('reports but survives a failed undo', async () => {
+    mocks.addRule.mockResolvedValue({});
+    mocks.deleteRule.mockRejectedValue(new RproxyError('down', 'unreachable', 0));
+    conn.commit.mockRejectedValueOnce(new Error('connection lost'));
+
+    const { status } = await call('add', tcpRule);
+    expect(status).toBe(500);
+    expect(conn.release).toHaveBeenCalled();
   });
 
   it('list merges live state from rproxy', async () => {
