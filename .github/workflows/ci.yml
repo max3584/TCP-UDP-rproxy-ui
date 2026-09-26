@@ -103,6 +103,21 @@ jobs:
       - name: e2e tests
         run: RUN_E2E=1 npx vitest run tests/e2e.test.ts
 
+      # 画面操作（tests/ui）: 同じ MariaDB と rproxy-api を使う
+      - name: Playwright browser
+        run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - name: UI tests (Playwright)
+        run: npx playwright test
+      - name: Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+
       - name: rproxy-api log
         if: always()
         run: cat "$RUNNER_TEMP/rproxy.log" || true

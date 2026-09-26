@@ -16,6 +16,7 @@ npm run dev     # 開発サーバ
 npm run build   # 環境変数がなくてもビルドは通る
 npm run lint    # eslint .（eslint.config.mjs。Next 16 で next lint がなくなったので ESLint の flat config で next/core-web-vitals を使う）
 npm test        # vitest（tests/ 配下）
+npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と rproxy-api（DB_* / RPROXY_API_*）が要る
 ```
 
 - 開発機 con0 では 3000 番（別サービス）と 8080 番（code-server）が使用中。UI は `./node_modules/.bin/next dev -p 3001`、rproxy は 8081 で動かす（`.env.local` の `NEXTAUTH_URL` と `RPROXY_API_URL` もこのポートに合わせてある）。
@@ -28,6 +29,7 @@ npm test        # vitest（tests/ 配下）
 - 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`。
 - import のパスエイリアスは `@/`（リポジトリのルート）。vitest でも `vitest.config.mts` で同じエイリアスを設定している。
 - テストは MariaDB・rproxy・NextAuth をすべてモックする（`tests/forward.test.ts`）。実際の DB や rproxy は不要。
+- 画面操作の E2E（`tests/ui`、Playwright）は CI の e2e ジョブで本物の MariaDB と rproxy-api を相手に動く。サインインは Keycloak を通さず、テスト用の `NEXTAUTH_SECRET` で作ったセッションのクッキー（`tests/ui/global-setup.ts`）。ライト・ダークで白地に白文字がないことも確かめる。画面の文言やボタン名を変えたら `tests/ui` も直す。
 
 ## 構成
 
