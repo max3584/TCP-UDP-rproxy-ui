@@ -13,7 +13,10 @@ describe('roles', () => {
   });
 
   it('decides admin, user or none', () => {
-    const cfg = roleConfig({});
+    // by default anyone who signs in is a user, as up to v0.3.1
+    expect(accessOf([], roleConfig({}))).toBe('user');
+    expect(accessOf(['rproxy-admin'], roleConfig({}))).toBe('admin');
+    const cfg = roleConfig({ RPROXY_UI_USER_ROLE: 'rproxy-user' });
     expect(accessOf(['rproxy-admin'], cfg)).toBe('admin');
     expect(accessOf(['rproxy-user', 'rproxy-admin'], cfg)).toBe('admin');
     expect(accessOf(['rproxy-user'], cfg)).toBe('user');

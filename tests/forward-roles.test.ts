@@ -87,6 +87,7 @@ describe('/api/forward/[forward]: roles and the UI token', () => {
     mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, id: id, roles: roles, role: roles.join(',') } });
 
   it('refuses users without rproxy-user or rproxy-admin (403 no_role) before touching the DB', async () => {
+    vi.stubEnv('RPROXY_UI_USER_ROLE', 'rproxy-user');
     for (const roles of [[], ['offline_access']]) {
       as(roles);
       for (const [action, method] of [['list', 'GET'], ['dashboard', 'GET'], ['add', 'POST'], ['modify', 'POST'], ['delete', 'POST']]) {
@@ -97,14 +98,17 @@ describe('/api/forward/[forward]: roles and the UI token', () => {
     expect(pool.query).not.toHaveBeenCalled();
     expect(pool.getConnection).not.toHaveBeenCalled();
     expect(mocks.addRule).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
 
-  it('an old session without roles is refused too', async () => {
+  it('an old session without roles is refused too when a user role is required', async () => {
+    vi.stubEnv('RPROXY_UI_USER_ROLE', 'rproxy-user');
     mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, roles: undefined } });
     expect((await call('list', undefined, 'GET')).status).toBe(403);
+    vi.unstubAllEnvs();
   });
 
-  it('RPROXY_UI_USER_ROLE= (empty) lets everyone who signs in be a user', async () => {
+  it('by default (RPROXY_UI_USER_ROLE unset or empty) everyone who signs in is a user', async () => {
     vi.stubEnv('RPROXY_UI_USER_ROLE', '');
     try {
       as([]);
