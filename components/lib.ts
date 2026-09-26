@@ -120,6 +120,31 @@ export interface RuleStats {
   tls_failures: number;
   // allow_from の範囲外、または unmatched: reject で切断した接続の数（古い rproxy は返さない）
   denied?: number;
+  // http のルールのリクエストの数（rproxy v0.3.1 以降。ほかのルールと古い rproxy は返さない）
+  http?: HttpStats;
+}
+
+// 状態コードの百の位ごとの区分。0 件の区分は省かれる
+export type StatusClass = '1xx' | '2xx' | '3xx' | '4xx' | '5xx';
+export type StatusCounts = Partial<Record<StatusClass, number>>;
+
+// ルールごとの L7 のリクエストの数。limited は rate_limit / in_flight、blocked は crowdsec で断った数
+// （どちらも by_status の 4xx にも数える。0 件なら省かれる）
+export interface HttpStats {
+  requests: number;
+  by_status: StatusCounts;
+  // ルールの名前ごと。どのルートにも一致しなかったリクエストは "(none)"
+  routes: Record<string, HttpRouteStats>;
+  limited?: number;
+  blocked?: number;
+}
+
+// limited / blocked はミドルウェアの名前ごと
+export interface HttpRouteStats {
+  requests: number;
+  by_status: StatusCounts;
+  limited?: Record<string, number>;
+  blocked?: Record<string, number>;
 }
 
 // 稼働情報は rproxy に問い合わせできない（unknown）か rproxy にない（missing）ときは null / 空

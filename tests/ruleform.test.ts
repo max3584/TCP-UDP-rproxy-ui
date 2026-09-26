@@ -161,6 +161,9 @@ describe('RuleForm: v0.3 settings the form cannot edit yet', () => {
     expect(html).toContain('letsencrypt');
     expect(html).toContain('app.example.com');
     expect(html).not.toContain('id="rule-cert-0-cert"');
+    // rproxy は ACME を内蔵しないので、使えない設定だと知らせる（設定は消さない）
+    expect(html).toContain('data-testid="acme-note"');
+    expect(html).toContain('ACME は rproxy に内蔵していません');
     expect(html).toContain('data-testid="tls-options-note"');
     expect(html).toContain('最小バージョン 1.3');
   });

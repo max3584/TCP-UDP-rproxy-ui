@@ -19,6 +19,7 @@ import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount } from './
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 import { transparentHint } from './sourceip';
+import { ACME_UNSUPPORTED_NOTE } from './messages';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -753,6 +754,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                   </div>
                   <p className="text-sm break-all">resolver: <span className="font-mono">{c.acme}</span> / 名前: <span className="font-mono">{(c.domains ?? []).join(', ')}</span></p>
                   <p className={helpClass}>ACME の証明書はこのフォームでは編集できません（そのまま保たれます）。</p>
+                  <p className="mt-1 text-xs text-amber-900" data-testid="acme-note">{ACME_UNSUPPORTED_NOTE}</p>
                 </div>
               ) : (
                 <div key={i} className="border border-gray-300 rounded p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">

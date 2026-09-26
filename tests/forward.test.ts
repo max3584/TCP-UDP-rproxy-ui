@@ -116,6 +116,26 @@ describe('/api/forward/[forward]', () => {
     });
   });
 
+  it('a token without the scope (403 forbidden) is a 502 with the forbidden code', async () => {
+    mocks.addRule.mockRejectedValue(new RproxyError('this token lacks the rules:write scope', 'forbidden', 403));
+
+    const { status, body } = await call('add', tcpRule);
+    expect(status).toBe(502);
+    expect(body).toEqual({ error: 'this token lacks the rules:write scope', code: 'forbidden' });
+    expect(conn.rollback).toHaveBeenCalled();
+  });
+
+  it('the dashboard explains a token that may not read rules', async () => {
+    pool.query.mockResolvedValue([]);
+    mocks.listRules.mockRejectedValue(new RproxyError('this token lacks the rules:read scope', 'forbidden', 403));
+
+    const { status, body } = await call('dashboard', undefined, 'GET');
+    expect(status).toBe(200);
+    expect(body.reachable).toBe(false);
+    expect(body.rproxyError).toContain('rules:read と rules:write');
+    expect(body.rproxyError).toContain('this token lacks the rules:read scope');
+  });
+
   it('add rolls back and returns the rproxy error code', async () => {
     mocks.addRule.mockRejectedValue(new RproxyError('address already in use (os error 98)', 'bind_failed', 409));
 

@@ -1,7 +1,7 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
 import { DEFAULT_UDP_IDLE_SECS } from './lib';
-import type { ForwardRule, ForwardRules, HttpSpec, Protocol, RuleState, TlsSpec } from './lib';
+import type { ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeTls } from './tls';
 
@@ -35,6 +35,13 @@ export interface ProtocolSummary {
   tlsFailures: number;
   // allow_from の範囲外、または unmatched: reject で切断した接続
   denied: number;
+  // http のルールの数とリクエスト（stats.http を返す rproxy だけ）
+  httpRules: number;
+  httpRequests: number;
+  http5xx: number;
+  // rate_limit / in_flight で断った数と crowdsec で断った数
+  httpLimited: number;
+  httpBlocked: number;
 }
 
 export interface TlsBreakdown {
@@ -72,6 +79,11 @@ export function summarizeProtocol(rules: ForwardRules[], protocol: Protocol): Pr
     txBytes: 0,
     tlsFailures: 0,
     denied: 0,
+    httpRules: 0,
+    httpRequests: 0,
+    http5xx: 0,
+    httpLimited: 0,
+    httpBlocked: 0,
   };
   for (const r of own) {
     summary.connections += r.connections ?? 0;
@@ -80,6 +92,14 @@ export function summarizeProtocol(rules: ForwardRules[], protocol: Protocol): Pr
     summary.txBytes += r.stats?.tx_bytes ?? 0;
     summary.tlsFailures += r.stats?.tls_failures ?? 0;
     summary.denied += r.stats?.denied ?? 0;
+    if (r.http !== null) summary.httpRules += 1;
+    const http = r.stats?.http;
+    if (http) {
+      summary.httpRequests += http.requests;
+      summary.http5xx += http.by_status['5xx'] ?? 0;
+      summary.httpLimited += http.limited ?? 0;
+      summary.httpBlocked += http.blocked ?? 0;
+    }
   }
   return summary;
 }
@@ -373,4 +393,55 @@ export function toRule(rule: ForwardRule): ForwardRule {
     allowFrom: rule.allowFrom,
     http: rule.http,
   };
+}
+
+export const STATUS_CLASSES: StatusClass[] = ['1xx', '2xx', '3xx', '4xx', '5xx'];
+
+// どのルートにも一致しなかったリクエストのルート名（rproxy の stats.http.routes のキー）
+export const NO_ROUTE = '(none)';
+
+export interface HttpRouteRow {
+  name: string;
+  requests: number;
+  byStatus: StatusCounts;
+  // ミドルウェアごとの数の合計
+  limited: number;
+  blocked: number;
+  // ミドルウェアの名前ごと（表示用）
+  limitedBy: Record<string, number>;
+  blockedBy: Record<string, number>;
+}
+
+function sum(counts: Record<string, number> | undefined): number {
+  return Object.values(counts ?? {}).reduce((a, b) => a + b, 0);
+}
+
+// ルートごとの表の行。リクエストの多い順、同じなら名前の順。一致なし（(none)）は最後
+export function httpRouteRows(http: HttpStats): HttpRouteRow[] {
+  return Object.entries(http.routes ?? {})
+    .map(([name, r]): HttpRouteRow => ({
+      name: name,
+      requests: r.requests ?? 0,
+      byStatus: r.by_status ?? {},
+      limited: sum(r.limited),
+      blocked: sum(r.blocked),
+      limitedBy: r.limited ?? {},
+      blockedBy: r.blocked ?? {},
+    }))
+    .sort((a, b) => {
+      if ((a.name === NO_ROUTE) !== (b.name === NO_ROUTE)) return a.name === NO_ROUTE ? 1 : -1;
+      return b.requests - a.requests || a.name.localeCompare(b.name);
+    });
+}
+
+// "2xx 3 / 4xx 2" のような表示（0 件の区分は省く）
+export function statusCountsLabel(counts: StatusCounts): string {
+  const parts = STATUS_CLASSES.filter((c) => (counts[c] ?? 0) > 0).map((c) => `${c} ${formatCount(counts[c] ?? 0)}`);
+  return parts.length > 0 ? parts.join(' / ') : '-';
+}
+
+// 5xx の割合（%。小数 1 桁）。リクエストがなければ null
+export function serverErrorPercent(requests: number, errors5xx: number): number | null {
+  if (requests <= 0) return null;
+  return Math.round((errors5xx / requests) * 1000) / 10;
 }

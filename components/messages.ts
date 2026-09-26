@@ -5,6 +5,14 @@ export const STATIC_RULE_MESSAGE = '固定ルールは rproxy の設定ファイ
 // 詳細画面で、編集・削除のボタンの代わりに出す
 export const STATIC_RULE_NOTE = '固定ルール（rproxy の設定ファイルで管理）';
 
+// ACME の証明書（tls.certificates[].acme）。rproxy は ACME を内蔵しない方針にしたので、常に unsupported で動かない
+export const ACME_UNSUPPORTED_NOTE =
+  'この rproxy では使えない設定です（ACME は rproxy に内蔵していません）。certbot や cert-manager で取得した証明書のファイルを指定してください。ファイルが更新されると rproxy が自動で読み直します。';
+
+// rproxy が UI のトークンを 403 forbidden で断ったとき（トークンのスコープか、変更できる待ち受けポートの範囲の外）
+export const FORBIDDEN_MESSAGE =
+  'UI が使う rproxy のトークンに、この操作の権限がありません。rproxy のトークンファイルで、UI のトークンに rules:read と rules:write のスコープがあるか、allow_listen_ports にこの待ち受けポートが含まれるかを確認してください。';
+
 const EXPLAIN: Record<string, string> = {
   resolve_failed: '転送先のホスト名を名前解決できませんでした。DNS に登録されているか、ホスト名の綴りを確認してください（IP アドレスでも指定できます）。',
   bind_failed: '待ち受けポートを開けませんでした。ほかのプログラムがそのポートを使っていないか確認してください。',
@@ -14,6 +22,7 @@ const EXPLAIN: Record<string, string> = {
   unreachable: 'rproxy に接続できませんでした。rproxy が起動しているか確認してください。',
   unauthorized: 'ログインし直してください。',
   static: STATIC_RULE_MESSAGE,
+  forbidden: FORBIDDEN_MESSAGE,
 };
 
 // 1024 未満のポートは、rproxy に CAP_NET_BIND_SERVICE がないと開けない

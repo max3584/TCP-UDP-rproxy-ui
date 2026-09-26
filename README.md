@@ -41,6 +41,9 @@ bun dev
 + Database 設定情報（`DB_PORT` を省略した場合は 3306）
 + Keycloak 設定情報（Confidential クライアント。ロールは realm ロールをアクセストークンの `realm_access.roles` から読む）
 + rproxy-api の制御 API の URL とトークン（`RPROXY_API_TOKEN` は rproxy を `--token-file` 付きで起動した場合のみ必要）
+  + rproxy のトークンを権限付き（YAML）にする場合、UI のトークンには `rules:read`（一覧・詳細）と `rules:write`（追加・変更・削除）のスコープが要ります。`metrics:read` は使いません（`GET /capabilities` はどのトークンでも読めます）。
+    `allow_listen_ports` を付けると、その範囲の外の待ち受けポートのルールは UI から作成・変更・削除できません。
+    スコープが足りないと、画面に「UI が使う rproxy のトークンに、この操作の権限がありません」と出ます（UI のログにも残ります）。
 
 enviroment:
 ```.env.local
@@ -103,6 +106,8 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 
 - プロファイルは `../rproxy-api/docs/PROFILES.md` の推奨設定をフォームに入れるだけです。アドレスと証明書のパスは環境に合わせて入力してください。
 - 証明書・秘密鍵・CA のパスは rproxy-api のサーバ上のパスです。読めないと `tls_config` のエラーになります。
+- 証明書は certbot や cert-manager などで取得したファイルを指定します（rproxy は ACME を内蔵していません。設定ファイルに ACME の証明書が書かれていると、画面に「この rproxy では使えない設定」と出ます）。
+  rproxy はファイルが変わったかを 60 秒ごと（rproxy の `RPROXY_CERT_CHECK_SECS`）に確かめ、更新された証明書を自動で読み直すので、更新のたびにルールを編集する必要はありません。
 - 中間 CA（任意）は、サーバ証明書を発行した CA からルートへ向かう順に 1 つの PEM ファイルに並べます（ルートは不要）。順番が違うと rproxy が `tls_config` で拒否します。
   クライアント証明書の検証では、CA ファイルにルート CA（信頼の起点）を、中間 CA にクライアント証明書を発行した中間 CA を指定します。転送先へのクライアント証明書にも中間 CA を指定できます。
 - ポート範囲（例 `8000-8001`）は各ポートを転送先ポートから順に転送します。上限は rproxy の `max_range_ports`（既定 20000）。範囲と送信元 IP の扱いは作成後に変更できません（TLS の設定は変更できます）。

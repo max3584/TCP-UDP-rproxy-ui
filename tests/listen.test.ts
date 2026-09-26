@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listenOptions, reservedClash, type InterfacesInfo } from '@/components/listen';
-import { STATIC_RULE_MESSAGE, explainError } from '@/components/messages';
+import { FORBIDDEN_MESSAGE, STATIC_RULE_MESSAGE, explainError } from '@/components/messages';
 
 const info: InterfacesInfo = {
   interfaces: [
@@ -66,5 +66,13 @@ describe('explainError', () => {
   it('falls back to the detail and code', () => {
     expect(explainError('weird', 'boom')).toBe('boom (weird)');
     expect(explainError(undefined, 'boom')).toBe('boom');
+  });
+});
+
+describe('explainError: forbidden', () => {
+  it('tells which scopes the UI token needs', () => {
+    const text = explainError('forbidden', 'this token lacks the rules:write scope');
+    expect(text).toBe(`${FORBIDDEN_MESSAGE}（詳細: this token lacks the rules:write scope）`);
+    expect(text).toContain('allow_listen_ports');
   });
 });
