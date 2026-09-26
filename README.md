@@ -48,6 +48,8 @@ Keycloak のレルムは `keycloak/realm-rproxy-dev.json` から作れる（管�
 
 Keycloak クライアントの「Valid redirect URIs」には `${NEXTAUTH_URL}/api/auth/callback/keycloak` を登録してください。
 
+本番環境の構築（apt、DB のユーザーと権限、Keycloak、HTTPS での公開、更新とバックアップ）は [docs/PRODUCTION.md](docs/PRODUCTION.md)。
+
 テーブル定義とマイグレーションは `db/` にあります（`db/README.md` を参照）。既存の環境では `db/migrations/005_ranges_and_tls.sql`（ポート範囲と TLS の列）を適用してください。
 rproxy-api との HTTP API の取り決めは `../rproxy-api/docs/API.md` です。
 
