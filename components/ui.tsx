@@ -164,11 +164,15 @@ export function goBack(router: { back: () => void; push: (url: string) => unknow
 }
 
 // 画面から API へルールを送る。失敗したら表示用のメッセージで Error を投げる
+// L7 の設定（http）は送らない（API は受け取らず、変更では DB の値を保つ。UI #34 まで）
 export async function postRule(action: 'add' | 'modify' | 'delete', rule: unknown): Promise<void> {
+  const body = typeof rule === 'object' && rule !== null && 'http' in rule
+    ? Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'http'))
+    : rule;
   const res = await fetch(`/api/forward/${action}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rule),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await errorDetail(res));
 }

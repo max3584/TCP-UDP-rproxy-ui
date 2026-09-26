@@ -22,7 +22,7 @@ import {
   ruleHref,
   ruleKeyOf,
   summarize,
-  targetPortsLabel,
+  targetLabel,
   tlsBreakdown,
   uptimeSecs,
 } from '@/components/dashboard';
@@ -146,7 +146,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
                 {hostPort(r.srcAddr, portsLabel(r.srcPort, r.srcPortEnd))}
               </Link>
               <span className="text-gray-600"> → </span>
-              <span className="font-mono text-gray-800 break-all">{hostPort(r.distAddr, targetPortsLabel(r))}</span>
+              <span className="font-mono text-gray-800 break-all">{targetLabel(r)}</span>
               <p className="text-xs text-red-800 break-all mt-0.5">
                 {r.error ?? (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : '')}
               </p>
@@ -236,7 +236,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
                     )}
                   </td>
                   <td className="font-mono whitespace-nowrap">
-                    {hostPort(r.distAddr, targetPortsLabel(r))}
+                    {targetLabel(r)}
                     {routes > 0 && <div className="text-xs text-gray-600 font-sans">＋サーバ名ごとの転送先 {routes} 件</div>}
                   </td>
                   <td><TlsBadge rule={r} /></td>

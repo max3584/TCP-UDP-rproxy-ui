@@ -40,7 +40,7 @@ jobs:
       - run: npm ci
       - name: shellcheck
         run: shellcheck scripts/*.sh packaging/debian/postinst packaging/debian/prerm packaging/debian/postrm
-      # the package depends on nodejs (>= 20.9); Ubuntu 24.04 ships 18, so use NodeSource as users would
+      # the package depends on nodejs (>= 20.18.1); Ubuntu 24.04 ships 18, so use NodeSource as users would
       - name: nodejs from NodeSource
         run: |
           curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -

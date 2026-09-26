@@ -99,16 +99,24 @@ function fromTlsError(err: unknown): unknown {
   return err instanceof TlsError ? new HttpError(400, err.message, err.code) : err;
 }
 
-// 入力を検証して正規化する。delete ではキー（protocol, srcAddr, srcPort）だけを使う
-function parseRule(body: any, keyOnly: boolean): ForwardRule {
+// 入力を検証して正規化する。delete ではキー（protocol, srcAddr, srcPort）だけを使う。
+// forModify: 転送先（distAddr / distPort）がなくてもよい（L7 のルールの変更。あるべきかは editForwardingRule が DB の値で決める）
+function parseRule(body: any, keyOnly: boolean, forModify = false): ForwardRule {
   try {
-    return parseRuleInner(body, keyOnly);
+    return parseRuleInner(body, keyOnly, forModify);
   } catch (err) {
     throw fromTlsError(err);
   }
 }
 
-function parseRuleInner(body: any, keyOnly: boolean): ForwardRule {
+// 転送先が空か（L7 のルールには転送先がない）
+function noRemote(body: any): boolean {
+  const addr = typeof body.distAddr === 'string' ? body.distAddr.trim() : body.distAddr;
+  return (addr === undefined || addr === null || addr === '')
+    && (body.distPort === undefined || body.distPort === null || body.distPort === 0);
+}
+
+function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): ForwardRule {
   if (typeof body !== 'object' || body === null) throw invalid('リクエストの形式が不正です。');
 
   const protocol = typeof body.protocol === 'string' ? body.protocol.toLowerCase() : '';
@@ -131,14 +139,20 @@ function parseRuleInner(body: any, keyOnly: boolean): ForwardRule {
     starttls: null,
     starttlsRequired: true,
     allowFrom: [],
+    // フォームではまだ L7 のルールを作れない（UI #34）。変更では DB の値を保つ
+    http: null,
   };
   if (keyOnly) return rule;
 
-  const distAddr = typeof body.distAddr === 'string' ? body.distAddr.trim() : '';
-  if (isIP(distAddr) === 0 && !HOSTNAME_PATTERN.test(distAddr)) {
-    throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
+  const withoutRemote = forModify && noRemote(body);
+  const distAddr = withoutRemote ? '' : typeof body.distAddr === 'string' ? body.distAddr.trim() : '';
+  const distPort = withoutRemote ? 0 : body.distPort;
+  if (!withoutRemote) {
+    if (isIP(distAddr) === 0 && !HOSTNAME_PATTERN.test(distAddr)) {
+      throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
+    }
+    if (!isPort(distPort)) throw invalid('ポート番号は1から65535の範囲で指定してください。');
   }
-  if (!isPort(body.distPort)) throw invalid('ポート番号は1から65535の範囲で指定してください。');
 
   const sourceIp = body.sourceIp ?? 'proxy';
   if (!SOURCE_IPS.includes(sourceIp)) throw invalid('source_ip の指定が不正です。');
@@ -156,7 +170,7 @@ function parseRuleInner(body: any, keyOnly: boolean): ForwardRule {
   if (srcPortEnd !== null && !isPort(srcPortEnd)) throw invalid('ポート範囲の終わりは1から65535の範囲で指定してください。');
   if (srcPortEnd === body.srcPort) srcPortEnd = null;
   // 上限（capabilities の max_range_ports）は rproxy が確かめる
-  const count = portCount(body.srcPort, srcPortEnd, body.distPort);
+  const count = portCount(body.srcPort, srcPortEnd, distPort);
 
   const tls = normalizeTls(body.tls);
   const starttls = normalizeStartTls(body.starttls);
@@ -168,7 +182,7 @@ function parseRuleInner(body: any, keyOnly: boolean): ForwardRule {
     ...rule,
     srcPortEnd: srcPortEnd,
     distAddr: distAddr,
-    distPort: body.distPort,
+    distPort: distPort,
     sourceIp: sourceIp as SourceIp,
     udpIdleSecs: udpIdleSecs,
     tls: tls,
@@ -207,14 +221,20 @@ function starttlsFields(rule: ForwardRule) {
   return rule.starttls !== null ? { starttls: rule.starttls, starttls_required: rule.starttlsRequired } : {};
 }
 
+// 転送先。http のルールは remote_addr / remote_port を書かず、http を付ける（書くと rproxy が invalid を返す）
+function remoteFields(rule: ForwardRule) {
+  return rule.http !== null
+    ? { http: rule.http }
+    : { remote_addr: rule.distAddr, remote_port: rule.distPort };
+}
+
 function toRproxyRule(rule: ForwardRule): RproxyRule {
   return {
     protocol: rule.protocol,
     listen_addr: rule.srcAddr,
     listen_port: rule.srcPort,
     ...(rule.srcPortEnd !== null ? { listen_port_end: rule.srcPortEnd } : {}),
-    remote_addr: rule.distAddr,
-    remote_port: rule.distPort,
+    ...remoteFields(rule),
     source_ip: rule.sourceIp,
     udp_idle_secs: rule.udpIdleSecs,
     tls: rule.tls,
@@ -224,11 +244,10 @@ function toRproxyRule(rule: ForwardRule): RproxyRule {
 }
 
 // PATCH では tls と allow_from を毎回付けて丸ごと置き換える（allow_from の [] はすべて許可に戻す）。
-// 範囲と source_ip は変えられないので送らない
+// http のルールは http を付けて L7 の設定も丸ごと置き換える。範囲と source_ip は変えられないので送らない
 function toRproxyPatch(rule: ForwardRule): RproxyRulePatch {
   return {
-    remote_addr: rule.distAddr,
-    remote_port: rule.distPort,
+    ...remoteFields(rule),
     ...(rule.protocol === 'udp' ? { udp_idle_secs: rule.udpIdleSecs } : {}),
     tls: rule.tls,
     ...starttlsFields(rule),
@@ -237,7 +256,7 @@ function toRproxyPatch(rule: ForwardRule): RproxyRulePatch {
 }
 
 function options(rule: ForwardRule): string | null {
-  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired, rule.allowFrom);
+  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired, rule.allowFrom, rule.http);
 }
 
 // forward_rules の行（src_port_end と options を含む）をルールにする
@@ -256,6 +275,7 @@ function fromRow(row: any): ForwardRule {
     starttls: opts.starttls,
     starttlsRequired: opts.starttlsRequired,
     allowFrom: opts.allowFrom,
+    http: opts.http,
   };
 }
 
@@ -416,12 +436,19 @@ async function editForwardingRule(authId: string, rule: ForwardRule, rangeGiven:
     if (rangeGiven && rule.srcPortEnd !== current.srcPortEnd) {
       throw new HttpError(400, 'ポート範囲は変更できません。削除してから作り直してください。', 'unsupported');
     }
+    // L7 のルール（http）はフォームで送らないので DB の値を保つ（転送先は持たない）。
+    // L7 でないルールには転送先が必須
+    if (current.http === null && rule.distAddr === '') {
+      throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
+    }
     // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
     const updated: ForwardRule = {
       ...rule,
       sourceIp: current.sourceIp,
       srcPortEnd: current.srcPortEnd,
       allowFrom: allowFromGiven ? rule.allowFrom : current.allowFrom,
+      http: current.http,
+      ...(current.http !== null ? { distAddr: '', distPort: 0 } : {}),
     };
     try {
       // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
@@ -525,7 +552,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         logger.info('Forwarding rule added successfully');
         return res.status(200).json({ message: 'Forwarding rule added successfully' });
       } else if (query === 'modify') {
-        await editForwardingRule(id, parseRule(req.body, false), hasRangeEnd(req.body), hasAllowFrom(req.body), logger);
+        await editForwardingRule(id, parseRule(req.body, false, true), hasRangeEnd(req.body), hasAllowFrom(req.body), logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json({ message: 'Forwarding rule modified successfully' });
       } else if (query === 'delete') {

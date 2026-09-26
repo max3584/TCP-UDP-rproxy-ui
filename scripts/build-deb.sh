@@ -57,7 +57,7 @@ Version: $version-1
 Architecture: all
 Maintainer: touka shiro / max3584 <max3584.work@gmail.com>
 Installed-Size: $(du -sk --exclude=DEBIAN "$stage" | cut -f1)
-Depends: nodejs (>= 20.9), passwd
+Depends: nodejs (>= 20.18.1), passwd
 Suggests: rproxy-api (= $version-1)
 Section: web
 Priority: optional

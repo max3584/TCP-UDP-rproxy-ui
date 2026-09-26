@@ -21,6 +21,7 @@ import {
   ruleFromStatus,
   ruleHref,
   summarize,
+  targetLabel,
   targetPortsLabel,
   tlsBreakdown,
   tlsLabel,
@@ -46,6 +47,7 @@ const rule = (over: Partial<ForwardRules> = {}): ForwardRules => ({
   starttls: null,
   starttlsRequired: true,
   allowFrom: [],
+  http: null,
   state: 'running',
   error: null,
   connections: 0,
@@ -145,6 +147,48 @@ describe('static rules', () => {
     const own = [rule({ id: 1, srcPort: 443 })];
     expect(mergeStaticRules(own, [status()]).map((r) => r.id)).toEqual([1]);
     expect(mergeStaticRules([], [])).toEqual([]);
+  });
+});
+
+describe('L7 (http) rules', () => {
+  // rproxy-api の docs/DESIGN-v0.3.md の例（設定ファイルの固定ルール。remote_addr / remote_port は "" / 0 で返る）
+  const http = {
+    routes: [
+      { name: 'gitlab-login', match: 'Host(`gitlab.example.com`) && Path(`/users/sign_in`)', service: 'gitlab' },
+      { name: 'gitlab', match: 'Host(`gitlab.example.com`)', service: 'gitlab' },
+    ],
+    services: { gitlab: { servers: [{ url: 'http://10.0.0.20:80' }] } },
+  };
+  const status: RproxyRuleStatus = {
+    protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 443, listen_port_end: null, remote_addr: '', remote_port: 0,
+    source_ip: 'proxy', udp_idle_secs: 30, starttls: null, starttls_required: true, allow_from: [],
+    tls: { mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: ['gitlab.example.com'] }], options: { min_version: '1.2' } },
+    http: http,
+    state: 'running', error: null, resolved: [], connections: 0, origin: 'static',
+  };
+
+  it('keeps http and the ACME certificate on a static row', () => {
+    const r = ruleFromStatus(status, -1);
+    expect(r).toMatchObject({ origin: 'static', distAddr: '', distPort: 0, http: http });
+    expect(r.tls).toEqual({ mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: ['gitlab.example.com'] }], options: { min_version: '1.2' } });
+    // http のない応答・remote_addr を省いた応答
+    expect(ruleFromStatus({ ...status, http: undefined }, -1).http).toBeNull();
+    expect(ruleFromStatus({ ...status, remote_addr: undefined, remote_port: undefined }, -1)).toMatchObject({ distAddr: '', distPort: 0 });
+  });
+
+  it('shows L7 (HTTP) and the route count instead of an empty target', () => {
+    expect(targetLabel(ruleFromStatus(status, -1))).toBe('L7 (HTTP) ・ルート 2 件');
+    expect(targetLabel(rule({ http: {} }))).toBe('L7 (HTTP) ・ルート 0 件');
+    expect(targetLabel(rule())).toBe('10.0.0.5:8443');
+    expect(targetLabel(rule({ distAddr: '2001:db8::5', srcPortEnd: 444 }))).toBe('[2001:db8::5]:8443-8444');
+  });
+
+  it('finds http rules by L7 and not by the empty target port', () => {
+    const rules = [ruleFromStatus(status, -1), rule({ srcPort: 80, distPort: 8080 })];
+    const all = { protocol: 'all' as const, state: 'all' as const, text: '' };
+    expect(filterRules(rules, { ...all, text: 'l7' }).map((r) => r.srcPort)).toEqual([443]);
+    // 転送先のない http のルールを「:0」で拾わない
+    expect(filterRules(rules, { ...all, text: ':0' })).toEqual([]);
   });
 });
 
@@ -276,7 +320,7 @@ describe('toRule', () => {
   it('drops the live state before sending a rule back to the API', () => {
     const r = toRule(sample[0]);
     expect(Object.keys(r).sort()).toEqual([
-      'allowFrom', 'distAddr', 'distPort', 'protocol', 'sourceIp', 'srcAddr', 'srcPort', 'srcPortEnd', 'starttls', 'starttlsRequired', 'tls', 'udpIdleSecs',
+      'allowFrom', 'distAddr', 'distPort', 'http', 'protocol', 'sourceIp', 'srcAddr', 'srcPort', 'srcPortEnd', 'starttls', 'starttlsRequired', 'tls', 'udpIdleSecs',
     ]);
   });
 });

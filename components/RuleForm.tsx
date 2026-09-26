@@ -144,6 +144,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [srcAddr, setSrcAddr] = useState(initialData?.srcAddr || '');
   const [srcPort, setSrcPort] = useState<number | ''>(initialData?.srcPort || '');
   const [srcPortEnd, setSrcPortEnd] = useState<number | ''>(initialData?.srcPortEnd ?? '');
+  // L7 のルール（http）はフォームでは編集できない（UI #34）。変えずにそのまま送る（転送先は持たない）
+  const httpSpec = initialData?.http ?? null;
   const [distAddr, setDistAddr] = useState(initialData?.distAddr || '');
   const [distPort, setDistPort] = useState<number | ''>(initialData?.distPort || '');
   const [sourceIp, setSourceIp] = useState<SourceIp>(initialData?.sourceIp || 'proxy');
@@ -163,6 +165,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [upstreamChain, setUpstreamChain] = useState(tls.upstream?.chain_file ?? '');
   const [upstreamKey, setUpstreamKey] = useState(tls.upstream?.key_file ?? '');
   const [unmatched, setUnmatched] = useState<TlsUnmatched>(tls.unmatched ?? 'default');
+  // TLS のオプション（v0.3）はフォームでは編集できないので、終端のままならそのまま送る
+  const tlsOptions = tls.options;
   // 1 行に 1 件
   const [allowFromText, setAllowFromText] = useState((initialData?.allowFrom ?? []).join('\n'));
   const [starttls, setStarttls] = useState<StartTls | ''>(initialData?.starttls ?? '');
@@ -344,7 +348,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       if (showUnmatched) spec.unmatched = unmatched;
     }
     if (tlsMode === 'terminate') {
-      spec.certificates = certificates.map((c) => ({ cert_file: c.cert_file, chain_file: c.chain_file ?? '', key_file: c.key_file }));
+      // ACME の証明書（v0.3）はフォームでは編集できないので、そのまま送る
+      spec.certificates = certificates.map((c) => (c.acme !== undefined
+        ? { acme: c.acme, domains: c.domains ?? [] }
+        : { cert_file: c.cert_file ?? '', chain_file: c.chain_file ?? '', key_file: c.key_file ?? '' }));
+      if (tlsOptions) spec.options = tlsOptions;
       // none のときは CA も中間 CA も送らない（欄は隠れている）
       spec.client_auth = clientAuthMode === 'none'
         ? { mode: 'none' }
@@ -373,8 +381,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         (clash ? `rproxy の${clash.purpose === 'control API' ? '制御 API' : clash.purpose}（${clash.addr}:${clash.port}）と重なります。別のアドレスかポートを選んでください。` : ''),
       srcPort: validatePort(srcPort),
       srcPortEnd: validateRange(),
-      distAddr: validateDistAddress(distAddr),
-      distPort: validatePort(distPort),
+      distAddr: httpSpec !== null ? '' : validateDistAddress(distAddr),
+      distPort: httpSpec !== null ? '' : validatePort(distPort),
       sourceIp: editMode || availableSourceIps.includes(sourceIp) ? '' : 'この送信元 IP の扱いは選択できません。',
       udpIdleSecs: validateUdpIdleSecs(udpIdleSecs),
       allowFrom: '',
@@ -389,7 +397,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     let tlsSpec: TlsSpec = { mode: 'passthrough' };
     try {
       tlsSpec = normalizeTls(buildTls());
-      const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort
+      const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort || httpSpec !== null
         ? 1 : portCount(Number(srcPort), end, Number(distPort));
       checkTls(protocol, tlsSpec, starttlsValue, count);
     } catch (err) {
@@ -409,14 +417,15 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       srcAddr: srcAddr,
       srcPort: Number(srcPort),
       srcPortEnd: end,
-      distAddr: distAddr,
-      distPort: Number(distPort),
+      distAddr: httpSpec !== null ? '' : distAddr,
+      distPort: httpSpec !== null ? 0 : Number(distPort),
       sourceIp: sourceIp,
       udpIdleSecs: protocol === 'udp' ? Number(udpIdleSecs) : DEFAULT_UDP_IDLE_SECS,
       tls: tlsSpec,
       starttls: starttlsValue,
       starttlsRequired: normalizeStartTlsRequired(starttlsRequired, starttlsValue),
       allowFrom: allowFrom.ok ? allowFrom.value : [],
+      http: httpSpec,
     };
 
     void onSubmit(rule);
@@ -641,34 +650,43 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             各ポートを、転送先ポートから順に同じ数だけずらして転送します（最大 {caps.maxRangePorts} ポート）。範囲は作成後に変更できません。
           </p>
         )}
-        <div className="mb-4">
-          <label htmlFor="rule-dist-addr" className={labelClass}>転送先アドレス:</label>
-          <input
-            id="rule-dist-addr"
-            type="text"
-            value={distAddr}
-            onChange={(e) => setDistAddr(e.target.value.trim())}
-            className={inputClass}
-            placeholder="例: 192.168.1.1 または example.com"
-            aria-invalid={errors.distAddr !== '' || undefined}
-          />
-          {errors.distAddr && <p className={errorClass}>{errors.distAddr}</p>}
-        </div>
-        <div className="mb-4">
-          <label htmlFor="rule-dist-port" className={labelClass}>転送先ポート{srcPortEnd !== '' ? '（範囲の先頭）' : ''}:</label>
-          <input
-            id="rule-dist-port"
-            type="number"
-            value={distPort}
-            onChange={(e) => setDistPort(toNumber(e.target.value))}
-            className={inputClass}
-            placeholder="ポート番号（1-65535）"
-            min="1"
-            max="65535"
-            aria-invalid={errors.distPort !== '' || undefined}
-          />
-          {errors.distPort && <p className={errorClass}>{errors.distPort}</p>}
-        </div>
+        {httpSpec !== null ? (
+          <p className="mb-4 text-sm text-gray-900 bg-blue-50 border border-blue-300 rounded px-3 py-2" data-testid="http-rule-note">
+            このルールは L7（HTTP）のルールです。転送先は L7 の設定（http）のサービスで決まります。
+            L7 の設定はこのフォームではまだ編集できません（今後対応）。保存しても L7 の設定はそのまま保たれます。変えるときは rproxy の設定ファイルか制御 API を使ってください。
+          </p>
+        ) : (
+          <>
+          <div className="mb-4">
+            <label htmlFor="rule-dist-addr" className={labelClass}>転送先アドレス:</label>
+            <input
+              id="rule-dist-addr"
+              type="text"
+              value={distAddr}
+              onChange={(e) => setDistAddr(e.target.value.trim())}
+              className={inputClass}
+              placeholder="例: 192.168.1.1 または example.com"
+              aria-invalid={errors.distAddr !== '' || undefined}
+            />
+            {errors.distAddr && <p className={errorClass}>{errors.distAddr}</p>}
+          </div>
+          <div className="mb-4">
+            <label htmlFor="rule-dist-port" className={labelClass}>転送先ポート{srcPortEnd !== '' ? '（範囲の先頭）' : ''}:</label>
+            <input
+              id="rule-dist-port"
+              type="number"
+              value={distPort}
+              onChange={(e) => setDistPort(toNumber(e.target.value))}
+              className={inputClass}
+              placeholder="ポート番号（1-65535）"
+              min="1"
+              max="65535"
+              aria-invalid={errors.distPort !== '' || undefined}
+            />
+            {errors.distPort && <p className={errorClass}>{errors.distPort}</p>}
+          </div>
+          </>
+        )}
       </div>
 
       <div {...panelProps('tls')}>
@@ -725,7 +743,18 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           <>
             <fieldset className="mb-4">
               <legend className={labelClass}>証明書（PEM。複数あれば SNI で選び、一致しなければ先頭を使う）:</legend>
-              {certificates.map((c, i) => (
+              {certificates.map((c, i) => (c.acme !== undefined ? (
+                // ACME の証明書（v0.3）はフォームでは編集できない。削除はできる
+                <div key={i} className="border border-gray-300 rounded p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-sm font-semibold text-gray-800">証明書 {i + 1}（ACME）</span>
+                    <button type="button" onClick={() => setCertificates(certificates.filter((_, j) => j !== i))} className={removeButtonClass}
+                      aria-label={`証明書 ${i + 1} を削除`}>削除</button>
+                  </div>
+                  <p className="text-sm break-all">resolver: <span className="font-mono">{c.acme}</span> / 名前: <span className="font-mono">{(c.domains ?? []).join(', ')}</span></p>
+                  <p className={helpClass}>ACME の証明書はこのフォームでは編集できません（そのまま保たれます）。</p>
+                </div>
+              ) : (
                 <div key={i} className="border border-gray-300 rounded p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-sm font-semibold text-gray-800">証明書 {i + 1}</span>
@@ -733,22 +762,27 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                       aria-label={`証明書 ${i + 1} を削除`}>削除</button>
                   </div>
                   <label htmlFor={`rule-cert-${i}-cert`} className="block text-xs font-medium text-gray-800">サーバ証明書</label>
-                  <input id={`rule-cert-${i}-cert`} type="text" value={c.cert_file} onChange={(e) => updateCertificate(i, { cert_file: e.target.value.trim() })}
+                  <input id={`rule-cert-${i}-cert`} type="text" value={c.cert_file ?? ''} onChange={(e) => updateCertificate(i, { cert_file: e.target.value.trim() })}
                     className={`${inputClass} mb-2`} placeholder="例: /etc/rproxy/certs/example.pem" />
                   <label htmlFor={`rule-cert-${i}-chain`} className="block text-xs font-medium text-gray-800">中間 CA（任意）</label>
                   <input id={`rule-cert-${i}-chain`} type="text" value={c.chain_file ?? ''} onChange={(e) => updateCertificate(i, { chain_file: e.target.value.trim() })}
                     className={inputClass} placeholder="例: /etc/rproxy/certs/intermediates.pem" aria-describedby={`rule-cert-${i}-chain-help`} />
                   <p id={`rule-cert-${i}-chain-help`} className={`${helpClass} mb-2`}>{CHAIN_HELP}</p>
                   <label htmlFor={`rule-cert-${i}-key`} className="block text-xs font-medium text-gray-800">秘密鍵</label>
-                  <input id={`rule-cert-${i}-key`} type="text" value={c.key_file} onChange={(e) => updateCertificate(i, { key_file: e.target.value.trim() })}
+                  <input id={`rule-cert-${i}-key`} type="text" value={c.key_file ?? ''} onChange={(e) => updateCertificate(i, { key_file: e.target.value.trim() })}
                     className={inputClass} placeholder="例: /etc/rproxy/certs/example.key" />
                 </div>
-              ))}
+              )))}
               <button type="button" onClick={() => setCertificates([...certificates, { cert_file: '', chain_file: '', key_file: '' }])} className={smallButtonClass}>
                 ＋ 証明書を追加
               </button>
               <p className={helpClass}>サーバ証明書のファイルにチェーンを連結してある場合は、中間 CA は空欄のままで構いません。</p>
               {protocol === 'udp' && <p className={helpClass}>DTLS の秘密鍵は PKCS#8（-----BEGIN PRIVATE KEY-----）に限ります。</p>}
+              {tlsOptions && (
+                <p className={helpClass} data-testid="tls-options-note">
+                  TLS のオプション（{[tlsOptions.min_version && `最小バージョン ${tlsOptions.min_version}`, tlsOptions.cipher_suites && `暗号スイート ${tlsOptions.cipher_suites.length} 件`].filter(Boolean).join('、')}）はこのフォームでは編集できません（そのまま保たれます）。
+                </p>
+              )}
             </fieldset>
 
             <div className="mb-4">
