@@ -80,8 +80,9 @@ interface Caps {
   dtls: boolean;
   starttls: StartTls[];
   maxRangePorts: number;
-  // GET /capabilities の transparent（取得できなかったときは null）
+  // GET /capabilities の transparent / transparent_ipv6（取得できなかったときは null）
   transparent: boolean | null;
+  transparentIpv6: boolean | null;
 }
 
 // rproxy の対応機能を取得できなかったときは、既定の動作（proxy / passthrough）だけを選べるようにする
@@ -92,6 +93,7 @@ const FALLBACK_CAPS: Caps = {
   starttls: [],
   maxRangePorts: DEFAULT_MAX_RANGE_PORTS,
   transparent: null,
+  transparentIpv6: null,
 };
 
 type TabId = 'basic' | 'tls' | 'mail' | 'advanced';
@@ -191,6 +193,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           starttls: Array.isArray(data.starttls) ? data.starttls : [],
           maxRangePorts: typeof data.max_range_ports === 'number' ? data.max_range_ports : DEFAULT_MAX_RANGE_PORTS,
           transparent: typeof data.transparent === 'boolean' ? data.transparent : null,
+          // 古い rproxy は transparent_ipv6 を返さない（IPv4 だけ）
+          transparentIpv6: typeof data.transparent_ipv6 === 'boolean' ? data.transparent_ipv6 : false,
         });
       } catch (err) {
         setCapabilitiesError(`rproxy の対応機能を取得できませんでした（既定の動作だけを選べます）: ${err instanceof Error ? err.message : err}`);
@@ -223,17 +227,19 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     setAddrCustom(true);
   }
 
-  const sourceIpHint = transparentHint({ sourceIp, transparentAvailable: caps.transparent, listenIsIPv6: isIPv6(srcAddr) });
+  const sourceIpHint = transparentHint({
+    sourceIp, transparentAvailable: caps.transparent, ipv6Available: caps.transparentIpv6, listenIsIPv6: isIPv6(srcAddr),
+  });
 
   const clash = reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', srcAddr,
     srcPort === '' ? '' : Number(srcPort), srcPortEnd === '' || srcPortEnd === null ? null : Number(srcPortEnd));
 
-  // proxy_v1 / proxy_v2 は TCP のみ、transparent は IPv4 のみ
+  // proxy_v1 は TCP のみ。IPv6 の待ち受けの transparent は rproxy が IPV6_TRANSPARENT を使えるときだけ
   const availableSourceIps = useMemo(() => caps.sourceIps.filter((s) => {
     if (protocol === 'udp' && TCP_ONLY_SOURCE_IPS.includes(s)) return false;
-    if (s === 'transparent' && isIPv6(srcAddr)) return false;
+    if (s === 'transparent' && isIPv6(srcAddr) && caps.transparentIpv6 !== true) return false;
     return true;
-  }), [caps.sourceIps, protocol, srcAddr]);
+  }), [caps.sourceIps, caps.transparentIpv6, protocol, srcAddr]);
 
   // sni は TCP のみ。UDP の terminate は DTLS（rproxy が対応しているときだけ）。編集中のルールのモードは常に選べる
   const availableTlsModes = useMemo(() => {

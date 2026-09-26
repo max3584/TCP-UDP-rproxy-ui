@@ -145,9 +145,6 @@ function parseRuleInner(body: any, keyOnly: boolean): ForwardRule {
   if (protocol === 'udp' && TCP_ONLY_SOURCE_IPS.includes(sourceIp)) {
     throw invalid(`${sourceIp} は TCP でのみ使えます。`);
   }
-  if (sourceIp === 'transparent' && isIP(srcAddr) !== 4) {
-    throw invalid('transparent は IPv4 でのみ使えます。');
-  }
 
   const udpIdleSecs = body.udpIdleSecs ?? DEFAULT_UDP_IDLE_SECS;
   if (typeof udpIdleSecs !== 'number' || !Number.isInteger(udpIdleSecs) || udpIdleSecs < 1 || udpIdleSecs > 86400) {

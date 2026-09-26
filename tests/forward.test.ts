@@ -163,7 +163,7 @@ describe('/api/forward/[forward]', () => {
     ['non-integer port', { distPort: 80.5 }],
     ['unknown protocol', { protocol: 'sctp' }],
     ['hostname as listen address', { srcAddr: 'example.com' }],
-    ['proxy_v2 with udp', { protocol: 'udp', sourceIp: 'proxy_v2' }],
+    ['proxy_v1 with udp', { protocol: 'udp', sourceIp: 'proxy_v1' }],
     ['udp_idle_secs out of range', { protocol: 'udp', udpIdleSecs: 86401 }],
   ])('rejects invalid input: %s', async (_name, override) => {
     const { status, body } = await call('add', { ...tcpRule, ...override });

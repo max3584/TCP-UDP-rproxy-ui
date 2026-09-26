@@ -18,8 +18,13 @@ describe('transparentHint', () => {
     expect(h?.message).toContain('CAP_NET_ADMIN');
   });
 
-  it('says transparent is IPv4 only for an IPv6 listen address', () => {
+  it('says transparent is not available on an IPv6 listen address without IPV6_TRANSPARENT', () => {
     expect(transparentHint({ sourceIp: 'proxy', transparentAvailable: true, listenIsIPv6: true })?.kind).toBe('ipv6');
+    expect(transparentHint({ sourceIp: 'proxy', transparentAvailable: true, ipv6Available: false, listenIsIPv6: true })?.kind).toBe('ipv6');
+  });
+
+  it('says nothing for an IPv6 listener when rproxy has IPV6_TRANSPARENT', () => {
+    expect(transparentHint({ sourceIp: 'proxy', transparentAvailable: true, ipv6Available: true, listenIsIPv6: true })).toBeNull();
   });
 
   it('says nothing when transparent is available, or when capabilities are unknown', () => {
