@@ -9,10 +9,11 @@ import {
   formatDuration,
   formatTimestamp,
   hostPort,
+  httpRouteCount,
   parseRuleKey,
   portsLabel,
   ruleEditHref,
-  targetPortsLabel,
+  targetLabel,
   tlsLabel,
   toRule,
   uptimeSecs,
@@ -81,12 +82,22 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
             <thead><tr><th scope="col">#</th><th scope="col">サーバ証明書</th><th scope="col">中間 CA</th><th scope="col">秘密鍵</th></tr></thead>
             <tbody>
               {tls.certificates.map((c, i) => (
-                <tr key={i}>
-                  <td>{i + 1}</td>
-                  <td className="font-mono break-all">{c.cert_file}</td>
-                  <td className="font-mono break-all">{c.chain_file ?? <span className="font-sans text-gray-600">（なし）</span>}</td>
-                  <td className="font-mono break-all">{c.key_file}</td>
-                </tr>
+                c.acme !== undefined ? (
+                  // ACME の証明書（v0.3）はファイルを持たない
+                  <tr key={i}>
+                    <td>{i + 1}</td>
+                    <td colSpan={3} className="break-all">
+                      ACME（resolver: <Mono>{c.acme}</Mono>）: <Mono>{(c.domains ?? []).join(', ')}</Mono>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={i}>
+                    <td>{i + 1}</td>
+                    <td className="font-mono break-all">{c.cert_file}</td>
+                    <td className="font-mono break-all">{c.chain_file ?? <span className="font-sans text-gray-600">（なし）</span>}</td>
+                    <td className="font-mono break-all">{c.key_file}</td>
+                  </tr>
+                )
               ))}
             </tbody>
           </table>
@@ -104,6 +115,12 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
             ]} />
           </div>
           {rule.protocol === 'tcp' && <Fields items={[['ALPN', tls.alpn?.join(', ')]]} />}
+          {tls.options && (
+            <Fields items={[
+              ['TLS の最小バージョン', tls.options.min_version],
+              ['暗号スイート', tls.options.cipher_suites?.join(', ')],
+            ]} />
+          )}
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">転送先への{rule.protocol === 'udp' ? ' DTLS' : ' TLS'}</h3>
             {tls.upstream?.tls ? (
@@ -230,12 +247,25 @@ const RuleDetailPage: React.FC = () => {
             </Section>
 
             <Section id="section-target" title="転送先">
-              <Fields items={[
-                ['転送先', <Mono key="t">{hostPort(rule.distAddr, targetPortsLabel(rule))}</Mono>],
-                ['解決したアドレス', rule.resolved.length > 0
-                  ? <ul key="r" className="font-mono">{rule.resolved.map((a) => <li key={a}>{a}</li>)}</ul>
-                  : live ? 'まだ名前解決できていません' : null],
-              ]} />
+              {rule.http !== null ? (
+                // L7 のルールは転送先を持たない（http.services に書く）。中身の表示・編集は UI #34
+                <>
+                  <Fields items={[
+                    ['転送先', targetLabel(rule)],
+                    ['ルート', `${httpRouteCount(rule.http)} 件`],
+                  ]} />
+                  <p className="mt-2 text-xs text-gray-600" data-testid="http-note">
+                    HTTP のリクエストごとに、L7 の設定（http）のルートとサービスで振り分けます。L7 の設定はこの画面ではまだ編集できません（今後対応）。rproxy の設定ファイルか制御 API で変更してください。
+                  </p>
+                </>
+              ) : (
+                <Fields items={[
+                  ['転送先', <Mono key="t">{targetLabel(rule)}</Mono>],
+                  ['解決したアドレス', rule.resolved.length > 0
+                    ? <ul key="r" className="font-mono">{rule.resolved.map((a) => <li key={a}>{a}</li>)}</ul>
+                    : live ? 'まだ名前解決できていません' : null],
+                ]} />
+              )}
             </Section>
           </div>
 

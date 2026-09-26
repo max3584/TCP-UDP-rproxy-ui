@@ -1,4 +1,4 @@
-// allow_from の CIDR の検証（components/cidr.ts）と、options 列・unmatched の検証（components/tls.ts）
+// allow_from の CIDR の検証（components/cidr.ts）と、options 列・unmatched・v0.3 の TLS（ACME・options）の検証（components/tls.ts）
 import { describe, expect, it } from 'vitest';
 import { MAX_ALLOW_FROM, checkAllowFrom, formatIpv6, parseCidr, splitAllowFromText } from '@/components/cidr';
 import { TlsError, checkTls, normalizeAllowFrom, normalizeTls, optionsJson, parseOptions } from '@/components/tls';
@@ -116,7 +116,7 @@ describe('options JSON with allow_from', () => {
     expect(parseOptions(stored).allowFrom).toEqual(['10.0.0.5/32', 'fd00::/8']);
     // 古い行（allow_from なし）と NULL
     expect(parseOptions(JSON.stringify({ tls: { mode: 'sni' }, starttls: null, starttls_required: true })).allowFrom).toEqual([]);
-    expect(parseOptions(null)).toEqual({ tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [] });
+    expect(parseOptions(null)).toEqual({ tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null });
     expect(() => parseOptions(JSON.stringify({ ...stored, extra: 1 }))).toThrow(/不明な項目/);
   });
 });
@@ -157,5 +157,95 @@ describe('tls.unmatched', () => {
       unmatched: 'reject',
     };
     expect(normalizeTls(fromRproxy)).toEqual({ mode: 'terminate', routes: [route], certificates: [cert], unmatched: 'reject' });
+  });
+});
+
+describe('v0.3: ACME certificates and tls.options', () => {
+  const cert = { cert_file: '/c.pem', key_file: '/k.pem' };
+  const acme = { acme: 'letsencrypt', domains: ['gitlab.example.com', 'cdn.example.com'] };
+  const error = (fn: () => void): TlsError | null => {
+    try {
+      fn();
+      return null;
+    } catch (err) {
+      return err as TlsError;
+    }
+  };
+
+  it('accepts an ACME certificate next to file certificates and lower-cases the domains', () => {
+    const tls = normalizeTls({ mode: 'terminate', certificates: [{ acme: ' letsencrypt ', domains: ['GitLab.Example.com', 'cdn.example.com'] }, cert] });
+    expect(tls).toEqual({ mode: 'terminate', certificates: [acme, cert] });
+    // キーの順番は rproxy の応答と同じ（acme, domains）
+    expect(Object.keys(tls.certificates![0])).toEqual(['acme', 'domains']);
+    expect(error(() => checkTls('tcp', tls, null, 1))).toBeNull();
+  });
+
+  it('reads the certificate entries rproxy returns (empty fields skipped)', () => {
+    expect(normalizeTls({ mode: 'terminate', certificates: [acme], options: { min_version: '1.3' } }))
+      .toEqual({ mode: 'terminate', certificates: [acme], options: { min_version: '1.3' } });
+  });
+
+  it('requires exactly one of files or acme, and domains only with acme', () => {
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ ...acme, cert_file: '/c.pem' }] }))?.code).toBe('tls_config');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ ...acme, key_file: '/k.pem' }] }))?.code).toBe('tls_config');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: [] }] }))?.code).toBe('tls_config');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ acme: 'letsencrypt' }] }))?.code).toBe('tls_config');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ ...cert, domains: ['a.example.com'] }] }))?.code).toBe('tls_config');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: 'a.example.com' }] }))?.code).toBe('invalid');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: [1] }] }))?.code).toBe('invalid');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ ...acme, extra: 1 }] }))?.message).toMatch(/不明な項目/);
+  });
+
+  it('keeps the existing messages for file certificates', () => {
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ key_file: '/k.pem' }] }))?.message).toBe('証明書のファイル を指定してください。');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ cert_file: '/c.pem' }] }))?.message).toBe('秘密鍵のファイル を指定してください。');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [{ ...cert, chain_file: 1 }] }))?.message).toBe('中間 CA のファイル は文字列で指定してください。');
+  });
+
+  it('normalizes tls.options and drops it when empty', () => {
+    expect(normalizeTls({ mode: 'terminate', certificates: [cert], options: { min_version: '1.2', cipher_suites: ['TLS13_AES_128_GCM_SHA256'] } }))
+      .toEqual({ mode: 'terminate', certificates: [cert], options: { min_version: '1.2', cipher_suites: ['TLS13_AES_128_GCM_SHA256'] } });
+    expect(normalizeTls({ mode: 'terminate', certificates: [cert], options: { cipher_suites: [] } })).toEqual({ mode: 'terminate', certificates: [cert] });
+    expect(normalizeTls({ mode: 'terminate', certificates: [cert], options: null })).toEqual({ mode: 'terminate', certificates: [cert] });
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [cert], options: { min_version: '1.1' } }))?.code).toBe('tls_config');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [cert], options: { alpn: ['h2'] } }))?.code).toBe('invalid');
+    expect(error(() => normalizeTls({ mode: 'terminate', certificates: [cert], options: 'tls13' }))?.code).toBe('invalid');
+  });
+
+  it('allows tls.options only with terminate', () => {
+    expect(error(() => checkTls('tcp', { mode: 'sni', options: { min_version: '1.3' } }, null, 1))?.code).toBe('tls_config');
+    expect(error(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], options: { min_version: '1.3' } }, null, 1))).toBeNull();
+  });
+});
+
+describe('options JSON with http (v0.3)', () => {
+  const http = { routes: [{ match: 'Host(`a.example.com`)', to: 'http://10.0.0.20:80' }] };
+
+  it('stores http as the fifth key and never stores NULL for an http rule', () => {
+    const json = optionsJson({ mode: 'passthrough' }, null, true, [], http)!;
+    expect(json).not.toBeNull();
+    expect(JSON.parse(json)).toEqual({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, http: http });
+    expect(Object.keys(JSON.parse(optionsJson({ mode: 'passthrough' }, null, true, ['10.0.0.0/8'], http)!)))
+      .toEqual(['tls', 'starttls', 'starttls_required', 'allow_from', 'http']);
+    // http がなければ今までどおり
+    expect(optionsJson({ mode: 'passthrough' }, null, true, [], null)).toBeNull();
+  });
+
+  it('reads http back as an object or null and rejects other shapes', () => {
+    const stored = { tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, http: http };
+    expect(parseOptions(JSON.stringify(stored)).http).toEqual(http);
+    expect(parseOptions(stored).http).toEqual(http);
+    expect(parseOptions(JSON.stringify({ ...stored, http: null })).http).toBeNull();
+    expect(parseOptions(JSON.stringify({ tls: { mode: 'passthrough' } })).http).toBeNull();
+    for (const bad of [[], 'routes', 1, true]) {
+      let err: unknown = null;
+      try {
+        parseOptions(JSON.stringify({ ...stored, http: bad }));
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(TlsError);
+      expect((err as TlsError).code).toBe('invalid');
+    }
   });
 });

@@ -12,12 +12,12 @@ const render = (initialData?: ForwardRule, submitting = false) =>
 
 const udpRule: ForwardRule = {
   protocol: 'udp', srcAddr: '0.0.0.0', srcPort: 8000, srcPortEnd: 8001, distAddr: '10.0.0.30', distPort: 8000,
-  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [],
+  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null,
 };
 
 const terminateRule: ForwardRule = {
   protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null, distAddr: '10.0.0.5', distPort: 8080,
-  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true, allowFrom: [],
+  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true, allowFrom: [], http: null,
   tls: {
     mode: 'terminate',
     certificates: [
@@ -133,6 +133,36 @@ describe('RuleForm: allow_from and unmatched', () => {
     expect(render()).not.toContain('rule-tls-unmatched');
     expect(render({ ...udpRule, srcPortEnd: null, tls: { mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], routes: [route] } }))
       .not.toContain('rule-tls-unmatched');
+  });
+});
+
+describe('RuleForm: v0.3 settings the form cannot edit yet', () => {
+  const http = { routes: [{ match: 'Host(`app.example.com`)', to: 'http://10.0.0.20:80' }] };
+  const httpRule: ForwardRule = {
+    ...terminateRule, distAddr: '', distPort: 0, http: http,
+    tls: { mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: ['app.example.com'] }], options: { min_version: '1.3' } },
+  };
+
+  it('replaces the target fields of an http rule with a notice that the L7 settings are kept', () => {
+    const html = render(httpRule);
+    expect(html).toContain('data-testid="http-rule-note"');
+    expect(html).toContain('L7（HTTP）のルール');
+    expect(html).toContain('保存しても L7 の設定はそのまま保たれます');
+    expect(html).not.toContain('id="rule-dist-addr"');
+    expect(html).not.toContain('id="rule-dist-port"');
+    // http のないルールは今までどおり
+    expect(render(terminateRule)).toContain('id="rule-dist-addr"');
+    expect(render(terminateRule)).not.toContain('http-rule-note');
+  });
+
+  it('shows ACME certificates and TLS options read-only', () => {
+    const html = render(httpRule);
+    expect(html).toContain('証明書 1（ACME）');
+    expect(html).toContain('letsencrypt');
+    expect(html).toContain('app.example.com');
+    expect(html).not.toContain('id="rule-cert-0-cert"');
+    expect(html).toContain('data-testid="tls-options-note"');
+    expect(html).toContain('最小バージョン 1.3');
   });
 });
 

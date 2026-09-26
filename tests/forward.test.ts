@@ -942,3 +942,115 @@ describe('/api/forward/[forward]: allow_from, unmatched and static rules', () =>
     expect(conn.rollback).toHaveBeenCalled();
   });
 });
+
+describe('/api/forward/[forward]: L7 (http) rules and v0.3 TLS', () => {
+  const http = {
+    routes: [{ name: 'app', match: 'Host(`app.example.com`)', service: 'app' }],
+    services: { app: { servers: [{ url: 'http://10.0.0.20:80' }] } },
+  };
+  const tls = { mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: ['app.example.com'] }], options: { min_version: '1.3' } };
+  const stored = { tls: tls, starttls: null, starttls_required: true, http: http };
+  const httpRow = (over: Record<string, unknown> = {}) => ({
+    src_port_end: null, dist_addr: '', dist_port: 0, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify(stored), ...over,
+  });
+  const key = { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443 };
+
+  it('modify keeps the stored http, sends it instead of remote_addr / remote_port and stores it in options', async () => {
+    conn.query.mockResolvedValueOnce([httpRow()]);
+    mocks.modifyRule.mockResolvedValue({});
+
+    // フォームは http と転送先を送らない。allow_from だけ変える
+    const { status } = await call('modify', { ...key, sourceIp: 'proxy', udpIdleSecs: 30, distAddr: '', distPort: 0, tls: tls, allowFrom: ['10.0.0.0/8'] });
+    expect(status).toBe(200);
+    const patch = mocks.modifyRule.mock.calls[0][1];
+    expect(patch.http).toEqual(http);
+    expect(patch).not.toHaveProperty('remote_addr');
+    expect(patch).not.toHaveProperty('remote_port');
+    expect(patch.tls).toEqual(tls);
+    expect(patch.allow_from).toEqual(['10.0.0.0/8']);
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(update?.[1].slice(0, 2)).toEqual(['', 0]);
+    expect(JSON.parse(update?.[1][3] as string)).toEqual({ ...stored, allow_from: ['10.0.0.0/8'] });
+    expect(Object.keys(JSON.parse(update?.[1][3] as string))).toEqual(['tls', 'starttls', 'starttls_required', 'allow_from', 'http']);
+  });
+
+  it('modify ignores a target and an http sent for an http rule', async () => {
+    conn.query.mockResolvedValueOnce([httpRow()]);
+    mocks.modifyRule.mockResolvedValue({});
+
+    await call('modify', { ...tcpRule, ...key, tls: tls, http: { routes: [] } });
+    const patch = mocks.modifyRule.mock.calls[0][1];
+    expect(patch.http).toEqual(http);
+    expect(patch).not.toHaveProperty('remote_addr');
+  });
+
+  it('modify re-creates a missing http rule with http and without a target, and the undo patch keeps http', async () => {
+    conn.query.mockResolvedValueOnce([httpRow()]);
+    mocks.modifyRule.mockRejectedValueOnce(new RproxyError('not found', 'not_found', 404));
+    mocks.addRule.mockResolvedValue({});
+
+    await call('modify', { ...key, sourceIp: 'proxy', udpIdleSecs: 30, tls: tls });
+    const rule = mocks.addRule.mock.calls[0][0];
+    expect(rule.http).toEqual(http);
+    expect(rule).not.toHaveProperty('remote_addr');
+    expect(rule).not.toHaveProperty('remote_port');
+
+    // COMMIT に失敗したときの取り消しも http で PATCH する
+    vi.clearAllMocks();
+    pool.getConnection.mockResolvedValue(conn);
+    conn.query.mockResolvedValue({ affectedRows: 1 });
+    conn.rollback.mockResolvedValue(undefined);
+    conn.query.mockResolvedValueOnce([httpRow()]);
+    conn.commit.mockRejectedValueOnce(new Error('commit failed'));
+    mocks.modifyRule.mockResolvedValue({});
+    await call('modify', { ...key, sourceIp: 'proxy', udpIdleSecs: 30, tls: tls, allowFrom: ['10.0.0.0/8'] });
+    expect(mocks.modifyRule).toHaveBeenCalledTimes(2);
+    expect(mocks.modifyRule.mock.calls[1][1]).toMatchObject({ http: http, allow_from: [] });
+    expect(mocks.modifyRule.mock.calls[1][1]).not.toHaveProperty('remote_addr');
+  });
+
+  it('modify still requires a target for a rule without http', async () => {
+    conn.query.mockResolvedValueOnce([httpRow({ dist_addr: 'old.example.com', dist_port: 81, options: null })]);
+
+    const { status, body } = await call('modify', { ...key, sourceIp: 'proxy', udpIdleSecs: 30, distAddr: '', distPort: 0 });
+    expect(status).toBe(400);
+    expect(body.code).toBe('invalid');
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    expect(conn.rollback).toHaveBeenCalled();
+  });
+
+  it('add cannot create an http rule from the form: http is ignored and a target is required', async () => {
+    mocks.addRule.mockResolvedValue({});
+
+    await call('add', { ...tcpRule, http: http });
+    const rule = mocks.addRule.mock.calls[0][0];
+    expect(rule).not.toHaveProperty('http');
+    expect(rule.remote_addr).toBe('example.com');
+    expect(sqlCalls()[0][1][9]).toBeNull();
+
+    const { status } = await call('add', { ...tcpRule, distAddr: '', distPort: 0 });
+    expect(status).toBe(400);
+  });
+
+  it('add passes ACME certificates and TLS options through to rproxy and options', async () => {
+    mocks.addRule.mockResolvedValue({});
+
+    const { status } = await call('add', { ...tcpRule, srcPort: 443, tls: {
+      mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: ['App.Example.com'] }], options: { min_version: '1.2', cipher_suites: [] },
+    } });
+    expect(status).toBe(200);
+    const expected = { mode: 'terminate', certificates: [{ acme: 'letsencrypt', domains: ['app.example.com'] }], options: { min_version: '1.2' } };
+    expect(mocks.addRule.mock.calls[0][0].tls).toEqual(expected);
+    expect(JSON.parse(sqlCalls()[0][1][9] as string).tls).toEqual(expected);
+  });
+
+  it('list carries http from options', async () => {
+    pool.query.mockResolvedValueOnce([{ id: 1, protocol: 'tcp', src_addr: '0.0.0.0', src_port: 443, ...httpRow() }]);
+    mocks.listRules.mockResolvedValue([]);
+
+    const { body } = await call('list', undefined, 'GET');
+    expect(body[0].http).toEqual(http);
+    expect(body[0].distAddr).toBe('');
+    expect(body[0].tls).toEqual(tls);
+  });
+});

@@ -6,7 +6,7 @@
 ## インストール（Debian / Ubuntu）
 
 rproxy-api と同じ apt リポジトリから入れられる（`rproxy-ui`、CPU を問わない 1 つのパッケージ）。
-Node.js 20.9 以上が要る。Debian 13 は標準の `nodejs` でよい。Ubuntu 24.04 の標準の nodejs は 18 なので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 など）を入れる。
+Node.js 20.18.1 以上が要る（Next.js 16 は 20.9、Unix ソケットに使う undici 7 は 20.18.1 から）。Debian 13 は標準の `nodejs` でよい。Ubuntu 24.04 の標準の nodejs は 18 なので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 など）を入れる。
 
 ```shell
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg
@@ -63,6 +63,9 @@ KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
 RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
 ```
+
+`RPROXY_API_URL` は `http://` / `https://` の URL か、`unix:/run/rproxy/api.sock`（rproxy-api の `RPROXY_API_SOCKET` の Unix ソケット。HTTP の Host は `localhost`）。
+Unix ソケットは rproxy-api の既定でモード 660 なので、UI を動かすユーザーを `RPROXY_API_SOCKET_GROUP` のグループに入れておく（トークンは TCP と同じく要る）。
 
 Keycloak のレルムは `keycloak/realm-rproxy-dev.json` から作れる（管理コンソールの「Create realm」→「Resource file」で読み込む）。
 このファイルにはクライアントシークレットとユーザーが入っていないので、読み込んだあと、クライアント `rproxy-ui` の「Credentials」でシークレットを確認して `KEYCLOAK_CLIENT_SECRET` に設定する。URL は con0 の開発環境（`http://con0.dev.home:3001`）向け。

@@ -7,11 +7,13 @@ import {
   ClientAuthMode,
   Protocol,
   STARTTLS_PROTOCOLS,
+  HttpSpec,
   StartTls,
   TLS_MODES,
   TlsCertificate,
   TlsClientAuth,
   TlsMode,
+  TlsOptions,
   TlsRoute,
   TlsSpec,
   TlsUnmatched,
@@ -94,7 +96,7 @@ function list(value: unknown, where: string): unknown[] {
 export function normalizeTls(input: unknown): TlsSpec {
   if (input === undefined || input === null) return { ...DEFAULT_TLS };
   if (!isObject(input)) throw invalid('TLS の設定の形式が不正です。');
-  checkKeys(input, ['mode', 'routes', 'certificates', 'client_auth', 'alpn', 'upstream', 'unmatched'], 'tls');
+  checkKeys(input, ['mode', 'routes', 'certificates', 'client_auth', 'alpn', 'upstream', 'unmatched', 'options'], 'tls');
 
   const mode = input.mode ?? 'passthrough';
   if (!TLS_MODES.includes(mode as TlsMode)) throw invalid('TLS のモードは passthrough / sni / terminate から選んでください。');
@@ -115,7 +117,20 @@ export function normalizeTls(input: unknown): TlsSpec {
 
   const certificates = list(input.certificates, 'tls.certificates').map((c): TlsCertificate => {
     if (!isObject(c)) throw invalid('証明書の指定の形式が不正です。');
-    checkKeys(c, ['cert_file', 'chain_file', 'key_file'], 'tls.certificates');
+    checkKeys(c, ['cert_file', 'chain_file', 'key_file', 'acme', 'domains'], 'tls.certificates');
+    // ACME（v0.3）：ファイルの代わりに resolver の名前と名前の一覧。ファイルとは一緒に書けない（rproxy と同じく tls_config）
+    const acme = optionalString(c.acme, 'ACME の resolver');
+    if (acme !== undefined) {
+      const hasFiles = [c.cert_file, c.chain_file, c.key_file].some((f) => optionalString(f, '証明書のファイル') !== undefined);
+      if (hasFiles) throw new TlsError('ACME の証明書には証明書・中間 CA・秘密鍵のファイルを指定できません。', 'tls_config');
+      const domains = list(c.domains, 'tls.certificates.domains').map((d) => requiredString(d, 'ACME の証明書の名前').toLowerCase());
+      if (domains.length === 0) throw new TlsError('ACME の証明書には名前（domains）を 1 つ以上指定してください。', 'tls_config');
+      // キーの順番は rproxy の応答（acme, domains）に揃える
+      return { acme: acme, domains: domains };
+    }
+    if (list(c.domains, 'tls.certificates.domains').length > 0) {
+      throw new TlsError('証明書の名前（domains）は ACME（acme）と一緒にだけ指定できます。', 'tls_config');
+    }
     // キーの順番も rproxy の応答（cert_file, chain_file, key_file）に揃える
     const certFile = requiredString(c.cert_file, '証明書のファイル');
     const chain = optionalString(c.chain_file, '中間 CA のファイル');
@@ -178,6 +193,23 @@ export function normalizeTls(input: unknown): TlsSpec {
   }
   if ((unmatched as TlsUnmatched) === 'reject') tls.unmatched = 'reject';
 
+  // TLS のオプション（v0.3）。空なら省く
+  if (input.options !== undefined && input.options !== null) {
+    if (!isObject(input.options)) throw invalid('TLS のオプションの形式が不正です。');
+    checkKeys(input.options, ['min_version', 'cipher_suites'], 'tls.options');
+    const options: TlsOptions = {};
+    const minVersion = optionalString(input.options.min_version, 'TLS の最小バージョン');
+    if (minVersion !== undefined) {
+      if (minVersion !== '1.2' && minVersion !== '1.3') {
+        throw new TlsError('TLS の最小バージョン（min_version）は 1.2 か 1.3 で指定してください。', 'tls_config');
+      }
+      options.min_version = minVersion;
+    }
+    const suites = list(input.options.cipher_suites, 'tls.options.cipher_suites').map((c) => requiredString(c, '暗号スイート'));
+    if (suites.length > 0) options.cipher_suites = suites;
+    if (Object.keys(options).length > 0) tls.options = options;
+  }
+
   return tls;
 }
 
@@ -216,6 +248,9 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
   }
   if (tls.mode !== 'terminate' && (tls.client_auth || tls.upstream || tls.alpn)) {
     throw new TlsError('クライアント認証・ALPN・転送先の TLS は終端（terminate）でのみ使えます。', 'tls_config');
+  }
+  if (tls.mode !== 'terminate' && tls.options) {
+    throw new TlsError('TLS のオプションは終端（terminate）でのみ使えます。', 'tls_config');
   }
   if (tls.client_auth && tls.client_auth.mode !== 'none' && !tls.client_auth.ca_file) {
     throw new TlsError('クライアント証明書を検証するには CA ファイル（ルート CA）を指定してください。', 'tls_config');
@@ -276,18 +311,32 @@ export function portCount(srcPort: number, srcPortEnd: number | null, distPort: 
   return count;
 }
 
-// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from"} の JSON）。既定のままなら null を保存する。
-// allow_from は空なら省く。rproxy は deny_unknown_fields で読むので、この 4 つ以外のキーを入れてはいけない
-export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from'];
+// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from", "http"} の JSON）。既定のままなら null を保存する。
+// allow_from は空なら、http は null なら省く。rproxy は deny_unknown_fields で読むので、この 5 つ以外のキーを入れてはいけない
+export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http'];
 
-export function optionsJson(tls: TlsSpec, starttls: StartTls | null, starttlsRequired: boolean, allowFrom: string[] = []): string | null {
-  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0) return null;
+export function optionsJson(
+  tls: TlsSpec,
+  starttls: StartTls | null,
+  starttlsRequired: boolean,
+  allowFrom: string[] = [],
+  http: HttpSpec | null = null,
+): string | null {
+  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null) return null;
   return JSON.stringify({
     tls: tls,
     starttls: starttls,
     starttls_required: starttlsRequired,
     ...(allowFrom.length > 0 ? { allow_from: allowFrom } : {}),
+    ...(http !== null ? { http: http } : {}),
   });
+}
+
+// L7 の設定（ルールの http）。中身は rproxy が検証するので、オブジェクトであることだけを確かめる
+export function normalizeHttp(value: unknown): HttpSpec | null {
+  if (value === undefined || value === null) return null;
+  if (!isObject(value)) throw invalid('L7 の設定（http）の形式が不正です。');
+  return value;
 }
 
 export interface RuleOptions {
@@ -295,11 +344,12 @@ export interface RuleOptions {
   starttls: StartTls | null;
   starttlsRequired: boolean;
   allowFrom: string[];
+  http: HttpSpec | null;
 }
 
 // options 列を読む。ドライバによっては JSON がオブジェクトで返るので両方を受け付ける
 export function parseOptions(value: unknown): RuleOptions {
-  const empty = (): RuleOptions => ({ tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [] });
+  const empty = (): RuleOptions => ({ tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null });
   if (value === undefined || value === null || value === '') return empty();
   const data = typeof value === 'string' ? JSON.parse(value) : value;
   if (data === null) return empty();
@@ -312,5 +362,6 @@ export function parseOptions(value: unknown): RuleOptions {
     starttls: starttls,
     starttlsRequired: normalizeStartTlsRequired(data.starttls_required, starttls),
     allowFrom: normalizeAllowFrom(data.allow_from),
+    http: normalizeHttp(data.http),
   };
 }

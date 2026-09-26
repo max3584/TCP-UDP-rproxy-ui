@@ -1,7 +1,7 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
 import { DEFAULT_UDP_IDLE_SECS } from './lib';
-import type { ForwardRule, ForwardRules, Protocol, RuleState, TlsSpec } from './lib';
+import type { ForwardRule, ForwardRules, HttpSpec, Protocol, RuleState, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeTls } from './tls';
 
@@ -98,6 +98,10 @@ export function summarize(rules: ForwardRules[]): {
   };
 }
 
+function isHttpSpec(value: unknown): value is HttpSpec {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 // rproxy の応答のルールを画面の形にする（固定ルールは DB にないので、rproxy の応答だけから作る）。
 // tls は既定値の項目を省いた形に揃える（読めない形なら受け取ったまま使う）
 export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRules {
@@ -115,14 +119,16 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     srcAddr: status.listen_addr,
     srcPort: status.listen_port,
     srcPortEnd: status.listen_port_end ?? null,
-    distAddr: status.remote_addr,
-    distPort: status.remote_port,
+    // http のルールは転送先を持たない（rproxy は "" / 0 を返す）
+    distAddr: status.remote_addr ?? '',
+    distPort: status.remote_port ?? 0,
     sourceIp: status.source_ip ?? 'proxy',
     udpIdleSecs: status.udp_idle_secs ?? DEFAULT_UDP_IDLE_SECS,
     tls: tls,
     starttls: starttls,
     starttlsRequired: starttls === null ? true : status.starttls_required ?? true,
     allowFrom: status.allow_from ?? [],
+    http: isHttpSpec(status.http) ? status.http : null,
     state: status.state,
     error: status.error ?? null,
     connections: status.connections ?? null,
@@ -185,14 +191,14 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
   if (/^[0-9]+$/.test(q)) {
     const n = Number(q);
     if (inRange(n, rule.srcPort, rule.srcPortEnd)) return true;
-    if (inRange(n, rule.distPort, rule.distPort + count - 1)) return true;
+    if (rule.http === null && inRange(n, rule.distPort, rule.distPort + count - 1)) return true;
     if ((rule.tls.routes ?? []).some((r) => inRange(n, r.remote_port, r.remote_port + count - 1))) return true;
   }
   const haystack = [
     rule.srcAddr,
-    rule.distAddr,
     `${rule.srcAddr}:${portsLabel(rule.srcPort, rule.srcPortEnd)}`,
-    `${rule.distAddr}:${targetPortsLabel(rule)}`,
+    // L7 のルールは転送先を持たない（'L7 (HTTP)' で探せる）
+    ...(rule.http === null ? [rule.distAddr, `${rule.distAddr}:${targetPortsLabel(rule)}`] : ['L7 (HTTP)']),
     ...(rule.tls.routes ?? []).flatMap((r) => [r.server_name, r.remote_addr]),
   ];
   return haystack.some((h) => h.toLowerCase().includes(q));
@@ -264,6 +270,20 @@ export function targetPortsLabel(rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd
 // IPv6 のアドレスは [ ] で囲む
 export function hostPort(addr: string, port: string | number): string {
   return addr.includes(':') ? `[${addr}]:${port}` : `${addr}:${port}`;
+}
+
+// L7 の設定（http）のルートの数。routes が配列でなければ 0
+export function httpRouteCount(http: HttpSpec | null | undefined): number {
+  const routes = http?.routes;
+  return Array.isArray(routes) ? routes.length : 0;
+}
+
+// 一覧・詳細の「転送先」の表示。L7 のルールは転送先を持たないので「L7 (HTTP)」とルートの数を出す
+export function targetLabel(rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd' | 'distAddr' | 'distPort' | 'http'>): string {
+  if (rule.http !== null && rule.http !== undefined) {
+    return `L7 (HTTP) ・ルート ${httpRouteCount(rule.http)} 件`;
+  }
+  return hostPort(rule.distAddr, targetPortsLabel(rule));
 }
 
 export function tlsLabel(rule: Pick<ForwardRule, 'protocol' | 'tls'>): string {
@@ -351,5 +371,6 @@ export function toRule(rule: ForwardRule): ForwardRule {
     starttls: rule.starttls,
     starttlsRequired: rule.starttlsRequired,
     allowFrom: rule.allowFrom,
+    http: rule.http,
   };
 }

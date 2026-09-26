@@ -23,7 +23,7 @@ sudo apt update
 sudo apt install rproxy-api rproxy-ui
 ```
 
-- rproxy-ui は Node.js 20.9 以上が要る。Ubuntu 24.04 では先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 など）を入れる。
+- rproxy-ui は Node.js 20.18.1 以上が要る。Ubuntu 24.04 では先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 など）を入れる。
 - rproxy-api を先に入れると、rproxy-ui のインストール時に rproxy-api のトークンと制御 API の URL が `/etc/rproxy-ui/rproxy-ui.env` に入る。
 - どちらもインストールしただけでは起動しない。
 - 権限（capability、ファイルの所有者）は rproxy-api の [docs/PERMISSIONS.md](https://github.com/max3584/rproxy-api/blob/master/docs/PERMISSIONS.md)。
@@ -89,6 +89,10 @@ RPROXY_STATIC_RULES=/etc/rproxy/static-rules.json
 RPROXY_LOG_FILE=/var/log/rproxy/rproxy.log
 ```
 
+UI と rproxy-api が同じホストなら、制御 API を Unix ソケットで受けることもできる（loopback の TCP は同じホストのだれでも接続できるが、ソケットはファイルのモードとグループで絞れる）。
+rproxy 側で `RPROXY_API_SOCKET=/run/rproxy/api.sock` と `RPROXY_API_SOCKET_GROUP=<グループ>`（モードは既定 660。`RPROXY_API_PORT=0` で TCP を閉じられる）、
+UI 側で `RPROXY_API_URL=unix:/run/rproxy/api.sock` にし、`rproxy-ui` のユーザーをそのグループに入れる（`sudo usermod -aG <グループ> rproxy-ui` のあと `systemctl restart rproxy-ui`）。トークンは TCP と同じく要る。
+
 UI を別のホストに置く場合は、制御 API を loopback 以外で待ち受けることになり、トークンと TLS が必須になる（`RPROXY_TLS_CERT` / `RPROXY_TLS_KEY`。無いと起動しない）。UI 側は `RPROXY_API_URL=https://...` にし、自己署名や社内 CA なら `NODE_EXTRA_CA_CERTS` で信頼させる。
 
 ### ダッシュボードの公開（固定ルール）
@@ -134,7 +138,7 @@ DB_PORT=3306
 DB_DATABASE=rproxy
 DB_USER=rproxy_ui
 DB_PASSWORD=<password>
-RPROXY_API_URL=http://127.0.0.1:8080
+RPROXY_API_URL=http://127.0.0.1:8080   # Unix ソケットなら unix:/run/rproxy/api.sock（4. を参照）
 RPROXY_API_TOKEN=<インストール時に /etc/rproxy/tokens から入る>
 ```
 

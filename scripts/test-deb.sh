@@ -3,7 +3,7 @@
 #
 #   scripts/test-deb.sh dist/rproxy-ui_<version>-1_all.deb
 #
-# nodejs (>= 20.9) を apt で入れられること（Ubuntu 24.04 なら NodeSource）が前提。
+# nodejs (>= 20.18.1) を apt で入れられること（Ubuntu 24.04 なら NodeSource）が前提。
 # rproxy-ui を本番で動かしている機械では実行しない。
 set -euo pipefail
 

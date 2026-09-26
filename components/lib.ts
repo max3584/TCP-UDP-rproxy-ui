@@ -32,11 +32,22 @@ export interface TlsRoute {
   remote_port: number;
 }
 
+// ファイル（cert_file / chain_file / key_file）か ACME（acme / domains。v0.3）のどちらか一方。
 // chain_file は中間 CA の証明書（サーバ証明書を発行した CA からルートへ向かう順。ルートは不要）
 export interface TlsCertificate {
-  cert_file: string;
+  cert_file?: string;
   chain_file?: string;
-  key_file: string;
+  key_file?: string;
+  // rproxy の設定ファイルの global.acme.resolvers の名前
+  acme?: string;
+  // ACME の証明書に含める名前（小文字）
+  domains?: string[];
+}
+
+// TLS のオプション（v0.3。GET /capabilities の features.tls_options）
+export interface TlsOptions {
+  min_version?: '1.2' | '1.3';
+  cipher_suites?: string[];
 }
 
 // ca_file はルート CA（信頼の起点）、chain_file はクライアント証明書の中間 CA（経路を補うだけ）。
@@ -68,7 +79,12 @@ export interface TlsSpec {
   upstream?: TlsUpstream;
   // 既定（default）なら省く。tcp の sni / terminate で routes があるときだけ reject にできる
   unmatched?: TlsUnmatched;
+  // 空なら省く（terminate でのみ使える）
+  options?: TlsOptions;
 }
+
+// L7 の設定（ルールの http。v0.3）。UI は中身を解釈せず、保存して rproxy に渡すだけ（検証は rproxy がする）
+export type HttpSpec = Record<string, unknown>;
 
 export interface ForwardRule {
   protocol: Protocol;
@@ -85,6 +101,9 @@ export interface ForwardRule {
   starttlsRequired: boolean;
   // 接続を許可する送信元（正規化した CIDR。例 10.0.0.5/32）。空ならすべて許可
   allowFrom: string[];
+  // L7 の設定。あるルールは remote_addr / remote_port を持たない（distAddr は ''、distPort は 0）。
+  // 画面のフォームではまだ作れない・変えられない（UI #34）ので、変更のときは元の値を保つ
+  http: HttpSpec | null;
 }
 
 // dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）

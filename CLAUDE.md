@@ -53,7 +53,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 | `components/tls.ts` | TLS / STARTTLS / ポート範囲 / allow_from / unmatched の正規化と検証、DB の `options` 列の読み書き。画面と API route の両方で使う |
 | `components/cidr.ts` | allow_from の CIDR / 単一 IP の検証と正規化（rproxy の `src/cidr.rs` と同じ規則。Node の `net` を使わないので画面でも使える） |
 | `components/lib.ts` | 共通の型（`ForwardRule`、`TlsSpec`、`ForwardRules`、`RuleStats`、`DashboardData`、`sessionUser` など）と pino ロガー |
-| `components/rproxy.ts` | rproxy-api の HTTP クライアント。失敗時は `RproxyError`（`code`、`status`。通信失敗は `unreachable` / 0） |
+| `components/rproxy.ts` | rproxy-api の HTTP クライアント。失敗時は `RproxyError`（`code`、`status`。通信失敗は `unreachable` / 0）。`RPROXY_API_URL=unix:/path` なら Unix ソケット（rproxy の `RPROXY_API_SOCKET`）に undici の `fetch` と `Agent({ connect: { socketPath } })` で接続する（`apiTarget`。TCP はグローバルの `fetch`） |
 | `pages/api/auth/[...nextauth].ts` | Keycloak の設定。サインイン時にアクセストークンの `realm_access.roles` を読んで JWT に保存する |
 | `pages/api/forward/[forward].ts` | `list` / `dashboard` / `rule`(GET)、`add` / `modify` / `delete`(POST) のエンドポイント |
 | `pages/api/forward/capabilities.ts` | rproxy の `GET /capabilities` をそのまま返す |
@@ -74,8 +74,8 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
    証明書ファイルが読めるか、範囲の上限（`max_range_ports`）、範囲の重なりは rproxy が判定する。
 3. トランザクション内で `forward_rules` を更新し、履歴を `forward_rules_log` に書き込む（`update_action` 列は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者）。
    ルールは Keycloak の `sub`（`auth_id`）ごとに持ち、キーは `protocol`、`src_addr`、`src_port` の組み合わせ（DB 全体で一意。範囲ルールでは先頭のポート）。
-   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from"}` の JSON で保存する（`allow_from` は空なら省く。すべて既定なら NULL）。
-   rproxy は `options` を未知のキーを拒否して読むので、この 4 つ以外のキーを入れないこと（`parseOptions` も未知のキーを拒否する）。
+   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from / L7 は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from", "http"}` の JSON で保存する（`allow_from` は空なら、`http` は null なら省く。すべて既定なら NULL）。
+   rproxy は `options` を未知のキーを拒否して読むので、この 5 つ以外のキーを入れないこと（`parseOptions` も未知のキーを拒否する）。
 4. rproxy-api の HTTP API を呼ぶ（`POST /rules`、`PATCH /rules/{protocol}/{addr}/{port}`、`DELETE ...`）。成功したときだけ COMMIT し、失敗したら ROLLBACK する。
    rproxy に反映した後で COMMIT だけが失敗した場合は、rproxy 側の変更を元に戻す（`withTransaction` に渡す undo）。
    - rproxy の 4xx はそのままのステータスで返す（401/403 は UI サーバ側の設定ミスなので 502）。それ以外の失敗は 502。本文は `{error, code}`。
@@ -95,6 +95,11 @@ HTTP の取り決めは `../rproxy-api/docs/API.md` が正。変更するとき�
 rproxy は起動時に `forward_rules` を読んでルールを復元する（読む列は `db/README.md` を参照）。
 
 ## 注意点
+
+- v0.3 の形（rproxy-api の docs/API.md「v0.3 の設定」）：ルールの `http`（L7）、`tls.certificates[]` の ACME（`acme` / `domains`）、`tls.options`（`min_version` / `cipher_suites`）、`GET /capabilities` の `features`。
+  UI は形を知っているだけで、L7 の編集画面はまだない（UI #34）。`http` は中身を解釈せずに保存して rproxy に渡す（`HttpSpec`）。
+  `http` のあるルールは転送先を持たない（DB の `dist_addr` は `''`、`dist_port` は `0`。rproxy への POST / PATCH では `remote_addr` / `remote_port` を送らずに `http` を送る）。一覧・詳細では転送先の代わりに「L7 (HTTP)」とルートの数を出す（`targetLabel`）。
+  フォームからは `http` を作れず（`add` は body の `http` を無視）、`modify` は DB の `http` を保つ（フォームは転送先の欄の代わりに注意を出し、ACME の証明書と `tls.options` は読み取り専用で残す）。
 
 - COMMIT が失敗して、さらに rproxy 側の取り消しも失敗した場合は、DB と rproxy が食い違う（ログに出る）。rproxy を再起動すれば DB の内容に戻る。
 - `source_ip` とポート範囲は作成後に変更できない（API の制約）。編集画面では読み取り専用。API に違う範囲が来たら 400（`unsupported`）。
