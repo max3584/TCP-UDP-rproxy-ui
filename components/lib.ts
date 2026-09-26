@@ -11,8 +11,8 @@ export const Logger = (level : string, {...propaty}: any) => {
 export type Protocol = 'tcp' | 'udp';
 export type SourceIp = 'proxy' | 'proxy_v1' | 'proxy_v2' | 'transparent';
 export const SOURCE_IPS: SourceIp[] = ['proxy', 'proxy_v1', 'proxy_v2', 'transparent'];
-// proxy_v1 / proxy_v2 は TCP でのみ使える
-export const TCP_ONLY_SOURCE_IPS: SourceIp[] = ['proxy_v1', 'proxy_v2'];
+// proxy_v1（テキスト）は TCP でのみ使える。proxy_v2 は UDP でも使える（データグラムごとにヘッダが付く）
+export const TCP_ONLY_SOURCE_IPS: SourceIp[] = ['proxy_v1'];
 export const DEFAULT_UDP_IDLE_SECS = 30;
 export const DEFAULT_MAX_RANGE_PORTS = 20000;
 
