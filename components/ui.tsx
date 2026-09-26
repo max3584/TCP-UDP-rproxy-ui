@@ -210,6 +210,8 @@ export function useRule(key: RuleKey | null) {
   }, [url]);
 
   useEffect(() => {
+    // load は await の後でだけ state を変える（同期の setState ではない）
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 
