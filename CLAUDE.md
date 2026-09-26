@@ -13,6 +13,7 @@ npm test        # vitest（tests/ 配下）
 ```
 
 - 開発機 con0 では 3000 番（別サービス）と 8080 番（code-server）が使用中。UI は `./node_modules/.bin/next dev -p 3001`、rproxy は 8081 で動かす（`.env.local` の `NEXTAUTH_URL` と `RPROXY_API_URL` もこのポートに合わせてある）。
+- Next.js 16 は学習データより新しいので、API や設定を変えるときは `node_modules/next/dist/docs/` の説明書を先に読む（`next.config.mjs` の `agentRules: false` で、`next dev` がこの注意を CLAUDE.md に書き足すのを止めている）。
 - `next dev` が動いている間に同じディレクトリで `npm run build` を実行しない（`.next` を上書きして開発サーバが 404 を返すようになる）。
 - react-hooks v7 の規則（`set-state-in-effect` など）が有効。選べなくなった値を既定に戻す処理は、エフェクトではなく描画中に条件つきで `setState` する（React の「props が変わったときに state を直す」の書き方）。初回の取得（`await` の後でだけ state を変える）はコメントを付けて規則を外している。
 - DB の接続プールは、開発モードでは `globalThis` に置いて使い回す（読み直しのたびにプールが増えて Too many connections になるのを防ぐ）。
@@ -42,6 +43,7 @@ npm test        # vitest（tests/ 配下）
 | `pages/api/forward/[forward].ts` | `list` / `dashboard` / `rule`(GET)、`add` / `modify` / `delete`(POST) のエンドポイント |
 | `pages/api/forward/capabilities.ts` | rproxy の `GET /capabilities` をそのまま返す |
 | `pages/api/forward/interfaces.ts` | rproxy の `GET /interfaces`（待ち受けアドレスの候補と、制御 API が使う予約済みのアドレス）を返す |
+| `components/sourceip.ts` | source_ip の欄に出す説明（transparent が使えない理由、IPv4 だけであること、選んだときのルーティングの前提）。`GET /capabilities` の `transparent` を使う |
 | `components/listen.ts` | 待ち受けアドレスの選択肢と、予約済みのアドレス・ポートとの重なりの判定 |
 | `components/messages.ts` | API のエラーコードを利用者向けの説明に直す（`resolve_failed`、`static` など） |
 | `keycloak/` | Keycloak のレルム定義（読み込み用の JSON。シークレットとユーザーは含めない） |
