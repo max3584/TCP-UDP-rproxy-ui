@@ -12,6 +12,7 @@ import {
   formatCount,
   formatDuration,
   hostPort,
+  httpRouteRows,
   mergeStaticRules,
   needsAttention,
   parseRuleKey,
@@ -20,6 +21,8 @@ import {
   ruleEditHref,
   ruleFromStatus,
   ruleHref,
+  serverErrorPercent,
+  statusCountsLabel,
   summarize,
   targetLabel,
   targetPortsLabel,
@@ -181,6 +184,48 @@ describe('L7 (http) rules', () => {
     expect(targetLabel(rule({ http: {} }))).toBe('L7 (HTTP) ・ルート 0 件');
     expect(targetLabel(rule())).toBe('10.0.0.5:8443');
     expect(targetLabel(rule({ distAddr: '2001:db8::5', srcPortEnd: 444 }))).toBe('[2001:db8::5]:8443-8444');
+  });
+
+  // rproxy v0.3.1 の stats.http（docs/API.md の例に、rate_limit と crowdsec で断った数を足したもの）
+  const httpStats = {
+    requests: 10,
+    by_status: { '2xx': 6, '4xx': 3, '5xx': 1 },
+    routes: {
+      '(none)': { requests: 1, by_status: { '4xx': 1 } },
+      'gitlab-login': { requests: 3, by_status: { '2xx': 1, '4xx': 2 }, limited: { 'rate-limit-login': 1 }, blocked: { crowdsec: 1 } },
+      gitlab: { requests: 6, by_status: { '2xx': 5, '5xx': 1 } },
+    },
+    limited: 1,
+    blocked: 1,
+  };
+  const withStats = (): RproxyRuleStatus => ({
+    ...status, stats: { total_connections: 4, rx_bytes: 100, tx_bytes: 200, tls_failures: 0, denied: 0, http: httpStats },
+  });
+
+  it('carries stats.http through and sums it per protocol', () => {
+    const r = ruleFromStatus(withStats(), -1);
+    expect(r.stats?.http).toEqual(httpStats);
+    const s = summarize([r, rule({ srcPort: 80 }), ruleFromStatus({ ...status, listen_port: 8443 }, -2)]).tcp;
+    expect(s).toMatchObject({ httpRules: 2, httpRequests: 10, http5xx: 1, httpLimited: 1, httpBlocked: 1 });
+    // stats.http を返さない古い rproxy
+    expect(summarize([ruleFromStatus(status, -1)]).tcp).toMatchObject({ httpRules: 1, httpRequests: 0, http5xx: 0 });
+    expect(summarize([rule()]).tcp.httpRules).toBe(0);
+  });
+
+  it('lists routes by requests with the unmatched ones last', () => {
+    const rows = httpRouteRows(httpStats);
+    expect(rows.map((r) => r.name)).toEqual(['gitlab', 'gitlab-login', '(none)']);
+    expect(rows[1]).toMatchObject({ requests: 3, limited: 1, blocked: 1, limitedBy: { 'rate-limit-login': 1 }, blockedBy: { crowdsec: 1 } });
+    expect(rows[0]).toMatchObject({ limited: 0, blocked: 0, limitedBy: {}, blockedBy: {} });
+    expect(httpRouteRows({ requests: 0, by_status: {}, routes: {} })).toEqual([]);
+  });
+
+  it('formats status classes and the 5xx share', () => {
+    expect(statusCountsLabel(httpStats.by_status)).toBe('2xx 6 / 4xx 3 / 5xx 1');
+    expect(statusCountsLabel({})).toBe('-');
+    expect(serverErrorPercent(10, 1)).toBe(10);
+    expect(serverErrorPercent(3, 1)).toBe(33.3);
+    expect(serverErrorPercent(0, 0)).toBeNull();
   });
 
   it('finds http rules by L7 and not by the empty target port', () => {

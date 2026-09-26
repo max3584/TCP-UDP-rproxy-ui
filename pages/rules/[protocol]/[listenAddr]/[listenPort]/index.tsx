@@ -2,14 +2,18 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import type { ForwardRules } from '@/components/lib';
+import type { ForwardRules, HttpStats } from '@/components/lib';
 import {
   formatBytes,
   formatCount,
   formatDuration,
   formatTimestamp,
   hostPort,
+  NO_ROUTE,
   httpRouteCount,
+  httpRouteRows,
+  serverErrorPercent,
+  statusCountsLabel,
   parseRuleKey,
   portsLabel,
   ruleEditHref,
@@ -19,7 +23,7 @@ import {
   uptimeSecs,
 } from '@/components/dashboard';
 import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, StaticBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
-import { STATIC_RULE_NOTE } from '@/components/messages';
+import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE } from '@/components/messages';
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
   <section className="card p-4" aria-labelledby={id}>
@@ -43,6 +47,57 @@ const Fields: React.FC<{ items: [string, React.ReactNode][] }> = ({ items }) => 
 const Mono: React.FC<{ children: React.ReactNode }> = ({ children }) => <span className="font-mono">{children}</span>;
 
 const path = (p: string | undefined) => (p ? <Mono>{p}</Mono> : null);
+
+// ミドルウェアの名前ごとの数（"limit-login 3, rl 1"）
+const byMiddleware = (counts: Record<string, number>) =>
+  Object.entries(counts).map(([name, n]) => `${name} ${formatCount(n)}`).join(', ');
+
+// L7（http）のルールのリクエストの数（rproxy の stats.http）
+const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
+  const rows = httpRouteRows(http);
+  const pct = serverErrorPercent(http.requests, http.by_status['5xx'] ?? 0);
+  return (
+    <Section id="section-http-stats" title="HTTP のリクエスト（開始してからの累計）">
+      <Fields items={[
+        ['リクエスト', formatCount(http.requests)],
+        ['状態コード', statusCountsLabel(http.by_status)],
+        ['5xx の割合', pct === null ? null : `${pct}%`],
+        ['制限で断った数', formatCount(http.limited ?? 0)],
+        ['CrowdSec で断った数', formatCount(http.blocked ?? 0)],
+      ]} />
+      {rows.length > 0 && (
+        <div className="mt-4 overflow-x-auto">
+          <h3 className="text-sm font-semibold text-gray-800 mb-1">ルートごと</h3>
+          <table className="data-table" data-testid="http-routes">
+            <thead>
+              <tr>
+                <th scope="col">ルート</th>
+                <th scope="col" className="text-right">リクエスト</th>
+                <th scope="col">状態コード</th>
+                <th scope="col">制限（rate_limit / in_flight）</th>
+                <th scope="col">遮断（crowdsec）</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name}>
+                  <td className="font-mono break-all">{r.name === NO_ROUTE ? <span className="font-sans text-gray-600">（どのルートにも一致しない）</span> : r.name}</td>
+                  <td className="text-right tabular-nums">{formatCount(r.requests)}</td>
+                  <td className="tabular-nums whitespace-nowrap">{statusCountsLabel(r.byStatus)}</td>
+                  <td className="tabular-nums">{r.limited > 0 ? byMiddleware(r.limitedBy) : '-'}</td>
+                  <td className="tabular-nums">{r.blocked > 0 ? byMiddleware(r.blockedBy) : '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-2 text-xs text-gray-600">
+        応答を送り終えた（またはクライアントが切断した）ときに数えます。制限・遮断で断ったリクエストは 4xx にも含まれます。
+      </p>
+    </Section>
+  );
+};
 
 const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
   const tls = rule.tls;
@@ -88,6 +143,7 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                     <td>{i + 1}</td>
                     <td colSpan={3} className="break-all">
                       ACME（resolver: <Mono>{c.acme}</Mono>）: <Mono>{(c.domains ?? []).join(', ')}</Mono>
+                      <p className="mt-1 text-xs text-amber-900" data-testid="acme-note">{ACME_UNSUPPORTED_NOTE}</p>
                     </td>
                   </tr>
                 ) : (
@@ -268,6 +324,8 @@ const RuleDetailPage: React.FC = () => {
               )}
             </Section>
           </div>
+
+          {rule.stats?.http && <HttpStatsSection http={rule.stats.http} />}
 
           <TlsSection rule={rule} />
 

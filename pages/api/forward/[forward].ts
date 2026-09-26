@@ -39,6 +39,7 @@ import {
   modifyRule,
 } from '@/components/rproxy';
 import { mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
+import { FORBIDDEN_MESSAGE } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
 
 // MariaDBのコネクションプールを作成
@@ -351,6 +352,7 @@ async function listForwardingRules(authId: string, logger: AppLogger, withStatic
   } catch (err) {
     logger.warn(`rproxy からルールの状態を取得できません: ${err}`);
     rproxyError = err instanceof Error ? err.message : String(err);
+    if (err instanceof RproxyError && err.status === 403) rproxyError = `${FORBIDDEN_MESSAGE}（詳細: ${rproxyError}）`;
   }
 
   const rules = rows.map((row: any): ForwardRules => {
@@ -509,6 +511,11 @@ function sendError(res: NextApiResponse, err: unknown, logger: AppLogger) {
   }
   if (err instanceof RproxyError) {
     logger.error(`rproxy error: ${err.code} ${err.message}`);
+    if (err.status === 403) {
+      // rproxy のトークンのスコープ（rules:read / rules:write）か allow_listen_ports が足りない。
+      // 画面では code: forbidden から説明（FORBIDDEN_MESSAGE）を出す
+      logger.error('rproxy が UI のトークンを拒否しました（403 forbidden）。RPROXY_API_TOKEN のスコープと allow_listen_ports を確認してください');
+    }
     // rproxy の 401/403 は UI サーバ側の設定の問題なので、利用者には 502 として返す
     const passThrough = err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 403;
     return res.status(passThrough ? err.status : 502).json({ error: err.message, code: err.code });

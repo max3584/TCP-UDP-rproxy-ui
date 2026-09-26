@@ -21,6 +21,7 @@ import {
   portsLabel,
   ruleHref,
   ruleKeyOf,
+  serverErrorPercent,
   summarize,
   targetLabel,
   tlsBreakdown,
@@ -57,6 +58,11 @@ const Metric: React.FC<{ label: string; value: string; title?: string }> = ({ la
   </div>
 );
 
+function http5xxLabel(requests: number, errors: number): string {
+  const pct = serverErrorPercent(requests, errors);
+  return pct === null ? formatCount(errors) : `${formatCount(errors)}（${pct}%）`;
+}
+
 const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> = ({ summary, reachable }) => {
   const pct = (n: number) => (summary.counts.total === 0 ? 0 : Math.round((n / summary.counts.total) * 100));
   return (
@@ -84,6 +90,17 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
         <Metric label="拒否" value={reachable ? formatCount(summary.denied) : '-'}
           title="allow_from の範囲外、またはどのサーバ名にも一致しない（unmatched: reject）ため切断した接続" />
       </dl>
+      {summary.httpRules > 0 && (
+        // L7（http）のルールのリクエスト。stats.http を返さない古い rproxy では 0 のまま
+        <dl className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-3 border-t border-gray-100 pt-3" data-testid={`http-summary-${summary.protocol}`}>
+          <Metric label="HTTP リクエスト" value={reachable ? formatCount(summary.httpRequests) : '-'}
+            title={`L7（http）のルール ${summary.httpRules} 件の累計`} />
+          <Metric label="5xx" value={reachable ? http5xxLabel(summary.httpRequests, summary.http5xx) : '-'}
+            title="転送先のエラー・タイムアウトなど（状態コード 500〜599）" />
+          <Metric label="制限 / 遮断" value={reachable ? `${formatCount(summary.httpLimited)} / ${formatCount(summary.httpBlocked)}` : '-'}
+            title="rate_limit / in_flight で断ったリクエストと、crowdsec で断ったリクエスト" />
+        </dl>
+      )}
     </section>
   );
 };
@@ -244,6 +261,12 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
                     {formatCount(r.connections)}
                     {r.stats && <div className="text-xs text-gray-600">累計 {formatCount(r.stats.total_connections)}</div>}
                     {(r.stats?.denied ?? 0) > 0 && <div className="text-xs text-orange-900">拒否 {formatCount(r.stats?.denied)}</div>}
+                    {r.stats?.http && (
+                      <div className="text-xs text-gray-600">
+                        HTTP {formatCount(r.stats.http.requests)}
+                        {(r.stats.http.by_status['5xx'] ?? 0) > 0 && <span className="text-red-800">（5xx {formatCount(r.stats.http.by_status['5xx'])}）</span>}
+                      </div>
+                    )}
                   </td>
                   <td className="text-right tabular-nums whitespace-nowrap text-xs">
                     {r.stats ? (

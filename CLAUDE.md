@@ -43,7 +43,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 |---|---|
 | `pages/index.tsx` | ダッシュボード（Traefik 風）。rproxy に接続できるか、件数（固定ルールを含む）、TCP / UDP のカード（状態のドーナツ、接続数、累計、rx / tx、TLS 失敗、拒否）、TLS の内訳、要確認のルール（failed / missing）、絞り込みつきの全ルールの表（固定ルールには「固定」、allow_from のあるルールには「IP 制限」のバッジ）。5 秒ごとに自動更新（切り替えられる。タブが隠れている間は止める） |
 | `pages/rules/new.tsx` | ルールの追加画面。保存したら詳細画面へ、キャンセルは前の画面へ |
-| `pages/rules/[protocol]/[listenAddr]/[listenPort]/index.tsx` | ルールの詳細（概要・待ち受け・転送先と解決したアドレス・TLS（routes と unmatched、証明書と中間 CA、クライアント認証、ALPN、upstream）・STARTTLS・詳細（allow_from を含む）・統計（拒否を含む））。編集ボタンと、確認ダイアログつきの削除ボタン。固定ルールでは両方を出さず「固定ルール（rproxy の設定ファイルで管理）」と出す。`listenAddr` は URL エンコードする（IPv6 の `:` を含むため） |
+| `pages/rules/[protocol]/[listenAddr]/[listenPort]/index.tsx` | ルールの詳細（概要・待ち受け・転送先と解決したアドレス・TLS（routes と unmatched、証明書と中間 CA、クライアント認証、ALPN、upstream）・STARTTLS・詳細（allow_from を含む）・統計（拒否を含む）・L7 のルールでは HTTP のリクエスト（状態コード別、ルートごと、制限・遮断の数））。編集ボタンと、確認ダイアログつきの削除ボタン。固定ルールでは両方を出さず「固定ルール（rproxy の設定ファイルで管理）」と出す。`listenAddr` は URL エンコードする（IPv6 の `:` を含むため） |
 | `pages/rules/[protocol]/[listenAddr]/[listenPort]/edit.tsx` | ルールの変更画面。保存したら詳細画面へ。固定ルールではフォームを出さない |
 | `components/RuleForm.tsx` | ルールの入力フォームとクライアント側のバリデーション（追加・変更の画面で使う。旧 `Modal.tsx`）。タブ（基本 / TLS・DTLS / メール (STARTTLS) / 詳細）に分かれ、矢印キー / Home / End で移れる（WAI-ARIA の Tabs）。エラーのあるタブには件数の印が付く。「詳細」タブに allow_from（1 行に 1 件）、TLS タブに unmatched（tcp の sni / terminate で routes があるときだけ）。`source_ip`・TLS のモード・STARTTLS の選択肢と範囲の上限は `/api/forward/capabilities` から取得する。中間 CA（`chain_file`）の欄は証明書ごと・クライアント認証・upstream に常に出す（3 階層以上の PKI を使うため） |
 | `components/dashboard.ts` | ダッシュボードと詳細画面の集計・整形（状態の集計、TLS の内訳、絞り込み、バイト数・時間の表示、ドーナツの `conic-gradient`、画面の URL）と、rproxy の応答から固定ルールの行を作る `ruleFromStatus` / `mergeStaticRules`。React に依存しない |
@@ -85,7 +85,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
      `modify` の body に `allowFrom` がなければ DB の値を保つ（あれば置き換える）。追加の POST には `allow_from` が空でなければ付ける。
    - 固定ルール（rproxy の `--static-rules` のファイルのルール。`origin: "static"`）は DB にない。`modify` / `delete` で自分の行がなく、rproxy の `GET /rules/{key}` が `origin: "static"` を返したら 409 `static` を返す（rproxy も PATCH / DELETE を 409 `static` で拒否する。その場合もそのまま返す）。
 5. `list` は DB のルールに rproxy の `GET /rules` の稼働状態をつけて返す（`state` は `running` / `failed` / `missing`（rproxy にない）/ `unknown`（rproxy に問い合わせできない））。
-   稼働情報は `connections`、`stats`（rproxy の `{total_connections, rx_bytes, tx_bytes, tls_failures, denied}` をそのまま。`denied` は古い rproxy にはない）、`startedAt`（rproxy の `started_at`、Unix 秒）、`resolved`。`missing` / `unknown` のときは null / 空配列。
+   稼働情報は `connections`、`stats`（rproxy の `{total_connections, rx_bytes, tx_bytes, tls_failures, denied, http}` をそのまま。`denied` は古い rproxy に、`http`（L7 のリクエスト数：`requests`・`by_status`・`routes`・`limited`・`blocked`）は v0.3.1 より前の rproxy と http のないルールにはない）、`startedAt`（rproxy の `started_at`、Unix 秒）、`resolved`。`missing` / `unknown` のときは null / 空配列。
    各行には `origin`（DB の行は常に `dynamic`）と `allowFrom` が付く。`list` は自分の DB のルールだけ。
    - `dashboard` は `{reachable, rproxyError, rules}`。`rules` は `list` の後ろに、rproxy の固定ルール（`origin: "static"`）を読み取り専用の行として足したもの（`mergeStaticRules`。id は負の数で、画面の key にだけ使う）。
      固定ルールはシステムのルールなので、ログインしていればだれにでも見せる（ほかの利用者の `dynamic` なルールは見せない）。rproxy に接続できなければ固定ルールは出ない。ルールが 0 件でも rproxy に接続できるかがわかる。
@@ -99,6 +99,8 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
 - v0.3 の形（rproxy-api の docs/API.md「v0.3 の設定」）：ルールの `http`（L7）、`tls.certificates[]` の ACME（`acme` / `domains`）、`tls.options`（`min_version` / `cipher_suites`）、`GET /capabilities` の `features`。
   UI は形を知っているだけで、L7 の編集画面はまだない（UI #34）。`http` は中身を解釈せずに保存して rproxy に渡す（`HttpSpec`）。
   `http` のあるルールは転送先を持たない（DB の `dist_addr` は `''`、`dist_port` は `0`。rproxy への POST / PATCH では `remote_addr` / `remote_port` を送らずに `http` を送る）。一覧・詳細では転送先の代わりに「L7 (HTTP)」とルートの数を出す（`targetLabel`）。
+  ACME は rproxy に内蔵しない方針（rproxy-api#17）なので、ACME の証明書は詳細画面とフォームに「この rproxy では使えない設定」と出す（`ACME_UNSUPPORTED_NOTE`。設定は消さずに保つ）。証明書は certbot / cert-manager で取ったファイルで、rproxy が変更を検知して読み直す（`RPROXY_CERT_CHECK_SECS`）。
+  rproxy の 403 `forbidden`（UI のトークンのスコープ・`allow_listen_ports` の不足）は 502 で `code: forbidden` を返し、画面は `FORBIDDEN_MESSAGE` で説明する。UI のトークンに要るスコープは `rules:read` と `rules:write`。
   フォームからは `http` を作れず（`add` は body の `http` を無視）、`modify` は DB の `http` を保つ（フォームは転送先の欄の代わりに注意を出し、ACME の証明書と `tls.options` は読み取り専用で残す）。
 
 - COMMIT が失敗して、さらに rproxy 側の取り消しも失敗した場合は、DB と rproxy が食い違う（ログに出る）。rproxy を再起動すれば DB の内容に戻る。

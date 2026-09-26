@@ -119,7 +119,24 @@ UI を別のホストに置く場合は、制御 API を loopback 以外で待�
 ]
 ```
 
-証明書と鍵は `root:rproxy` 640 で `/etc/rproxy/tls/` に置く。更新したら `sudo systemctl reload rproxy-api`。
+証明書と鍵は `root:rproxy` 640 で `/etc/rproxy/tls/` に置く。rproxy は ACME を内蔵していないので、証明書は certbot・acme.sh などで取得する（Kubernetes なら cert-manager の Secret をマウントする）。
+rproxy はファイルの大きさ・更新時刻・inode を 60 秒ごと（`RPROXY_CERT_CHECK_SECS`。`0` で止める）に確かめ、変わった証明書だけを自動で読み直す（シンボリックリンクの差し替えも検知する）。すぐに反映したいときは `sudo systemctl reload rproxy-api`。
+
+certbot の http-01 で取る場合は、80 番の L7（`http`）のルールで `/.well-known/acme-challenge/` を certbot の standalone（例 `--http-01-port 8888`）か webroot を配るサーバへ振り分ける（ほかのパスは HTTPS へリダイレクトする）:
+
+```yaml
+- protocol: tcp
+  listen_addr: 0.0.0.0
+  listen_port: 80
+  http:
+    routes:
+      - {name: acme, match: 'PathPrefix(`/.well-known/acme-challenge/`)', to: 'http://127.0.0.1:8888'}
+      - {name: to-https, match: 'PathPrefix(`/`)', middlewares: [to-https]}
+    middlewares:
+      to-https: {redirect_scheme: {scheme: https, permanent: true}}
+```
+
+証明書のファイルは certbot の `/etc/letsencrypt/live/<名前>/fullchain.pem` と `privkey.pem` をそのまま指定できる（rproxy ユーザーが読めるように、`deploy-hook` で `/etc/rproxy/tls/` にコピーしてもよい）。
 
 ## 5. rproxy-ui
 
@@ -141,6 +158,19 @@ DB_PASSWORD=<password>
 RPROXY_API_URL=http://127.0.0.1:8080   # Unix ソケットなら unix:/run/rproxy/api.sock（4. を参照）
 RPROXY_API_TOKEN=<インストール時に /etc/rproxy/tokens から入る>
 ```
+
+rproxy のトークンファイルを権限付き（YAML）にする場合、UI のトークンには `rules:read` と `rules:write` のスコープを付ける（`metrics:read` は使わない。`GET /capabilities` はどのトークンでも読める）。
+`allow_listen_ports` を付けると、その範囲の外のルールは UI から作成・変更・削除できない。足りないと rproxy が 403 `forbidden` を返し、画面にはスコープを確かめるように出る。
+
+```yaml
+# /etc/rproxy/tokens（rproxy の RPROXY_TOKEN_FILE。ファイルには SHA-256 だけを置く）
+tokens:
+  - name: rproxy-ui
+    sha256: <printf %s "$TOKEN" | sha256sum の値>
+    scopes: [rules:read, rules:write]
+```
+
+`TOKEN` は UI の `RPROXY_API_TOKEN` に入れる値（`openssl rand -hex 32` などで作る）。トークンファイルを変えたら `sudo systemctl reload rproxy-api`。
 
 ## 6. 起動と確認
 
