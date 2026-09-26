@@ -18,6 +18,7 @@ import {
 import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
+import { transparentHint } from './sourceip';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -79,6 +80,8 @@ interface Caps {
   dtls: boolean;
   starttls: StartTls[];
   maxRangePorts: number;
+  // GET /capabilities の transparent（取得できなかったときは null）
+  transparent: boolean | null;
 }
 
 // rproxy の対応機能を取得できなかったときは、既定の動作（proxy / passthrough）だけを選べるようにする
@@ -88,6 +91,7 @@ const FALLBACK_CAPS: Caps = {
   dtls: false,
   starttls: [],
   maxRangePorts: DEFAULT_MAX_RANGE_PORTS,
+  transparent: null,
 };
 
 type TabId = 'basic' | 'tls' | 'mail' | 'advanced';
@@ -186,6 +190,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           dtls: data.dtls === true,
           starttls: Array.isArray(data.starttls) ? data.starttls : [],
           maxRangePorts: typeof data.max_range_ports === 'number' ? data.max_range_ports : DEFAULT_MAX_RANGE_PORTS,
+          transparent: typeof data.transparent === 'boolean' ? data.transparent : null,
         });
       } catch (err) {
         setCapabilitiesError(`rproxy の対応機能を取得できませんでした（既定の動作だけを選べます）: ${err instanceof Error ? err.message : err}`);
@@ -217,6 +222,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   if (!addrCustom && interfaces && srcAddr !== '' && !listenOptions(interfaces).some((o) => o.value === srcAddr)) {
     setAddrCustom(true);
   }
+
+  const sourceIpHint = transparentHint({ sourceIp, transparentAvailable: caps.transparent, listenIsIPv6: isIPv6(srcAddr) });
 
   const clash = reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', srcAddr,
     srcPort === '' ? '' : Number(srcPort), srcPortEnd === '' || srcPortEnd === null ? null : Number(srcPortEnd));
@@ -868,6 +875,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             <select
               id="rule-source-ip"
               className={inputClass}
+              aria-describedby={sourceIpHint ? 'rule-source-ip-hint' : undefined}
               value={sourceIp}
               onChange={(e) => setSourceIp(e.target.value as SourceIp)}
             >
@@ -877,6 +885,16 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             </select>
           }
           {capabilitiesError && <p className="text-yellow-800 text-xs mt-1">{capabilitiesError}</p>}
+          {sourceIpHint && (
+            <p
+              id="rule-source-ip-hint"
+              className={sourceIpHint.kind === 'selected'
+                ? 'text-xs mt-1 rounded border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1'
+                : 'text-xs mt-1 text-gray-700'}
+            >
+              {sourceIpHint.message}
+            </p>
+          )}
           {errors.sourceIp && <p className={errorClass}>{errors.sourceIp}</p>}
         </div>
         {protocol === 'udp' && (
