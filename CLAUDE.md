@@ -3,6 +3,12 @@
 `rproxy-api`（Rust 製の TCP/UDP リバースプロキシ、別リポジトリ `../rproxy-api`）の転送ルールを管理する Web UI。
 Next.js 16（Pages Router）、React 19、NextAuth v4 + Keycloak、MariaDB、Tailwind CSS 3 で構成されている。
 
+## バージョン管理
+
+`docs/RELEASING.md` の決まりで、確認を取らずに進める。rproxy-api と同じ番号で一緒に出す（UI の vX.Y.Z は rproxy-api の vX.Y.Z と組み合わせる）。
+PR・issue を作るときにパッチ／マイナーのマイルストーンを付け、マージ後のタグ・リリースノート・マイルストーンの片付けまで行う。
+PR のブランチに追加で push する前に、その PR がまだ開いているか（`gh pr view <n> --json state`）を確かめる。
+
 ## コマンド
 
 ```bash
