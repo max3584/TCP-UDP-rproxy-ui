@@ -58,7 +58,7 @@ Architecture: all
 Maintainer: touka shiro / max3584 <max3584.work@gmail.com>
 Installed-Size: $(du -sk --exclude=DEBIAN "$stage" | cut -f1)
 Depends: nodejs (>= 20.9), passwd
-Recommends: rproxy-api (= $version-1)
+Suggests: rproxy-api (= $version-1)
 Section: web
 Priority: optional
 Homepage: https://github.com/max3584/TCP-UDP-rproxy-ui

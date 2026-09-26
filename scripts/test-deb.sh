@@ -19,6 +19,9 @@ sudo install -d /etc/rproxy
 echo 'from-rproxy-token' | sudo tee /etc/rproxy/tokens >/dev/null
 echo 'RPROXY_API_PORT=8099' | sudo tee /etc/rproxy/rproxy.env >/dev/null
 
+# the UI may run on another host than rproxy-api: apt must not pull rproxy-api in
+[ -z "$(dpkg-deb --field "$deb" Recommends)" ] || fail "rproxy-api must not be a Recommends (apt installs those)"
+
 echo "== install"
 sudo apt-get install -y "$deb"
 getent passwd rproxy-ui >/dev/null || fail "no rproxy-ui user"
