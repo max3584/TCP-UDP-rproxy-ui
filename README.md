@@ -1,6 +1,27 @@
-This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# TCP-UDP-rproxy-ui
 
-## Getting Started
+[rproxy-api](https://github.com/max3584/rproxy-api) の転送ルールを管理する Web UI（Next.js、Keycloak でサインイン、ルールは MariaDB に保存）。
+バージョンは rproxy-api と同じ番号で出す（UI の vX.Y.Z は rproxy-api の vX.Y.Z と組み合わせる。docs/RELEASING.md）。
+
+## インストール（Debian / Ubuntu）
+
+rproxy-api と同じ apt リポジトリから入れられる（`rproxy-ui`、CPU を問わない 1 つのパッケージ）。
+Node.js 20.9 以上が要る。Debian 13 は標準の `nodejs` でよい。Ubuntu 24.04 の標準の nodejs は 18 なので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 など）を入れる。
+
+```shell
+sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/rproxy-archive-keyring.gpg] https://max3584.github.io/rproxy-api stable main" \
+  | sudo tee /etc/apt/sources.list.d/rproxy-api.list
+sudo apt update && sudo apt install rproxy-ui
+```
+
+- 設定は `/etc/rproxy-ui/rproxy-ui.env`（600）。`NEXTAUTH_URL`、`KEYCLOAK_*`、`DB_*` を書いてから `sudo systemctl enable --now rproxy-ui` で起動する（インストールしただけでは起動しない）
+- `NEXTAUTH_SECRET` はインストール時に生成する。同じホストに rproxy-api があれば、そのトークンと API の URL も入れる
+- 既定の待ち受けは `127.0.0.1:3000`（`HOSTNAME` / `PORT`）。外から見せるときは rproxy の固定ルール（TLS の終端とサーバ名での振り分け、`allow_from`）を前に置く（rproxy-api の README「固定ルールと、ダッシュボードの公開」）
+- DB のテーブルは `/usr/share/rproxy-ui/db/schema.sql`（`db/README.md`）で作る
+- `/usr/lib/rproxy-ui` の `server.js`（Next.js の standalone 出力）を `rproxy-ui` ユーザーで動かす。ログは `journalctl -u rproxy-ui`
+
+## 開発
 
 First, run the development server:
 

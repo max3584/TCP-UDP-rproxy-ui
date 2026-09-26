@@ -28,6 +28,27 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  deb:
+    name: Debian package (install, start, purge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: shellcheck
+        run: shellcheck scripts/*.sh packaging/debian/postinst packaging/debian/prerm packaging/debian/postrm
+      # the package depends on nodejs (>= 20.9); Ubuntu 24.04 ships 18, so use NodeSource as users would
+      - name: nodejs from NodeSource
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+      - run: scripts/build-deb.sh dist
+      - name: scripts/test-deb.sh
+        run: scripts/test-deb.sh dist/*.deb
+
   e2e:
     name: e2e (MariaDB + rproxy-api)
     runs-on: ubuntu-latest
