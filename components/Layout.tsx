@@ -1,4 +1,4 @@
-import Sidebar from './Sideber';
+import Sidebar from './Sidebar';
 import Header from './Header';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {

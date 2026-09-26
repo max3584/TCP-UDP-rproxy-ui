@@ -1,0 +1,28 @@
+# installed by the Debian package; override with systemctl edit rproxy-ui
+[Unit]
+Description=rproxy-ui (web UI for rproxy-api)
+Wants=network-online.target
+After=network-online.target rproxy-api.service mariadb.service
+
+[Service]
+Type=simple
+User=rproxy-ui
+Group=rproxy-ui
+Environment=NODE_ENV=production
+# NEXTAUTH_*, KEYCLOAK_*, DB_*, RPROXY_API_*, HOSTNAME, PORT
+EnvironmentFile=/etc/rproxy-ui/rproxy-ui.env
+WorkingDirectory=/usr/lib/rproxy-ui
+ExecStart=/usr/bin/node /usr/lib/rproxy-ui/server.js
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Next.js writes its cache under .next/cache (a symlink to /var/cache/rproxy-ui)
+CacheDirectory=rproxy-ui
+CacheDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

@@ -39,3 +39,6 @@ next-env.d.ts
 /tests/ui/.auth/
 /playwright-report/
 /test-results/
+
+# Debian package (scripts/build-deb.sh)
+/dist/

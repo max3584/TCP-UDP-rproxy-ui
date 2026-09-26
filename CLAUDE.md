@@ -9,6 +9,12 @@ Next.js 16（Pages Router）、React 19、NextAuth v4 + Keycloak、MariaDB、Tai
 PR・issue を作るときにパッチ／マイナーのマイルストーンを付け、マージ後のタグ・リリースノート・マイルストーンの片付けまで行う。
 PR のブランチに追加で push する前に、その PR がまだ開いているか（`gh pr view <n> --json state`）を確かめる。
 
+## パッケージ（apt）
+
+`scripts/build-deb.sh` が `next build`（`output: 'standalone'`、`images.unoptimized`）の結果から `rproxy-ui_<version>-1_all.deb` を作る（`packaging/debian/` にユニット・設定・maintainer scripts）。
+CPU ごとのネイティブなモジュール（`.node`）が入ると `all` にできないので、build-deb.sh が見つけたら止める。依存を足すときに気をつける。
+CI の `Debian package` ジョブ（`scripts/test-deb.sh`、NodeSource の nodejs で実際に入れる）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の apt リポジトリがそれを取る（docs/RELEASING.md）。
+
 ## コマンド
 
 ```bash
@@ -100,7 +106,6 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
 - `res.status(200).json(await ...)` と書かない（`status` が先に呼ばれて、失敗しても 200 になる）。先に値を取ってから返す。
 - `mariadb` ドライバは JSON 列をオブジェクトで返すことがある。`parseOptions` は文字列とオブジェクトの両方を受け付ける。
 - クライアント側の IPv6 の検証は緩い（文字種だけ）。最終的な検証はサーバ側の `net.isIP` で行う。
-- ファイル名 `Sideber.tsx` は原文のまま（綴りは Sidebar の誤り）。変更する場合は import もすべて直すこと。
 
 ## プロファイル（`components/profiles.ts`）
 
