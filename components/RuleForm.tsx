@@ -213,12 +213,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     getInterfaces();
   }, [editMode]);
 
-  // プロファイルなどで一覧にないアドレスが入ったら手入力に切り替える
-  useEffect(() => {
-    if (interfaces && srcAddr !== '' && !listenOptions(interfaces).some((o) => o.value === srcAddr)) {
-      setAddrCustom(true);
-    }
-  }, [interfaces, srcAddr]);
+  // プロファイルなどで一覧にないアドレスが入ったら手入力に切り替える（描画中に直す。エフェクトで直すと 1 回余分に描画される）
+  if (!addrCustom && interfaces && srcAddr !== '' && !listenOptions(interfaces).some((o) => o.value === srcAddr)) {
+    setAddrCustom(true);
+  }
 
   const clash = reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', srcAddr,
     srcPort === '' ? '' : Number(srcPort), srcPortEnd === '' || srcPortEnd === null ? null : Number(srcPortEnd));
@@ -249,17 +247,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     return list;
   }, [caps.starttls, initialData]);
 
-  useEffect(() => {
-    if (!editMode && !availableSourceIps.includes(sourceIp)) {
-      setSourceIp('proxy');
-    }
-  }, [editMode, availableSourceIps, sourceIp]);
-
-  useEffect(() => {
-    if (!availableTlsModes.includes(tlsMode)) {
-      setTlsMode('passthrough');
-    }
-  }, [availableTlsModes, tlsMode]);
+  // 選べなくなった値は既定に戻す（プロトコルやアドレスを変えたとき）
+  if (!editMode && !availableSourceIps.includes(sourceIp) && sourceIp !== 'proxy') {
+    setSourceIp('proxy');
+  }
+  if (!availableTlsModes.includes(tlsMode) && tlsMode !== 'passthrough') {
+    setTlsMode('passthrough');
+  }
 
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate';
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる

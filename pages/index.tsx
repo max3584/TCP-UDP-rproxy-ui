@@ -295,6 +295,8 @@ const DashboardPage: React.FC = () => {
 
   // 初回の取得と自動更新
   useEffect(() => {
+    // load は await の後でだけ state を変える（同期の setState ではない）
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
   useAutoRefresh(load, autoRefresh);
