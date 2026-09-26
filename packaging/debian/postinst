@@ -1,0 +1,55 @@
+#!/bin/sh
+set -e
+
+ENV_FILE=/etc/rproxy-ui/rproxy-ui.env
+
+# KEY が空（KEY= の行）のときだけ値を入れる
+fill() {
+	if grep -q "^$1=\$" "$ENV_FILE"; then
+		sed -i "s|^$1=\$|$1=$2|" "$ENV_FILE"
+		return 0
+	fi
+	return 1
+}
+
+if [ "$1" = "configure" ]; then
+	if ! getent passwd rproxy-ui >/dev/null; then
+		useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin rproxy-ui
+	fi
+	# secrets (Keycloak, DB, rproxy token): systemd reads the file, the service user does not need to
+	chown root:root /etc/rproxy-ui "$ENV_FILE"
+	chmod 0750 /etc/rproxy-ui
+	chmod 0600 "$ENV_FILE"
+
+	if fill NEXTAUTH_SECRET "$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"; then
+		echo "rproxy-ui: generated NEXTAUTH_SECRET in $ENV_FILE"
+	fi
+	# rproxy-api on the same host: point the UI at its control API
+	if [ -r /etc/rproxy/tokens ] && grep -q '^RPROXY_API_TOKEN=$' "$ENV_FILE"; then
+		token=$(grep -v -e '^#' -e '^[[:space:]]*$' /etc/rproxy/tokens | head -n1 | tr -d '[:space:]')
+		port=$(sed -n 's/^RPROXY_API_PORT=//p' /etc/rproxy/rproxy.env 2>/dev/null | tail -n1)
+		if [ -n "$token" ]; then
+			fill RPROXY_API_TOKEN "$token" || true
+			fill RPROXY_API_URL "http://127.0.0.1:${port:-8080}" || true
+			echo "rproxy-ui: using the rproxy-api on this host (http://127.0.0.1:${port:-8080})"
+		fi
+	fi
+	echo "rproxy-ui: set NEXTAUTH_URL, KEYCLOAK_* and DB_* in $ENV_FILE, then: systemctl enable --now rproxy-ui"
+fi
+
+# Automatically added by build-deb.sh (debhelper snippets)
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	if deb-systemd-helper debian-installed rproxy-ui.service; then
+		deb-systemd-helper unmask rproxy-ui.service >/dev/null || true
+		if deb-systemd-helper --quiet was-enabled rproxy-ui.service; then
+			deb-systemd-helper enable rproxy-ui.service >/dev/null || true
+		fi
+	fi
+	deb-systemd-helper update-state rproxy-ui.service >/dev/null || true
+	if [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+		if [ -n "$2" ]; then
+			deb-systemd-invoke try-restart rproxy-ui.service >/dev/null || true
+		fi
+	fi
+fi
