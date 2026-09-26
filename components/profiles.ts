@@ -17,9 +17,19 @@ export interface Profile {
   tlsMode: TlsMode;
   starttls?: StartTls;
   starttlsRequired?: boolean;
+  // L7（HTTP）のひな形。proxy: サービスへ転送するルート / redirect: HTTP→HTTPS のリダイレクトだけ
+  l7?: 'proxy' | 'redirect';
 }
 
 export const PROFILES: Profile[] = [
+  {
+    id: 'https-l7', label: 'HTTPS リバースプロキシ（L7）', protocol: 'tcp', srcPort: 443, distPort: 443, tlsMode: 'terminate', l7: 'proxy',
+    description: 'rproxy で TLS を終端し、Host・パスなどでリクエストごとに転送先を選びます（Traefik のルーターと同じ）。TLS タブで証明書を、「L7 (HTTP)」タブでルートとサービスを設定してください。証明書は certbot / cert-manager で取ったファイルを指定します（更新は rproxy が自動で読み直します）。',
+  },
+  {
+    id: 'http-redirect', label: 'HTTP→HTTPS リダイレクト（80 番、L7）', protocol: 'tcp', srcPort: 80, distPort: 80, tlsMode: 'passthrough', l7: 'redirect',
+    description: '平文の HTTP を受けて、すべて https:// へリダイレクト（301 / 308）します。certbot の http-01 を使うなら、「L7 (HTTP)」タブで PathPrefix(`/.well-known/acme-challenge/`) のルートを certbot（webroot のサーバか standalone のポート）へ転送するよう足してください。',
+  },
   {
     id: 'https-sni', label: 'HTTPS（443 を SNI で振り分け）', protocol: 'tcp', srcPort: 443, distPort: 443, tlsMode: 'sni',
     description: '証明書は転送先がそれぞれ持ち、rproxy は SNI（サーバ名）だけを見て転送先を選びます。サーバ名ごとの転送先を追加してください。一致しない名前は下の転送先へ送ります。',

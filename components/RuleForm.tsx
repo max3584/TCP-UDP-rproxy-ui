@@ -20,6 +20,8 @@ import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 import { transparentHint } from './sourceip';
 import { ACME_UNSUPPORTED_NOTE } from './messages';
+import HttpEditor from './HttpEditor';
+import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHttp } from './httpspec';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -84,6 +86,14 @@ interface Caps {
   // GET /capabilities の transparent / transparent_ipv6（取得できなかったときは null）
   transparent: boolean | null;
   transparentIpv6: boolean | null;
+  // GET /capabilities の features（v0.3。古い rproxy は返さないので null）
+  features: {
+    http: boolean;
+    http3: boolean;
+    middlewares: string[];
+    // 実装済みのサービスの項目（health_check / sticky）。返さない rproxy では null
+    services: string[] | null;
+  } | null;
 }
 
 // rproxy の対応機能を取得できなかったときは、既定の動作（proxy / passthrough）だけを選べるようにする
@@ -95,10 +105,11 @@ const FALLBACK_CAPS: Caps = {
   maxRangePorts: DEFAULT_MAX_RANGE_PORTS,
   transparent: null,
   transparentIpv6: null,
+  features: null,
 };
 
-type TabId = 'basic' | 'tls' | 'mail' | 'advanced';
-const TAB_IDS: TabId[] = ['basic', 'tls', 'mail', 'advanced'];
+type TabId = 'basic' | 'http' | 'tls' | 'mail' | 'advanced';
+const TAB_IDS: TabId[] = ['basic', 'http', 'tls', 'mail', 'advanced'];
 
 type FieldErrors = {
   srcAddr: string;
@@ -110,11 +121,13 @@ type FieldErrors = {
   udpIdleSecs: string;
   allowFrom: string;
   tls: string;
+  http: string;
 };
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
 const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
   basic: ['srcAddr', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort'],
+  http: ['http'],
   tls: ['tls'],
   mail: [],
   advanced: ['sourceIp', 'udpIdleSecs', 'allowFrom'],
@@ -130,6 +143,7 @@ const EMPTY_ERRORS: FieldErrors = {
   udpIdleSecs: '',
   allowFrom: '',
   tls: '',
+  http: '',
 };
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
@@ -145,8 +159,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [srcAddr, setSrcAddr] = useState(initialData?.srcAddr || '');
   const [srcPort, setSrcPort] = useState<number | ''>(initialData?.srcPort || '');
   const [srcPortEnd, setSrcPortEnd] = useState<number | ''>(initialData?.srcPortEnd ?? '');
-  // L7 のルール（http）はフォームでは編集できない（UI #34）。変えずにそのまま送る（転送先は持たない）
-  const httpSpec = initialData?.http ?? null;
+  // L7（http）のルールは転送先を持たず、L7 タブのルート・サービスで転送先を決める。
+  // L4 と L7 の切り替えは作成時だけ（rproxy は PATCH で切り替えられない）
+  const [l7, setL7] = useState(initialData?.http !== undefined && initialData?.http !== null);
+  const [httpRules, setHttpRules] = useState<HttpRules>(() => (initialData?.http ? toHttpRules(initialData.http) : emptyHttp()));
+  const [crowdsec, setCrowdsec] = useState(initialData?.crowdsec ?? false);
   const [distAddr, setDistAddr] = useState(initialData?.distAddr || '');
   const [distPort, setDistPort] = useState<number | ''>(initialData?.distPort || '');
   const [sourceIp, setSourceIp] = useState<SourceIp>(initialData?.sourceIp || 'proxy');
@@ -200,6 +217,12 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           transparent: typeof data.transparent === 'boolean' ? data.transparent : null,
           // 古い rproxy は transparent_ipv6 を返さない（IPv4 だけ）
           transparentIpv6: typeof data.transparent_ipv6 === 'boolean' ? data.transparent_ipv6 : false,
+          features: typeof data.features === 'object' && data.features !== null ? {
+            http: data.features.http === true,
+            http3: data.features.http3 === true,
+            middlewares: Array.isArray(data.features.middlewares) ? data.features.middlewares : [],
+            services: Array.isArray(data.features.services) ? data.features.services : null,
+          } : null,
         });
       } catch (err) {
         setCapabilitiesError(`rproxy の対応機能を取得できませんでした（既定の動作だけを選べます）: ${err instanceof Error ? err.message : err}`);
@@ -273,7 +296,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     setTlsMode('passthrough');
   }
 
-  const showStartTls = protocol === 'tcp' && tlsMode === 'terminate';
+  // L7 は tcp の terminate か TLS なし（passthrough を平文の HTTP として扱う）で、単一ポートのとき。
+  // rproxy が features.http を返すときだけ選べる（編集中の L7 のルールは常に表示する）
+  const l7Available = protocol === 'tcp' && (caps.features?.http === true || (editMode && l7));
+  if (l7 && !editMode && protocol !== 'tcp') setL7(false);
+  const showStartTls = protocol === 'tcp' && tlsMode === 'terminate' && !l7;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   const showUnmatched = protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate') && routes.length > 0;
   const profile = PROFILES.find((p) => p.id === profileId);
@@ -291,6 +318,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     setTlsMode(p.tlsMode);
     setStarttls(p.starttls ?? '');
     setStarttlsRequired(p.starttlsRequired ?? true);
+    setL7(p.l7 !== undefined);
+    if (p.l7 === 'proxy') setHttpRules(emptyHttp());
+    if (p.l7 === 'redirect') setHttpRules(redirectHttp());
   };
 
   const validateSrcAddress = (address: string): string => {
@@ -382,13 +412,22 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         (clash ? `rproxy の${clash.purpose === 'control API' ? '制御 API' : clash.purpose}（${clash.addr}:${clash.port}）と重なります。別のアドレスかポートを選んでください。` : ''),
       srcPort: validatePort(srcPort),
       srcPortEnd: validateRange(),
-      distAddr: httpSpec !== null ? '' : validateDistAddress(distAddr),
-      distPort: httpSpec !== null ? '' : validatePort(distPort),
+      distAddr: l7 ? '' : validateDistAddress(distAddr),
+      distPort: l7 ? '' : validatePort(distPort),
       sourceIp: editMode || availableSourceIps.includes(sourceIp) ? '' : 'この送信元 IP の扱いは選択できません。',
       udpIdleSecs: validateUdpIdleSecs(udpIdleSecs),
       allowFrom: '',
       tls: '',
+      http: '',
     };
+
+    if (l7) {
+      const problems = validateHttp(httpRules, caps.features?.middlewares);
+      if (tlsMode === 'sni') problems.unshift('L7（HTTP）は TLS のモードが terminate か passthrough（平文の HTTP）のときだけ使えます（TLS タブ）。');
+      if (!editMode && rangeEnd() !== null) problems.unshift('L7（HTTP）のルールはポート範囲にできません（基本タブ）。');
+      if (sourceIp === 'proxy_v1' || sourceIp === 'proxy_v2') problems.unshift('L7（HTTP）のルールでは PROXY ヘッダ（proxy_v1 / proxy_v2）を使えません（詳細タブ）。');
+      newErrors.http = problems.join('\n');
+    }
 
     const allowFrom = checkAllowFrom(splitAllowFromText(allowFromText));
     if (!allowFrom.ok) newErrors.allowFrom = allowFrom.error;
@@ -398,7 +437,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     let tlsSpec: TlsSpec = { mode: 'passthrough' };
     try {
       tlsSpec = normalizeTls(buildTls());
-      const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort || httpSpec !== null
+      const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort || l7
         ? 1 : portCount(Number(srcPort), end, Number(distPort));
       checkTls(protocol, tlsSpec, starttlsValue, count);
     } catch (err) {
@@ -418,15 +457,16 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       srcAddr: srcAddr,
       srcPort: Number(srcPort),
       srcPortEnd: end,
-      distAddr: httpSpec !== null ? '' : distAddr,
-      distPort: httpSpec !== null ? 0 : Number(distPort),
+      distAddr: l7 ? '' : distAddr,
+      distPort: l7 ? 0 : Number(distPort),
       sourceIp: sourceIp,
       udpIdleSecs: protocol === 'udp' ? Number(udpIdleSecs) : DEFAULT_UDP_IDLE_SECS,
       tls: tlsSpec,
       starttls: starttlsValue,
       starttlsRequired: normalizeStartTlsRequired(starttlsRequired, starttlsValue),
       allowFrom: allowFrom.ok ? allowFrom.value : [],
-      http: httpSpec,
+      http: l7 ? cleanHttp(httpRules) : null,
+      crowdsec: crowdsec,
     };
 
     void onSubmit(rule);
@@ -442,12 +482,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const tabLabel = (tab: TabId): string => {
     switch (tab) {
       case 'basic': return '基本';
+      case 'http': return 'L7 (HTTP)';
       case 'tls': return protocol === 'udp' ? 'DTLS' : 'TLS / DTLS';
       case 'mail': return 'メール (STARTTLS)';
       case 'advanced': return '詳細';
     }
   };
-  const tabDisabled = (tab: TabId): boolean => tab === 'mail' && !showStartTls;
+  const tabDisabled = (tab: TabId): boolean => (tab === 'mail' && !showStartTls) || (tab === 'http' && !l7);
 
   // 矢印キー / Home / End でタブを移る（WAI-ARIA の Tabs パターン）
   const handleTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -651,10 +692,29 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             各ポートを、転送先ポートから順に同じ数だけずらして転送します（最大 {caps.maxRangePorts} ポート）。範囲は作成後に変更できません。
           </p>
         )}
-        {httpSpec !== null ? (
+        {l7Available && (
+          <div className="mb-4">
+            <label htmlFor="rule-l7" className="flex items-center gap-2 text-sm text-gray-900">
+              <input
+                id="rule-l7"
+                type="checkbox"
+                checked={l7}
+                disabled={editMode}
+                onChange={(e) => setL7(e.target.checked)}
+              />
+              L7（HTTP）で振り分ける（Host・パスなどでリクエストごとに転送先を選ぶ）
+            </label>
+            <p className={helpClass}>
+              {editMode
+                ? 'L4 と L7 の切り替えは、ルールを作り直すときだけできます。'
+                : 'TLS を終端（HTTPS）するか、TLS なし（平文の HTTP）で使います。ポート範囲・STARTTLS とは組み合わせられません。'}
+            </p>
+          </div>
+        )}
+        {l7 ? (
           <p className="mb-4 text-sm text-gray-900 bg-blue-50 border border-blue-300 rounded px-3 py-2" data-testid="http-rule-note">
-            このルールは L7（HTTP）のルールです。転送先は L7 の設定（http）のサービスで決まります。
-            L7 の設定はこのフォームではまだ編集できません（今後対応）。保存しても L7 の設定はそのまま保たれます。変えるときは rproxy の設定ファイルか制御 API を使ってください。
+            このルールは L7（HTTP）のルールです。転送先は「L7 (HTTP)」タブのルートとサービスで決まります。
+            <button type="button" className="ml-1 text-blue-700 underline" onClick={() => setActiveTab('http')}>L7 の設定を開く</button>
           </p>
         ) : (
           <>
@@ -686,6 +746,30 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             />
             {errors.distPort && <p className={errorClass}>{errors.distPort}</p>}
           </div>
+          </>
+        )}
+      </div>
+
+      <div {...panelProps('http')}>
+        {l7 && (
+          <>
+            {caps.features === null && (
+              <p className="mb-3 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1">
+                rproxy から使える L7 の機能（features）を取得できませんでした。すべての項目を出していますが、rproxy が対応していない項目は保存時に断られます。
+              </p>
+            )}
+            <HttpEditor
+              value={httpRules}
+              onChange={setHttpRules}
+              middlewares={caps.features?.middlewares ?? null}
+              serviceOptions={caps.features?.services ?? null}
+              http3={caps.features?.http3 === true || httpRules.http3 === true}
+            />
+            {errors.http && (
+              <ul className="mt-2 text-red-700 text-xs list-disc pl-5" role="alert">
+                {errors.http.split('\n').map((e) => <li key={e}>{e}</li>)}
+              </ul>
+            )}
           </>
         )}
       </div>
@@ -973,6 +1057,17 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             {ALLOW_FROM_HELP}（最大 {MAX_ALLOW_FROM} 件。{protocol === 'udp' ? 'UDP では範囲外の送信元のデータグラムを捨てます。' : ''}保存すると 10.0.0.5 → 10.0.0.5/32 のように正規化します）。
           </p>
           {errors.allowFrom && <p className={errorClass}>{errors.allowFrom}</p>}
+        </div>
+        <div className="mb-4">
+          <label htmlFor="rule-crowdsec" className="flex items-center gap-2 text-sm text-gray-900">
+            <input id="rule-crowdsec" type="checkbox" checked={crowdsec} onChange={(e) => setCrowdsec(e.target.checked)} />
+            CrowdSec の判定で接続元を遮断する（L4）
+          </label>
+          <p className={helpClass}>
+            CrowdSec で禁止された接続元を、TLS より前（allow_from と同じところ）で切ります{protocol === 'udp' ? '（UDP はデータグラムを捨てます）' : ''}。
+            rproxy の設定ファイルに global.crowdsec（LAPI の URL と API キー）が必要です（rproxy v0.3.2 以降）。
+            {l7 ? ' L7 のルールでは、ミドルウェアの crowdsec でリクエストごと（AppSec を含む）にも判定できます。' : ''}
+          </p>
         </div>
       </div>
 

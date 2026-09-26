@@ -311,9 +311,10 @@ export function portCount(srcPort: number, srcPortEnd: number | null, distPort: 
   return count;
 }
 
-// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from", "http"} の JSON）。既定のままなら null を保存する。
-// allow_from は空なら、http は null なら省く。rproxy は deny_unknown_fields で読むので、この 5 つ以外のキーを入れてはいけない
-export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http'];
+// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec"} の JSON）。既定のままなら null を保存する。
+// allow_from は空なら、http は null なら、crowdsec は false なら省く。
+// rproxy は deny_unknown_fields で読むので、この 6 つ以外のキーを入れてはいけない（crowdsec は rproxy v0.3.2 から）
+export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec'];
 
 export function optionsJson(
   tls: TlsSpec,
@@ -321,15 +322,24 @@ export function optionsJson(
   starttlsRequired: boolean,
   allowFrom: string[] = [],
   http: HttpSpec | null = null,
+  crowdsec = false,
 ): string | null {
-  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null) return null;
+  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec) return null;
   return JSON.stringify({
     tls: tls,
     starttls: starttls,
     starttls_required: starttlsRequired,
     ...(allowFrom.length > 0 ? { allow_from: allowFrom } : {}),
     ...(http !== null ? { http: http } : {}),
+    ...(crowdsec ? { crowdsec: true } : {}),
   });
+}
+
+// ルールの crowdsec（L4 で CrowdSec の判定に入っている接続元を切る）。省略は false
+export function normalizeCrowdsec(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== 'boolean') throw invalid('crowdsec は true か false で指定してください。');
+  return value;
 }
 
 // L7 の設定（ルールの http）。中身は rproxy が検証するので、オブジェクトであることだけを確かめる
@@ -345,11 +355,12 @@ export interface RuleOptions {
   starttlsRequired: boolean;
   allowFrom: string[];
   http: HttpSpec | null;
+  crowdsec: boolean;
 }
 
 // options 列を読む。ドライバによっては JSON がオブジェクトで返るので両方を受け付ける
 export function parseOptions(value: unknown): RuleOptions {
-  const empty = (): RuleOptions => ({ tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null });
+  const empty = (): RuleOptions => ({ tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false });
   if (value === undefined || value === null || value === '') return empty();
   const data = typeof value === 'string' ? JSON.parse(value) : value;
   if (data === null) return empty();
@@ -363,5 +374,6 @@ export function parseOptions(value: unknown): RuleOptions {
     starttlsRequired: normalizeStartTlsRequired(data.starttls_required, starttls),
     allowFrom: normalizeAllowFrom(data.allow_from),
     http: normalizeHttp(data.http),
+    crowdsec: normalizeCrowdsec(data.crowdsec),
   };
 }

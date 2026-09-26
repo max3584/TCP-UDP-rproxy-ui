@@ -251,6 +251,11 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
                         <AllowFromBadge allowFrom={r.allowFrom} />
                       </div>
                     )}
+                    {r.owner !== undefined && (
+                      <div className="mt-0.5 text-xs text-gray-600 font-sans" title="作成した利用者（Keycloak の ID）">
+                        所有者 <span className="font-mono">{r.owner}</span>
+                      </div>
+                    )}
                   </td>
                   <td className="font-mono whitespace-nowrap">
                     {targetLabel(r)}

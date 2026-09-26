@@ -13,6 +13,15 @@ export const ACME_UNSUPPORTED_NOTE =
 export const FORBIDDEN_MESSAGE =
   'UI が使う rproxy のトークンに、この操作の権限がありません。rproxy のトークンファイルで、UI のトークンに rules:read と rules:write のスコープがあるか、allow_listen_ports にこの待ち受けポートが含まれるかを確認してください。';
 
+// rproxy-user / rproxy-admin のロールがない利用者（API は 403 no_role、画面は RequireAuth が出す）
+export const NO_ROLE_MESSAGE =
+  'rproxy の管理画面を使う権限がありません。管理者に rproxy-user（または rproxy-admin）のロールを付けてもらってください。';
+
+// rproxy が UI のトークンを 401 unauthorized で断ったとき（RPROXY_API_TOKEN の誤りか期限切れ）。
+// 利用者のサインインの問題ではないので、code は rproxy_unauthorized にして区別する
+export const RPROXY_UNAUTHORIZED_MESSAGE =
+  'rproxy が UI のトークンを受け付けませんでした。UI サーバの RPROXY_API_TOKEN が rproxy のトークンファイルにあるか、期限（expires）が切れていないかを確認してください。';
+
 const EXPLAIN: Record<string, string> = {
   resolve_failed: '転送先のホスト名を名前解決できませんでした。DNS に登録されているか、ホスト名の綴りを確認してください（IP アドレスでも指定できます）。',
   bind_failed: '待ち受けポートを開けませんでした。ほかのプログラムがそのポートを使っていないか確認してください。',
@@ -23,6 +32,9 @@ const EXPLAIN: Record<string, string> = {
   unauthorized: 'ログインし直してください。',
   static: STATIC_RULE_MESSAGE,
   forbidden: FORBIDDEN_MESSAGE,
+  rproxy_unauthorized: RPROXY_UNAUTHORIZED_MESSAGE,
+  no_role: NO_ROLE_MESSAGE,
+  port_not_allowed: 'この待ち受けポートは管理者だけが使えます。',
 };
 
 // 1024 未満のポートは、rproxy に CAP_NET_BIND_SERVICE がないと開けない

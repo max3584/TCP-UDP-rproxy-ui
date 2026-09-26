@@ -46,7 +46,7 @@ import { RproxyError } from '@/components/rproxy';
 
 const { conn, pool } = mocks;
 
-const session = { user: { id: 'user-1', name: 'n', email: 'e', image: '', role: '' }, expires: '' };
+const session = { user: { id: 'user-1', name: 'n', email: 'e', image: '', role: 'rproxy-user', roles: ['rproxy-user'] }, expires: '' };
 
 const tcpRule = {
   protocol: 'tcp',
@@ -994,14 +994,33 @@ describe('/api/forward/[forward]: L7 (http) rules and v0.3 TLS', () => {
     expect(Object.keys(JSON.parse(update?.[1][3] as string))).toEqual(['tls', 'starttls', 'starttls_required', 'allow_from', 'http']);
   });
 
-  it('modify ignores a target and an http sent for an http rule', async () => {
+  it('modify replaces http when the form sends it (a target sent with it is ignored)', async () => {
     conn.query.mockResolvedValueOnce([httpRow()]);
     mocks.modifyRule.mockResolvedValue({});
+    const changed = { ...http, routes: [{ name: 'api', match: 'PathPrefix(`/api`)', service: 'app' }] };
 
-    await call('modify', { ...tcpRule, ...key, tls: tls, http: { routes: [] } });
+    const { status } = await call('modify', { ...tcpRule, ...key, tls: tls, http: changed });
+    expect(status).toBe(200);
     const patch = mocks.modifyRule.mock.calls[0][1];
-    expect(patch.http).toEqual(http);
+    expect(patch.http).toEqual(changed);
     expect(patch).not.toHaveProperty('remote_addr');
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(JSON.parse(update?.[1][3] as string).http).toEqual(changed);
+  });
+
+  it('modify refuses to switch between L4 and L7 (rproxy cannot PATCH it) and checks http', async () => {
+    conn.query.mockResolvedValueOnce([{ dist_addr: 'a', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30 }]);
+    let res = await call('modify', { ...tcpRule, ...key, tls: tls, http: http });
+    expect([res.status, res.body.code]).toEqual([400, 'unsupported']);
+
+    conn.query.mockResolvedValueOnce([httpRow()]);
+    res = await call('modify', { ...tcpRule, ...key, tls: tls, http: null });
+    expect([res.status, res.body.code]).toEqual([400, 'unsupported']);
+
+    res = await call('modify', { ...tcpRule, ...key, tls: tls, http: { routes: [{ name: 'x', match: 'Hots(`a`)', service: 'nope' }] } });
+    expect([res.status, res.body.code]).toEqual([400, 'invalid']);
+    expect(res.body.error).toContain('知らない条件 Hots');
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
   });
 
   it('modify re-creates a missing http rule with http and without a target, and the undo patch keeps http', async () => {
@@ -1039,17 +1058,38 @@ describe('/api/forward/[forward]: L7 (http) rules and v0.3 TLS', () => {
     expect(conn.rollback).toHaveBeenCalled();
   });
 
-  it('add cannot create an http rule from the form: http is ignored and a target is required', async () => {
+  it('add creates an http rule from the form: http instead of a target, stored in options', async () => {
     mocks.addRule.mockResolvedValue({});
 
-    await call('add', { ...tcpRule, http: http });
+    const { status } = await call('add', { ...tcpRule, distAddr: '', distPort: 0, http: http });
+    expect(status).toBe(200);
     const rule = mocks.addRule.mock.calls[0][0];
-    expect(rule).not.toHaveProperty('http');
-    expect(rule.remote_addr).toBe('example.com');
-    expect(sqlCalls()[0][1][9]).toBeNull();
+    expect(rule.http).toEqual(http);
+    expect(rule).not.toHaveProperty('remote_addr');
+    expect(rule).not.toHaveProperty('remote_port');
+    const insert = sqlCalls()[0][1];
+    expect(insert.slice(5, 7)).toEqual(['', 0]);
+    expect(JSON.parse(insert[9] as string).http).toEqual(http);
 
-    const { status } = await call('add', { ...tcpRule, distAddr: '', distPort: 0 });
-    expect(status).toBe(400);
+    // L4 のルールには転送先が必須
+    expect((await call('add', { ...tcpRule, distAddr: '', distPort: 0 })).status).toBe(400);
+  });
+
+  it('add refuses http where rproxy would (udp, sni, STARTTLS, ranges, PROXY headers, broken routes)', async () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ protocol: 'udp' }, 'invalid'],
+      [{ tls: { mode: 'sni' } }, 'tls_config'],
+      [{ srcPort: 587, tls: { mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }] }, starttls: 'smtp' }, 'invalid'],
+      [{ srcPortEnd: 8890 }, 'invalid'],
+      [{ sourceIp: 'proxy_v2' }, 'invalid'],
+      [{ http: { routes: [{ name: 'a', match: 'PathPrefix(`/`)', service: 'missing' }] } }, 'invalid'],
+      [{ http: 'nope' }, 'invalid'],
+    ];
+    for (const [over, code] of cases) {
+      const res = await call('add', { ...tcpRule, distAddr: '', distPort: 0, http: http, ...over });
+      expect([over, res.status, res.body.code]).toEqual([over, 400, code]);
+    }
+    expect(mocks.addRule).not.toHaveBeenCalled();
   });
 
   it('add passes ACME certificates and TLS options through to rproxy and options', async () => {

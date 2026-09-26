@@ -72,7 +72,7 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
    - Valid redirect URIs: `https://dashboard.example.com/api/auth/callback/keycloak`
    - Web origins / Root URL: `https://dashboard.example.com`
 3. 「Credentials」のクライアントシークレットを `KEYCLOAK_CLIENT_SECRET` に設定する。
-4. 利用者を作るか、既存の IdP と連携する。realm ロール `rproxy-user` / `rproxy-admin` は今は画面に表示するだけ（権限による制御は UI の #4）。
+4. 利用者を作るか、既存の IdP と連携し、管理者には realm ロール `rproxy-admin`（すべてのルール）を付ける。ほかの利用者は既定で自分のルールだけを扱える。ロールで利用者を絞るなら `RPROXY_UI_USER_ROLE=rproxy-user` にして、そのロールを付ける（README の「ロール」。ロールの名前・クレームの位置・利用者が使えるポートは `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_USER_PORTS` で変えられる）。
 
 Keycloak の証明書が社内の CA のものなら、Node.js がその CA を信頼するように `rproxy-ui.env` に `NODE_EXTRA_CA_CERTS=/etc/rproxy-ui/ca.pem` を足す（`rproxy-ui` ユーザーが読めること。`/home`・`/root`・`/tmp` には置かない）。
 

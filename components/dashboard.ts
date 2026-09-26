@@ -149,6 +149,7 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     starttlsRequired: starttls === null ? true : status.starttls_required ?? true,
     allowFrom: status.allow_from ?? [],
     http: isHttpSpec(status.http) ? status.http : null,
+    crowdsec: status.crowdsec === true,
     state: status.state,
     error: status.error ?? null,
     connections: status.connections ?? null,
@@ -392,6 +393,7 @@ export function toRule(rule: ForwardRule): ForwardRule {
     starttlsRequired: rule.starttlsRequired,
     allowFrom: rule.allowFrom,
     http: rule.http,
+    crowdsec: rule.crowdsec,
   };
 }
 
