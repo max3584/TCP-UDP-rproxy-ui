@@ -23,6 +23,8 @@ export interface RproxyRule {
   allow_from?: string[];
   // L7 の設定（v0.3）。中身は rproxy が検証する
   http?: HttpSpec;
+  // CrowdSec の判定での切断（v0.3.2。rproxy に global.crowdsec が必要）。応答では false のとき省かれる
+  crowdsec?: boolean;
 }
 
 // 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）。
@@ -60,6 +62,8 @@ export interface RproxyRulePatch {
   allow_from?: string[];
   listen_port_end?: number;
   http?: HttpSpec;
+  // 付けると有効・無効を切り替える
+  crowdsec?: boolean;
 }
 
 // この版の rproxy で動かせる v0.3 の機能（古い rproxy は features を返さない）

@@ -22,10 +22,11 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `forward_rules`：転送ルール。`(protocol, src_addr, src_port)` で一意。`auth_id` は IdP（Keycloak）の `sub`。
   `protocol` は小文字の `tcp` / `udp`、IPv6 の `src_addr` は圧縮表記（例 `::1`）で保存する。
   - `src_port_end`：ポート範囲の終わり。単一ポートなら NULL。範囲ルールのキーは先頭の `src_port`（範囲の重なりは rproxy が拒否する）。
-  - `options`：TLS / STARTTLS / 接続を許可する送信元 / L7 の設定の JSON。形は必ず `{"tls": <TLS>, "starttls": "smtp" | "imap" | "pop3" | null, "starttls_required": bool, "allow_from": [<CIDR>, ...], "http": <L7>}`
+  - `options`：TLS / STARTTLS / 接続を許可する送信元 / L7 の設定の JSON。形は必ず `{"tls": <TLS>, "starttls": "smtp" | "imap" | "pop3" | null, "starttls_required": bool, "allow_from": [<CIDR>, ...], "http": <L7>, "crowdsec": bool}`
     （`<TLS>` は `../rproxy-api/docs/API.md` の「TLS」と同じ。`allow_from` は正規化した CIDR（`10.0.0.5/32` など）で、空なら省く。
     `<L7>` は API.md の「v0.3 の設定」のルールの `http` で、L7 のルールだけに付く（そのルールの `dist_addr` は `''`、`dist_port` は `0`）。rproxy は未知のキーを拒否して読み込むので、ほかのキーを足さないこと。
-    passthrough で既定値のまま、STARTTLS なし、allow_from なし、http なしのルールは NULL を保存する。列の型は変わらないので、migration は不要。
+    `crowdsec`（L4 で CrowdSec の判定に入っている接続元を切る。rproxy-api v0.3.2 から）は true のときだけ付ける。
+    passthrough で既定値のまま、STARTTLS なし、allow_from なし、http なし、crowdsec なしのルールは NULL を保存する。列の型は変わらないので、migration は不要。
   - rproxy の固定ルール（`--static-rules` のファイル）はこのテーブルに入らない。
 - `forward_rules_log`：追加・変更・削除の履歴。`update_action` は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者（`004` より前の行は NULL）。
 

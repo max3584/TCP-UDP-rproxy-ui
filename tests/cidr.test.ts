@@ -116,7 +116,7 @@ describe('options JSON with allow_from', () => {
     expect(parseOptions(stored).allowFrom).toEqual(['10.0.0.5/32', 'fd00::/8']);
     // 古い行（allow_from なし）と NULL
     expect(parseOptions(JSON.stringify({ tls: { mode: 'sni' }, starttls: null, starttls_required: true })).allowFrom).toEqual([]);
-    expect(parseOptions(null)).toEqual({ tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null });
+    expect(parseOptions(null)).toEqual({ tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false });
     expect(() => parseOptions(JSON.stringify({ ...stored, extra: 1 }))).toThrow(/不明な項目/);
   });
 });

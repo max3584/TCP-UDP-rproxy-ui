@@ -39,7 +39,7 @@ bun dev
 
 + NEXTAUTH 設定情報
 + Database 設定情報（`DB_PORT` を省略した場合は 3306）
-+ Keycloak 設定情報（Confidential クライアント。ロールは realm ロールをアクセストークンの `realm_access.roles` から読む）
++ Keycloak 設定情報（Confidential クライアント。ロールは realm ロールをアクセストークンの `realm_access.roles` から読む。下の「ロール」）
 + rproxy-api の制御 API の URL とトークン（`RPROXY_API_TOKEN` は rproxy を `--token-file` 付きで起動した場合のみ必要）
   + rproxy のトークンを権限付き（YAML）にする場合、UI のトークンには `rules:read`（一覧・詳細）と `rules:write`（追加・変更・削除）のスコープが要ります。`metrics:read` は使いません（`GET /capabilities` はどのトークンでも読めます）。
     `allow_listen_ports` を付けると、その範囲の外の待ち受けポートのルールは UI から作成・変更・削除できません。
@@ -74,6 +74,29 @@ Keycloak のレルムは `keycloak/realm-rproxy-dev.json` から作れる（管�
 このファイルにはクライアントシークレットとユーザーが入っていないので、読み込んだあと、クライアント `rproxy-ui` の「Credentials」でシークレットを確認して `KEYCLOAK_CLIENT_SECRET` に設定する。URL は con0 の開発環境（`http://con0.dev.home:3001`）向け。
 
 Keycloak クライアントの「Valid redirect URIs」には `${NEXTAUTH_URL}/api/auth/callback/keycloak` を登録してください。
+
+## ロール（権限）
+
+Keycloak のロールで、だれが何をできるかを決める（API route がリクエストごとに確かめる）。
+
+| ロール | できること |
+|---|---|
+| `rproxy-admin` | すべての利用者のルールを一覧・詳細・変更・削除できる（一覧と詳細に所有者（Keycloak の ID）を出す）。どの待ち受けポートでも使える |
+| `rproxy-user` | 自分のルールだけを作成・一覧・変更・削除できる |
+| どちらもない | 画面も API も使えない（403。「権限がありません」と出る） |
+
+- ロールはアクセストークンの `realm_access.roles`（realm ロール）から読む。クライアントロールを使うなら `RPROXY_UI_ROLES_CLAIM=resource_access.rproxy-ui.roles` のようにクレームの位置（ドット区切り）を変える。
+- ロールの名前は `RPROXY_UI_ADMIN_ROLE`（既定 `rproxy-admin`）と `RPROXY_UI_USER_ROLE`（既定 `rproxy-user`）で変えられる。`RPROXY_UI_USER_ROLE=`（空）にすると、サインインできる人はだれでも `rproxy-user` と同じ扱いになる（ロールを使わない運用）。
+- `RPROXY_UI_USER_PORTS=1024-65535` のように書くと、`rproxy-user` が使える待ち受けポートを制限できる（範囲の外は 403 `port_not_allowed`。`rproxy-admin` は制限されない）。既定は制限なし。
+- ロールはサインインしたときに読むので、Keycloak でロールを変えたら利用者にサインインし直してもらう。
+- 履歴（`forward_rules_log`）の `auth_id` は操作した利用者（管理者がほかの人のルールを変えたら管理者）。
+
+## L7（HTTP）のルール
+
+rproxy-api v0.3.1 以降（`GET /capabilities` の `features.http` が true）では、TCP のルールの「基本」タブで「L7（HTTP）で振り分ける」を選ぶと、
+「L7 (HTTP)」タブでルート（Traefik と同じ `match` の式。よく使う条件は選んで組み立てられる）・サービス（転送先と重み）・ミドルウェア（リダイレクト、レート制限、CrowdSec など。rproxy が使える種類だけ）・一致しないときの応答を編集できる。
+プロファイルの「HTTPS リバースプロキシ（L7）」「HTTP→HTTPS リダイレクト（80 番、L7）」がひな形になる。L4 と L7 の切り替えは作成時だけ（rproxy が PATCH で切り替えられないため）。
+「詳細」タブの「CrowdSec の判定で接続元を遮断する（L4）」は、rproxy の設定ファイルに `global.crowdsec` があるときに使える（rproxy-api v0.3.2 以降）。
 
 本番環境の構築（apt、DB のユーザーと権限、Keycloak、HTTPS での公開、更新とバックアップ）は [docs/PRODUCTION.md](docs/PRODUCTION.md)。
 

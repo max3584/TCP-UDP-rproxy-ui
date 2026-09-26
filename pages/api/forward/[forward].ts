@@ -7,6 +7,7 @@ import {
   DashboardData,
   ForwardRule,
   ForwardRules,
+  HttpSpec,
   Logger,
   Protocol,
   SOURCE_IPS,
@@ -19,6 +20,8 @@ import {
   TlsError,
   checkTls,
   normalizeAllowFrom,
+  normalizeCrowdsec,
+  normalizeHttp,
   normalizeStartTls,
   normalizeStartTlsRequired,
   normalizeTls,
@@ -39,8 +42,10 @@ import {
   modifyRule,
 } from '@/components/rproxy';
 import { mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
-import { FORBIDDEN_MESSAGE } from '@/components/messages';
+import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
+import { Access, RoleConfig, accessOf, portsAllowed, roleConfig } from '@/components/roles';
+import { toHttpRules, validateHttp } from '@/components/httpspec';
 
 // MariaDBのコネクションプールを作成
 function createPool() {
@@ -67,6 +72,28 @@ type AppLogger = ReturnType<typeof Logger>;
 class HttpError extends Error {
   constructor(public readonly status: number, message: string, public readonly code: string) {
     super(message);
+  }
+}
+
+// 操作する利用者。admin はすべての利用者のルールを扱える（WHERE に auth_id を付けない）
+interface Actor {
+  id: string;
+  access: Access;
+  roles: RoleConfig;
+}
+
+// SELECT / UPDATE / DELETE の WHERE に付ける所有者の条件
+function ownerClause(actor: Actor): { sql: string; params: string[] } {
+  return actor.access === 'admin' ? { sql: '', params: [] } : { sql: 'auth_id = ? AND ', params: [actor.id] };
+}
+
+// user（admin 以外）が RPROXY_UI_USER_PORTS の外の待ち受けポートを使おうとしたら 403
+function checkPorts(actor: Actor, rule: ForwardRule): void {
+  const last = rule.srcPortEnd ?? rule.srcPort;
+  if (!portsAllowed(actor.access, actor.roles, rule.srcPort, last)) {
+    const [lo, hi] = actor.roles.userPorts ?? [1, 65535];
+    const ports = last !== rule.srcPort ? `${rule.srcPort}-${last}` : `${rule.srcPort}`;
+    throw new HttpError(403, `待ち受けポート ${ports} は管理者だけが使えます（利用者が使えるのは ${lo}-${hi}）。`, 'port_not_allowed');
   }
 }
 
@@ -140,12 +167,14 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     starttls: null,
     starttlsRequired: true,
     allowFrom: [],
-    // フォームではまだ L7 のルールを作れない（UI #34）。変更では DB の値を保つ
     http: null,
+    crowdsec: false,
   };
   if (keyOnly) return rule;
 
-  const withoutRemote = forModify && noRemote(body);
+  // L7（http）のルールは転送先を持たない（転送先は http.services / routes[].to）
+  const http = parseHttp(body.http, protocol as Protocol);
+  const withoutRemote = http !== null || (forModify && noRemote(body));
   const distAddr = withoutRemote ? '' : typeof body.distAddr === 'string' ? body.distAddr.trim() : '';
   const distPort = withoutRemote ? 0 : body.distPort;
   if (!withoutRemote) {
@@ -178,6 +207,13 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
   const starttlsRequired = normalizeStartTlsRequired(body.starttlsRequired, starttls);
   checkTls(protocol as Protocol, tls, starttls, count);
   const allowFrom = normalizeAllowFrom(body.allowFrom);
+  if (http !== null) {
+    // rproxy と同じ組み合わせの制限（tcp は parseHttp で確かめた）
+    if (tls.mode === 'sni') throw new TlsError('L7（HTTP）は TLS のモードが terminate（HTTPS）か、TLS なし（平文の HTTP）のときだけ使えます。', 'tls_config');
+    if (starttls !== null) throw invalid('L7（HTTP）と STARTTLS は組み合わせられません。');
+    if (srcPortEnd !== null) throw invalid('L7（HTTP）のルールはポート範囲にできません。');
+    if (sourceIp === 'proxy_v1' || sourceIp === 'proxy_v2') throw invalid('L7（HTTP）のルールでは PROXY ヘッダ（proxy_v1 / proxy_v2）を使えません（転送先へは X-Forwarded-For を付けます）。');
+  }
 
   return {
     ...rule,
@@ -190,7 +226,29 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     starttls: starttls,
     starttlsRequired: starttlsRequired,
     allowFrom: allowFrom,
+    http: http,
+    crowdsec: normalizeCrowdsec(body.crowdsec),
   };
+}
+
+// body の http（L7 の設定）。null / 省略なら L4 のルール
+function parseHttp(value: unknown, protocol: Protocol): HttpSpec | null {
+  const http = normalizeHttp(value);
+  if (http === null) return null;
+  if (protocol !== 'tcp') throw invalid('L7（HTTP）は TCP のルールでだけ使えます（HTTP/3 は同じルールの http3 で有効にします）。');
+  const errors = validateHttp(toHttpRules(http));
+  if (errors.length > 0) throw invalid(errors.join(' '));
+  return http;
+}
+
+// body に crowdsec があるか（なければ変更の前の値を保つ）
+function hasCrowdsec(body: any): boolean {
+  return typeof body === 'object' && body !== null && body.crowdsec !== undefined;
+}
+
+// body に http があるか（なければ変更の前の L7 の設定を保つ）
+function hasHttp(body: any): boolean {
+  return typeof body === 'object' && body !== null && body.http !== undefined;
 }
 
 type Undo = () => Promise<unknown>;
@@ -241,23 +299,27 @@ function toRproxyRule(rule: ForwardRule): RproxyRule {
     tls: rule.tls,
     ...starttlsFields(rule),
     ...(rule.allowFrom.length > 0 ? { allow_from: rule.allowFrom } : {}),
+    // 古い rproxy（v0.3.2 より前）は知らない項目を拒否するので、使うときだけ付ける
+    ...(rule.crowdsec ? { crowdsec: true } : {}),
   };
 }
 
 // PATCH では tls と allow_from を毎回付けて丸ごと置き換える（allow_from の [] はすべて許可に戻す）。
-// http のルールは http を付けて L7 の設定も丸ごと置き換える。範囲と source_ip は変えられないので送らない
-function toRproxyPatch(rule: ForwardRule): RproxyRulePatch {
+// http のルールは http を付けて L7 の設定も丸ごと置き換える。範囲と source_ip は変えられないので送らない。
+// crowdsec は有効なとき、または有効から無効にするとき（wasOn）だけ付ける（古い rproxy は知らない項目を拒否する）
+function toRproxyPatch(rule: ForwardRule, wasOn = false): RproxyRulePatch {
   return {
     ...remoteFields(rule),
     ...(rule.protocol === 'udp' ? { udp_idle_secs: rule.udpIdleSecs } : {}),
     tls: rule.tls,
     ...starttlsFields(rule),
     allow_from: rule.allowFrom,
+    ...(rule.crowdsec || wasOn ? { crowdsec: rule.crowdsec } : {}),
   };
 }
 
 function options(rule: ForwardRule): string | null {
-  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired, rule.allowFrom, rule.http);
+  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired, rule.allowFrom, rule.http, rule.crowdsec);
 }
 
 // forward_rules の行（src_port_end と options を含む）をルールにする
@@ -277,6 +339,7 @@ function fromRow(row: any): ForwardRule {
     starttlsRequired: opts.starttlsRequired,
     allowFrom: opts.allowFrom,
     http: opts.http,
+    crowdsec: opts.crowdsec,
   };
 }
 
@@ -307,11 +370,12 @@ function staticRuleError(): HttpError {
   return new HttpError(409, 'このルールは rproxy の固定ルールです。', 'static');
 }
 
-// 自分のルールを行ロックして取得する。なければ 404（rproxy の固定ルールなら 409 static）
-async function lockOwnRule(conn: PoolConnection, authId: string, key: ForwardRule, logger: AppLogger): Promise<ForwardRule> {
+// 自分のルール（admin ならだれのルールでも）を行ロックして取得する。なければ 404（rproxy の固定ルールなら 409 static）
+async function lockOwnRule(conn: PoolConnection, actor: Actor, key: ForwardRule, logger: AppLogger): Promise<ForwardRule> {
+  const owner = ownerClause(actor);
   const rows = await conn.query(
-    'SELECT src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ? FOR UPDATE',
-    [authId, key.protocol, key.srcAddr, key.srcPort]
+    `SELECT src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE ${owner.sql}protocol = ? AND src_addr = ? AND src_port = ? FOR UPDATE`,
+    [...owner.params, key.protocol, key.srcAddr, key.srcPort]
   );
   if (rows.length === 0) {
     if (await findStaticRule(toKey(key), logger)) throw staticRuleError();
@@ -322,11 +386,12 @@ async function lockOwnRule(conn: PoolConnection, authId: string, key: ForwardRul
 
 // DB のルールに rproxy の稼働情報を付ける。status が undefined なら rproxy にない（missing）、
 // live が false なら rproxy に問い合わせできなかった（unknown）
-function withLiveState(id: number, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined): ForwardRules {
+function withLiveState(id: number, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined, owner?: string): ForwardRules {
   return {
     id: id,
     origin: 'dynamic',
     ...rule,
+    ...(owner !== undefined ? { owner: owner } : {}),
     state: !live ? 'unknown' : status ? status.state : 'missing',
     error: status?.error ?? null,
     connections: status?.connections ?? null,
@@ -336,11 +401,13 @@ function withLiveState(id: number, rule: ForwardRule, live: boolean, status: Rpr
   };
 }
 
-// withStatic: rproxy の固定ルール（DB にない）も読み取り専用の行として足す（dashboard）。list は自分のルールだけ
-async function listForwardingRules(authId: string, logger: AppLogger, withStatic: boolean): Promise<DashboardData> {
+// withStatic: rproxy の固定ルール（DB にない）も読み取り専用の行として足す（dashboard）。
+// list は自分のルールだけ。admin はすべての利用者のルール（owner 付き）
+async function listForwardingRules(actor: Actor, logger: AppLogger, withStatic: boolean): Promise<DashboardData> {
+  const admin = actor.access === 'admin';
   const rows = await pool.query(
-    'SELECT id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE auth_id = ? ORDER BY id',
-    [authId]
+    `SELECT id, auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules${admin ? '' : ' WHERE auth_id = ?'} ORDER BY id`,
+    admin ? [] : [actor.id]
   );
 
   let live: Map<string, RproxyRuleStatus> | null = null;
@@ -353,21 +420,29 @@ async function listForwardingRules(authId: string, logger: AppLogger, withStatic
     logger.warn(`rproxy からルールの状態を取得できません: ${err}`);
     rproxyError = err instanceof Error ? err.message : String(err);
     if (err instanceof RproxyError && err.status === 403) rproxyError = `${FORBIDDEN_MESSAGE}（詳細: ${rproxyError}）`;
+    if (err instanceof RproxyError && err.status === 401) rproxyError = `${RPROXY_UNAUTHORIZED_MESSAGE}（詳細: ${rproxyError}）`;
   }
 
   const rules = rows.map((row: any): ForwardRules => {
     const rule = fromRow(row);
-    return withLiveState(Number(row.id), rule, live !== null, live?.get(ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort)));
+    const status = live?.get(ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort));
+    return withLiveState(Number(row.id), rule, live !== null, status, admin ? String(row.auth_id) : undefined);
   });
-  return { reachable: live !== null, rproxyError: rproxyError, rules: withStatic ? mergeStaticRules(rules, statuses) : rules };
+  return {
+    reachable: live !== null,
+    rproxyError: rproxyError,
+    rules: withStatic ? mergeStaticRules(rules, statuses) : rules,
+    ...(admin ? { admin: true } : {}),
+  };
 }
 
 function queryString(value: string | string[] | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-// GET /api/forward/rule?protocol=&addr=&port= の 1 件。自分のルールか、rproxy の固定ルール（だれのものでもない）でなければ 404
-async function getForwardingRule(authId: string, query: NextApiRequest['query'], logger: AppLogger): Promise<ForwardRules> {
+// GET /api/forward/rule?protocol=&addr=&port= の 1 件。自分のルール（admin ならだれのルールでも）か、
+// rproxy の固定ルール（だれのものでもない）でなければ 404
+async function getForwardingRule(actor: Actor, query: NextApiRequest['query'], logger: AppLogger): Promise<ForwardRules> {
   const protocol = queryString(query.protocol).toLowerCase();
   if (protocol !== 'tcp' && protocol !== 'udp') throw invalid('プロトコルは tcp か udp を指定してください。');
   const addr = queryString(query.addr);
@@ -377,9 +452,10 @@ async function getForwardingRule(authId: string, query: NextApiRequest['query'],
   if (!isPort(port)) throw invalid('ポート番号は1から65535の範囲で指定してください。');
   const key: RproxyRuleKey = { protocol: protocol as Protocol, listen_addr: normalizeAddr(addr), listen_port: port };
 
+  const owner = ownerClause(actor);
   const rows = await pool.query(
-    'SELECT id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
-    [authId, key.protocol, key.listen_addr, key.listen_port]
+    `SELECT id, auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE ${owner.sql}protocol = ? AND src_addr = ? AND src_port = ?`,
+    [...owner.params, key.protocol, key.listen_addr, key.listen_port]
   );
   if (rows.length === 0) {
     // 固定ルールは DB にない。rproxy の応答だけから作る（ほかの利用者の dynamic なルールは見せない）。
@@ -406,10 +482,12 @@ async function getForwardingRule(authId: string, query: NextApiRequest['query'],
       live = false;
     }
   }
-  return withLiveState(Number(rows[0].id), rule, live, status);
+  return withLiveState(Number(rows[0].id), rule, live, status, actor.access === 'admin' ? String(rows[0].auth_id) : undefined);
 }
 
-async function addForwardingRule(authId: string, rule: ForwardRule, logger: AppLogger): Promise<void> {
+async function addForwardingRule(actor: Actor, rule: ForwardRule, logger: AppLogger): Promise<void> {
+  checkPorts(actor, rule);
+  const authId = actor.id;
   await withTransaction(logger, async (conn) => {
     await conn.query(
       'INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -431,16 +509,24 @@ function hasAllowFrom(body: any): boolean {
   return typeof body === 'object' && body !== null && body.allowFrom !== undefined;
 }
 
-async function editForwardingRule(authId: string, rule: ForwardRule, rangeGiven: boolean, allowFromGiven: boolean, logger: AppLogger): Promise<void> {
+async function editForwardingRule(actor: Actor, rule: ForwardRule, rangeGiven: boolean, allowFromGiven: boolean, httpGiven: boolean, crowdsecGiven: boolean, logger: AppLogger): Promise<void> {
+  const owner = ownerClause(actor);
   await withTransaction(logger, async (conn) => {
-    const current = await lockOwnRule(conn, authId, rule, logger);
+    const current = await lockOwnRule(conn, actor, rule, logger);
+    checkPorts(actor, current);
     // ポート範囲は変更できない（API の制約）。指定があれば DB の値と同じでなければならない
     if (rangeGiven && rule.srcPortEnd !== current.srcPortEnd) {
       throw new HttpError(400, 'ポート範囲は変更できません。削除してから作り直してください。', 'unsupported');
     }
-    // L7 のルール（http）はフォームで送らないので DB の値を保つ（転送先は持たない）。
+    // http の指定がなければ DB の L7 の設定を保つ。L4 と L7 の切り替えは rproxy が PATCH で受け付けないので作り直す
+    const http = httpGiven ? rule.http : current.http;
+    if ((current.http === null) !== (http === null)) {
+      throw new HttpError(400, current.http === null
+        ? 'L4 のルールを L7（HTTP）に変えることはできません。削除してから作り直してください。'
+        : 'L7（HTTP）のルールを L4 に戻すことはできません。削除してから作り直してください。', 'unsupported');
+    }
     // L7 でないルールには転送先が必須
-    if (current.http === null && rule.distAddr === '') {
+    if (http === null && rule.distAddr === '') {
       throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
     }
     // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
@@ -449,8 +535,9 @@ async function editForwardingRule(authId: string, rule: ForwardRule, rangeGiven:
       sourceIp: current.sourceIp,
       srcPortEnd: current.srcPortEnd,
       allowFrom: allowFromGiven ? rule.allowFrom : current.allowFrom,
-      http: current.http,
-      ...(current.http !== null ? { distAddr: '', distPort: 0 } : {}),
+      crowdsec: crowdsecGiven ? rule.crowdsec : current.crowdsec,
+      http: http,
+      ...(http !== null ? { distAddr: '', distPort: 0 } : {}),
     };
     try {
       // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
@@ -459,12 +546,13 @@ async function editForwardingRule(authId: string, rule: ForwardRule, rangeGiven:
       throw fromTlsError(err);
     }
     await conn.query(
-      'UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ?, options = ? WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
-      [updated.distAddr, updated.distPort, updated.udpIdleSecs, options(updated), authId, updated.protocol, updated.srcAddr, updated.srcPort]
+      `UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ?, options = ? WHERE ${owner.sql}protocol = ? AND src_addr = ? AND src_port = ?`,
+      [updated.distAddr, updated.distPort, updated.udpIdleSecs, options(updated), ...owner.params, updated.protocol, updated.srcAddr, updated.srcPort]
     );
-    await insertLog(conn, authId, updated, 'UPDATE');
+    // 履歴の auth_id は操作した利用者（admin がほかの人のルールを変えたときは admin）
+    await insertLog(conn, actor.id, updated, 'UPDATE');
     try {
-      await modifyRule(toKey(updated), toRproxyPatch(updated));
+      await modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec));
     } catch (err) {
       if (!isNotFound(err)) throw err;
       // rproxy にないルール（missing）は作り直す
@@ -473,18 +561,19 @@ async function editForwardingRule(authId: string, rule: ForwardRule, rangeGiven:
       return () => deleteRule(toKey(updated));
     }
     // 元の転送先・TLS の設定・allow_from に戻す
-    return () => modifyRule(toKey(current), toRproxyPatch(current));
+    return () => modifyRule(toKey(current), toRproxyPatch(current, updated.crowdsec));
   });
 }
 
-async function deleteForwardingRule(authId: string, key: ForwardRule, logger: AppLogger): Promise<void> {
+async function deleteForwardingRule(actor: Actor, key: ForwardRule, logger: AppLogger): Promise<void> {
+  const owner = ownerClause(actor);
   await withTransaction(logger, async (conn) => {
-    const current = await lockOwnRule(conn, authId, key, logger);
+    const current = await lockOwnRule(conn, actor, key, logger);
     await conn.query(
-      'DELETE FROM forward_rules WHERE auth_id = ? AND protocol = ? AND src_addr = ? AND src_port = ?',
-      [authId, key.protocol, key.srcAddr, key.srcPort]
+      `DELETE FROM forward_rules WHERE ${owner.sql}protocol = ? AND src_addr = ? AND src_port = ?`,
+      [...owner.params, key.protocol, key.srcAddr, key.srcPort]
     );
-    await insertLog(conn, authId, current, 'DELETE');
+    await insertLog(conn, actor.id, current, 'DELETE');
     try {
       await deleteRule(toKey(key));
     } catch (err) {
@@ -516,6 +605,11 @@ function sendError(res: NextApiResponse, err: unknown, logger: AppLogger) {
       // 画面では code: forbidden から説明（FORBIDDEN_MESSAGE）を出す
       logger.error('rproxy が UI のトークンを拒否しました（403 forbidden）。RPROXY_API_TOKEN のスコープと allow_listen_ports を確認してください');
     }
+    if (err.status === 401) {
+      // UI サーバの RPROXY_API_TOKEN が違うか期限切れ。利用者のサインインとは関係ないので code を変える
+      logger.error('rproxy が UI のトークンを受け付けませんでした（401 unauthorized）。RPROXY_API_TOKEN を確認してください');
+      return res.status(502).json({ error: RPROXY_UNAUTHORIZED_MESSAGE, code: 'rproxy_unauthorized' });
+    }
     // rproxy の 401/403 は UI サーバ側の設定の問題なので、利用者には 502 として返す
     const passThrough = err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 403;
     return res.status(passThrough ? err.status : 502).json({ error: err.message, code: err.code });
@@ -537,33 +631,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const logger = Logger('info', { auth_id: id, action: query });
+  let roles: RoleConfig;
+  try {
+    roles = roleConfig();
+  } catch (err) {
+    logger.error(`${err}`);
+    return res.status(500).json({ error: 'Internal Server Error', code: 'internal' });
+  }
+  // ロールはリクエストごとに決め直す（環境変数を変えたら次のリクエストから効く）
+  const access = accessOf(session.user.roles ?? [], roles);
+  if (access === 'none') {
+    return res.status(403).json({ error: NO_ROLE_MESSAGE, code: 'no_role' });
+  }
+  const actor: Actor = { id: id, access: access, roles: roles };
 
   try {
     if (req.method === 'GET' && query === 'list') {
-      const data = await listForwardingRules(id, logger, false);
+      const data = await listForwardingRules(actor, logger, false);
       return res.status(200).json(data.rules);
     }
     if (req.method === 'GET' && query === 'dashboard') {
-      const data = await listForwardingRules(id, logger, true);
+      const data = await listForwardingRules(actor, logger, true);
       return res.status(200).json(data);
     }
     if (req.method === 'GET' && query === 'rule') {
       // 先に取得してから status を呼ぶ（失敗したら sendError がステータスを決める）
-      const rule = await getForwardingRule(id, req.query, logger);
+      const rule = await getForwardingRule(actor, req.query, logger);
       return res.status(200).json(rule);
     }
 
     if (req.method === 'POST') {
       if (query === 'add') {
-        await addForwardingRule(id, parseRule(req.body, false), logger);
+        await addForwardingRule(actor, parseRule(req.body, false), logger);
         logger.info('Forwarding rule added successfully');
         return res.status(200).json({ message: 'Forwarding rule added successfully' });
       } else if (query === 'modify') {
-        await editForwardingRule(id, parseRule(req.body, false, true), hasRangeEnd(req.body), hasAllowFrom(req.body), logger);
+        await editForwardingRule(actor, parseRule(req.body, false, true), hasRangeEnd(req.body), hasAllowFrom(req.body), hasHttp(req.body), hasCrowdsec(req.body), logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json({ message: 'Forwarding rule modified successfully' });
       } else if (query === 'delete') {
-        await deleteForwardingRule(id, parseRule(req.body, true), logger);
+        await deleteForwardingRule(actor, parseRule(req.body, true), logger);
         logger.info('Forwarding rule deleted successfully');
         return res.status(200).json({ message: 'Forwarding rule deleted successfully' });
       }

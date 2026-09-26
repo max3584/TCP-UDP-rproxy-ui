@@ -1,5 +1,6 @@
 import { DefaultSession, ISODateString } from 'next-auth';
 import pino from 'pino';
+import type { Access } from './roles';
 
 
 export const Logger = (level : string, {...propaty}: any) => {
@@ -104,6 +105,8 @@ export interface ForwardRule {
   // L7 の設定。あるルールは remote_addr / remote_port を持たない（distAddr は ''、distPort は 0）。
   // 画面のフォームではまだ作れない・変えられない（UI #34）ので、変更のときは元の値を保つ
   http: HttpSpec | null;
+  // CrowdSec の判定に入っている接続元を、受け付けた直後に切る（L4。rproxy v0.3.2 の global.crowdsec が必要）
+  crowdsec: boolean;
 }
 
 // dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）
@@ -160,6 +163,8 @@ export interface ForwardRules extends ForwardRule {
   startedAt: number | null;
   // 最後に名前解決できた転送先（"ip:port"）
   resolved: string[];
+  // 作成した利用者（Keycloak の sub）。管理者（rproxy-admin）が見るときだけ付く
+  owner?: string;
 }
 
 // GET /api/forward/dashboard の応答
@@ -168,8 +173,10 @@ export interface DashboardData {
   reachable: boolean;
   // 取得できなかった理由
   rproxyError: string | null;
-  // 自分のルール（DB）のあとに、rproxy の固定ルール（origin: static）を続ける
+  // 自分のルール（DB。管理者ならすべての利用者のルール）のあとに、rproxy の固定ルール（origin: static）を続ける
   rules: ForwardRules[];
+  // 管理者（rproxy-admin）として見ているか（所有者の列を出す）
+  admin?: boolean;
 }
 
 export interface PageAuthrized {
@@ -183,6 +190,10 @@ export interface sessionUser extends DefaultSession {
     image: string;
     id: string;
     role: string;
+    // Keycloak のロール（NextAuth の jwt コールバックで保存したもの）。古いセッションにはない
+    roles?: string[];
+    // admin / user / none（components/roles.ts）
+    access?: Access;
   }
   expires: ISODateString;
 }

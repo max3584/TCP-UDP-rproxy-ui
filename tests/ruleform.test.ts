@@ -12,12 +12,12 @@ const render = (initialData?: ForwardRule, submitting = false) =>
 
 const udpRule: ForwardRule = {
   protocol: 'udp', srcAddr: '0.0.0.0', srcPort: 8000, srcPortEnd: 8001, distAddr: '10.0.0.30', distPort: 8000,
-  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null,
+  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false,
 };
 
 const terminateRule: ForwardRule = {
   protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null, distAddr: '10.0.0.5', distPort: 8080,
-  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true, allowFrom: [], http: null,
+  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false,
   tls: {
     mode: 'terminate',
     certificates: [
@@ -30,16 +30,17 @@ const terminateRule: ForwardRule = {
 };
 
 describe('RuleForm', () => {
-  it('splits the form into four accessible tabs with the basic tab selected', () => {
+  it('splits the form into five accessible tabs with the basic tab selected', () => {
     const html = render();
     expect(html).toContain('role="tablist"');
     const tabs = Array.from(html.matchAll(/<button[^>]*role="tab"[^>]*>(.*?)<\/button>/g));
-    expect(tabs.map((t) => t[1])).toEqual(['基本', 'TLS / DTLS', 'メール (STARTTLS)', '詳細']);
+    expect(tabs.map((t) => t[1])).toEqual(['基本', 'L7 (HTTP)', 'TLS / DTLS', 'メール (STARTTLS)', '詳細']);
     expect(tabs[0][0]).toContain('aria-selected="true"');
-    expect(tabs[1][0]).toContain('aria-selected="false"');
-    // tcp + passthrough では STARTTLS のタブは使えない
-    expect(tabs[2][0]).toContain('aria-disabled="true"');
-    expect(html.match(/role="tabpanel"/g)).toHaveLength(4);
+    expect(tabs[2][0]).toContain('aria-selected="false"');
+    // L7 にしていないルールと tcp + passthrough では、L7 と STARTTLS のタブは使えない
+    expect(tabs[1][0]).toContain('aria-disabled="true"');
+    expect(tabs[3][0]).toContain('aria-disabled="true"');
+    expect(html.match(/role="tabpanel"/g)).toHaveLength(5);
     expect(html).toContain('プロファイル');
   });
 
@@ -147,7 +148,7 @@ describe('RuleForm: v0.3 settings the form cannot edit yet', () => {
     const html = render(httpRule);
     expect(html).toContain('data-testid="http-rule-note"');
     expect(html).toContain('L7（HTTP）のルール');
-    expect(html).toContain('保存しても L7 の設定はそのまま保たれます');
+    expect(html).toContain('「L7 (HTTP)」タブのルートとサービス');
     expect(html).not.toContain('id="rule-dist-addr"');
     expect(html).not.toContain('id="rule-dist-port"');
     // http のないルールは今までどおり

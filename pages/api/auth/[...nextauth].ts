@@ -1,17 +1,7 @@
 import NextAuth, { NextAuthOptions } from 'next-auth';
 import KeycloakProvider from 'next-auth/providers/keycloak';
 import { sessionUser } from '@/components/lib';
-
-// アクセストークンは発行元からバックチャネルで受け取ったものなので、署名は検証せずに中身だけを読む
-export function realmRoles(accessToken: string): string[] {
-  try {
-    const payload = JSON.parse(Buffer.from(accessToken.split('.')[1] ?? '', 'base64url').toString('utf8'));
-    const roles = payload?.realm_access?.roles;
-    return Array.isArray(roles) ? roles.filter((r: unknown): r is string => typeof r === 'string') : [];
-  } catch {
-    return [];
-  }
-}
+import { accessOf, roleConfig, rolesFromToken } from '@/components/roles';
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -25,7 +15,8 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, account }) {
       // サインイン時だけ account が渡される
       if (account?.access_token) {
-        token.roles = realmRoles(account.access_token);
+        // 既定は realm_access.roles（RPROXY_UI_ROLES_CLAIM で変えられる）
+        token.roles = rolesFromToken(account.access_token, roleConfig().claim);
       }
       return token;
     },
@@ -38,6 +29,9 @@ export const authOptions: NextAuthOptions = {
           image: token.picture || '',
           id: token.sub || '',
           role: roles.join(','),
+          roles: roles,
+          // 画面の表示用。API route はリクエストごとに roles から決め直す
+          access: accessOf(roles, roleConfig()),
         },
         expires: session.expires || ''
       };

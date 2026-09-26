@@ -24,6 +24,7 @@ import {
 } from '@/components/dashboard';
 import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, StaticBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
 import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE } from '@/components/messages';
+import HttpSummary from '@/components/HttpSummary';
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
   <section className="card p-4" aria-labelledby={id}>
@@ -275,6 +276,8 @@ const RuleDetailPage: React.FC = () => {
                   : rule.state === 'unknown' ? <span className="text-gray-700">rproxy に接続できないため、稼働状態がわかりません。</span> : null],
                 ['開始時刻', formatTimestamp(rule.startedAt)],
                 ['稼働時間', formatDuration(uptimeSecs(rule.startedAt, now))],
+                // 管理者（rproxy-admin）が見るときだけ付く
+                ...(rule.owner !== undefined ? [['所有者（Keycloak の ID）', <Mono key="o">{rule.owner}</Mono>] as [string, React.ReactNode]] : []),
               ]} />
             </Section>
 
@@ -304,14 +307,14 @@ const RuleDetailPage: React.FC = () => {
 
             <Section id="section-target" title="転送先">
               {rule.http !== null ? (
-                // L7 のルールは転送先を持たない（http.services に書く）。中身の表示・編集は UI #34
+                // L7 のルールは転送先を持たない（http.services に書く）。中身は下の「L7 (HTTP)」
                 <>
                   <Fields items={[
                     ['転送先', targetLabel(rule)],
                     ['ルート', `${httpRouteCount(rule.http)} 件`],
                   ]} />
                   <p className="mt-2 text-xs text-gray-600" data-testid="http-note">
-                    HTTP のリクエストごとに、L7 の設定（http）のルートとサービスで振り分けます。L7 の設定はこの画面ではまだ編集できません（今後対応）。rproxy の設定ファイルか制御 API で変更してください。
+                    HTTP のリクエストごとに、下の「L7 (HTTP)」のルートとサービスで振り分けます。{rule.origin === 'static' ? '固定ルールなので、rproxy の設定ファイルで変更してください。' : '変更は「編集」の「L7 (HTTP)」タブで行います。'}
                   </p>
                 </>
               ) : (
@@ -324,6 +327,12 @@ const RuleDetailPage: React.FC = () => {
               )}
             </Section>
           </div>
+
+          {rule.http !== null && (
+            <Section id="section-http" title="L7 (HTTP)">
+              <HttpSummary http={rule.http} />
+            </Section>
+          )}
 
           {rule.stats?.http && <HttpStatsSection http={rule.stats.http} />}
 
@@ -351,6 +360,7 @@ const RuleDetailPage: React.FC = () => {
                     </div>
                   )
                   : 'すべて許可'],
+                ['CrowdSec（L4）', rule.crowdsec ? '判定に入っている接続元を切る' : '使わない'],
               ]} />
             </Section>
           </div>
