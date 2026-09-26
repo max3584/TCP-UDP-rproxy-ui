@@ -39,6 +39,7 @@ npm test        # vitest（tests/ 配下）
 | `pages/rules/[protocol]/[listenAddr]/[listenPort]/edit.tsx` | ルールの変更画面。保存したら詳細画面へ。固定ルールではフォームを出さない |
 | `components/RuleForm.tsx` | ルールの入力フォームとクライアント側のバリデーション（追加・変更の画面で使う。旧 `Modal.tsx`）。タブ（基本 / TLS・DTLS / メール (STARTTLS) / 詳細）に分かれ、矢印キー / Home / End で移れる（WAI-ARIA の Tabs）。エラーのあるタブには件数の印が付く。「詳細」タブに allow_from（1 行に 1 件）、TLS タブに unmatched（tcp の sni / terminate で routes があるときだけ）。`source_ip`・TLS のモード・STARTTLS の選択肢と範囲の上限は `/api/forward/capabilities` から取得する。中間 CA（`chain_file`）の欄は証明書ごと・クライアント認証・upstream に常に出す（3 階層以上の PKI を使うため） |
 | `components/dashboard.ts` | ダッシュボードと詳細画面の集計・整形（状態の集計、TLS の内訳、絞り込み、バイト数・時間の表示、ドーナツの `conic-gradient`、画面の URL）と、rproxy の応答から固定ルールの行を作る `ruleFromStatus` / `mergeStaticRules`。React に依存しない |
+| `components/RequireAuth.tsx` | 画面のサインインの確認。`_app.tsx` で `PUBLIC_PATHS`（`/profile` だけ）以外の全ページを包み、サインインしていなければ Keycloak のサインインへ移す（サインイン後は元のページに戻る）。ページを足したら、サインインなしで開けてよいかを決めて `PUBLIC_PATHS` を見直す |
 | `components/ui.tsx` | 状態・TLS・固定・IP 制限のバッジ、エラーのバナー、確認ダイアログ（`<dialog>`）、自動更新のフック、1 件取得のフック `useRule`、API への送信 |
 | `components/profiles.ts` | 追加フォームの「プロファイル」（用途別のひな形）。`../rproxy-api/docs/PROFILES.md` に合わせる |
 | `components/tls.ts` | TLS / STARTTLS / ポート範囲 / allow_from / unmatched の正規化と検証、DB の `options` 列の読み書き。画面と API route の両方で使う |
