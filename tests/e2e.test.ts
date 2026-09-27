@@ -189,6 +189,37 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     expect((await call('list', undefined, 'GET')).json.map((r: any) => r.srcPort)).toEqual([rangePort]);
   });
 
+  // 宛先を複数にしたルール（rproxy v0.3.3）。rproxy が targets を知らなければ（古い master）飛ばす
+  it('balances across several targets and fails over to a live one', async (ctx) => {
+    const port = listenPort + 5;
+    const multi = {
+      protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port, distAddr: '', distPort: 0, sourceIp: 'proxy', udpIdleSecs: 30,
+      targets: [{ addr: '127.0.0.1', port: backendPort + 1 }, { addr: '127.0.0.1', port: backendPort + 2 }],
+      balance: 'round_robin',
+    };
+    const add = await call('add', multi);
+    if (add.status === 400 && /unknown field `targets`|targets/.test(String(add.json?.error)) && !/宛先/.test(String(add.json?.error))) {
+      ctx.skip();
+      return;
+    }
+    expect(add.status).toBe(200);
+    const replies = new Set<string>();
+    for (let i = 0; i < 6; i++) replies.add((await echoThrough(port, 'x')).split(':')[0]);
+    expect([...replies].sort()).toEqual(['echo0', 'echo1']);
+
+    const one = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(port) });
+    expect(one.json).toMatchObject({ balance: 'round_robin', targets: multi.targets });
+
+    // 1 件目は誰も待ち受けていないポート。フェイルオーバーで生きている 2 件目に送る
+    const failover = { ...multi, balance: 'failover', targets: [{ addr: '127.0.0.1', port: backendPort + 50 }, { addr: '127.0.0.1', port: backendPort + 2 }] };
+    expect((await call('modify', failover)).status).toBe(200);
+    expect(await echoThrough(port, 'f')).toBe('echo1:f');
+    expect(await echoThrough(port, 'g')).toBe('echo1:g');
+
+    expect((await call('delete', multi)).status).toBe(200);
+    await expect(echoThrough(port, 'gone')).rejects.toThrow();
+  });
+
   it('deletes the range rule', async () => {
     expect((await call('delete', rangeRule)).status).toBe(200);
     expect((await call('list', undefined, 'GET')).json).toEqual([]);

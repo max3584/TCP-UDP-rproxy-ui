@@ -87,6 +87,29 @@ export interface TlsSpec {
 // L7 の設定（ルールの http。v0.3）。UI は中身を解釈せず、保存して rproxy に渡すだけ（検証は rproxy がする）
 export type HttpSpec = Record<string, unknown>;
 
+// 宛先を複数にしたときの振り分け方（rproxy の balance。L7 の services.<名前>.balance も同じ）
+// round_robin: 重みの比率で順に回す / least_conn: 接続数（UDP はセッション数）÷ 重みが一番小さい宛先 /
+// failover: 上から順に、生きている最初の宛先だけを使う
+export type Balance = 'round_robin' | 'least_conn' | 'failover';
+export const BALANCES: Balance[] = ['round_robin', 'least_conn', 'failover'];
+export const DEFAULT_BALANCE: Balance = 'round_robin';
+
+// 宛先の 1 件（rproxy の targets[]）。weight は 1 なら、backup は false なら省く
+export interface Target {
+  addr: string;
+  port: number;
+  weight?: number;
+  // 通常の宛先がすべて落ちたときだけ使う
+  backup?: boolean;
+}
+
+// 宛先の死活確認（TCP の接続で確かめる）。port を省くと各宛先のポート（UDP のルールでは必須）
+export interface HealthCheck {
+  interval?: string;
+  timeout?: string;
+  port?: number;
+}
+
 export interface ForwardRule {
   protocol: Protocol;
   srcAddr: string;
@@ -107,6 +130,13 @@ export interface ForwardRule {
   http: HttpSpec | null;
   // CrowdSec の判定に入っている接続元を、受け付けた直後に切る（L4。rproxy v0.3.2 の global.crowdsec が必要）
   crowdsec: boolean;
+  // 宛先を複数にしたとき（rproxy の targets）。空なら distAddr / distPort の単一の宛先。
+  // 空でないときは distAddr は ''、distPort は 0（rproxy に remote_addr / remote_port を送らない）
+  targets: Target[];
+  // targets があるときの振り分け方
+  balance: Balance;
+  // targets があるときの死活確認。null なら接続の失敗だけで判定する
+  healthCheck: HealthCheck | null;
 }
 
 // dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）
@@ -125,6 +155,21 @@ export interface RuleStats {
   denied?: number;
   // http のルールのリクエストの数（rproxy v0.3.1 以降。ほかのルールと古い rproxy は返さない）
   http?: HttpStats;
+  // 宛先ごとの状態（宛先を複数にしたルール。rproxy v0.3.3 以降。古い rproxy は返さない）
+  targets?: TargetStats[];
+}
+
+// 宛先ごとの状態。rproxy の版によって項目が欠けることがあるので、どれも省略できる
+export interface TargetStats {
+  addr?: string;
+  port?: number;
+  // 生きているか（ヘルスチェックと接続の失敗から rproxy が判定）
+  up?: boolean;
+  // いまの接続数（UDP はセッション数）
+  connections?: number;
+  total_connections?: number;
+  backup?: boolean;
+  weight?: number;
 }
 
 // 状態コードの百の位ごとの区分。0 件の区分は省かれる

@@ -1,9 +1,9 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
-import { DEFAULT_UDP_IDLE_SECS } from './lib';
-import type { ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, TlsSpec } from './lib';
+import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS } from './lib';
+import type { Balance, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
-import { normalizeTls } from './tls';
+import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown'];
 
@@ -122,6 +122,19 @@ function isHttpSpec(value: unknown): value is HttpSpec {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+// rproxy の応答の targets / balance / health_check（v0.3.3）。形が読めなければ単一の宛先として扱う（表示だけに使う）
+function balancingFromStatus(status: RproxyRuleStatus): Pick<ForwardRule, 'targets' | 'balance' | 'healthCheck'> {
+  try {
+    return {
+      targets: normalizeTargets(status.targets),
+      balance: normalizeBalance(status.balance),
+      healthCheck: normalizeHealthCheck(status.health_check),
+    };
+  } catch {
+    return { targets: [], balance: DEFAULT_BALANCE, healthCheck: null };
+  }
+}
+
 // rproxy の応答のルールを画面の形にする（固定ルールは DB にないので、rproxy の応答だけから作る）。
 // tls は既定値の項目を省いた形に揃える（読めない形なら受け取ったまま使う）
 export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRules {
@@ -150,6 +163,7 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     allowFrom: status.allow_from ?? [],
     http: isHttpSpec(status.http) ? status.http : null,
     crowdsec: status.crowdsec === true,
+    ...balancingFromStatus(status),
     state: status.state,
     error: status.error ?? null,
     connections: status.connections ?? null,
@@ -213,6 +227,7 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
     const n = Number(q);
     if (inRange(n, rule.srcPort, rule.srcPortEnd)) return true;
     if (rule.http === null && inRange(n, rule.distPort, rule.distPort + count - 1)) return true;
+    if ((rule.targets ?? []).some((t) => inRange(n, t.port, t.port + count - 1))) return true;
     if ((rule.tls.routes ?? []).some((r) => inRange(n, r.remote_port, r.remote_port + count - 1))) return true;
   }
   const haystack = [
@@ -220,6 +235,7 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
     `${rule.srcAddr}:${portsLabel(rule.srcPort, rule.srcPortEnd)}`,
     // L7 のルールは転送先を持たない（'L7 (HTTP)' で探せる）
     ...(rule.http === null ? [rule.distAddr, `${rule.distAddr}:${targetPortsLabel(rule)}`] : ['L7 (HTTP)']),
+    ...(rule.targets ?? []).flatMap((t) => [t.addr, targetHostPort(t, rule)]),
     ...(rule.tls.routes ?? []).flatMap((r) => [r.server_name, r.remote_addr]),
   ];
   return haystack.some((h) => h.toLowerCase().includes(q));
@@ -299,10 +315,30 @@ export function httpRouteCount(http: HttpSpec | null | undefined): number {
   return Array.isArray(routes) ? routes.length : 0;
 }
 
-// 一覧・詳細の「転送先」の表示。L7 のルールは転送先を持たないので「L7 (HTTP)」とルートの数を出す
-export function targetLabel(rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd' | 'distAddr' | 'distPort' | 'http'>): string {
+export const BALANCE_LABELS: Record<Balance, string> = {
+  round_robin: 'ラウンドロビン',
+  least_conn: '最少接続',
+  failover: 'フェイルオーバー',
+};
+
+// 宛先 1 件の「アドレス:ポート」（範囲ルールでは同じ数だけずらした範囲）
+export function targetHostPort(target: Target, rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd'>): string {
+  return hostPort(target.addr, targetPortsLabel({ ...rule, distPort: target.port }));
+}
+
+// 一覧・詳細の「転送先」の表示。L7 のルールは転送先を持たないので「L7 (HTTP)」とルートの数を出す。
+// 宛先を複数にしたルールは「10.0.0.11:5432 ほか 2 件（最少接続）」
+export function targetLabel(
+  rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd' | 'distAddr' | 'distPort' | 'http'> & Partial<Pick<ForwardRule, 'targets' | 'balance'>>,
+): string {
   if (rule.http !== null && rule.http !== undefined) {
     return `L7 (HTTP) ・ルート ${httpRouteCount(rule.http)} 件`;
+  }
+  const targets = rule.targets ?? [];
+  if (targets.length > 0) {
+    const first = targetHostPort(targets[0], rule);
+    const rest = targets.length > 1 ? ` ほか ${targets.length - 1} 件` : '';
+    return `${first}${rest}（${BALANCE_LABELS[rule.balance ?? DEFAULT_BALANCE]}）`;
   }
   return hostPort(rule.distAddr, targetPortsLabel(rule));
 }
@@ -394,6 +430,9 @@ export function toRule(rule: ForwardRule): ForwardRule {
     allowFrom: rule.allowFrom,
     http: rule.http,
     crowdsec: rule.crowdsec,
+    targets: rule.targets ?? [],
+    balance: rule.balance ?? DEFAULT_BALANCE,
+    healthCheck: rule.healthCheck ?? null,
   };
 }
 

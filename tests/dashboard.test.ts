@@ -52,6 +52,9 @@ const rule = (over: Partial<ForwardRules> = {}): ForwardRules => ({
   allowFrom: [],
   http: null,
   crowdsec: false,
+  targets: [],
+  balance: 'round_robin',
+  healthCheck: null,
   state: 'running',
   error: null,
   connections: 0,
@@ -366,7 +369,7 @@ describe('toRule', () => {
   it('drops the live state before sending a rule back to the API', () => {
     const r = toRule(sample[0]);
     expect(Object.keys(r).sort()).toEqual([
-      'allowFrom', 'crowdsec', 'distAddr', 'distPort', 'http', 'protocol', 'sourceIp', 'srcAddr', 'srcPort', 'srcPortEnd', 'starttls', 'starttlsRequired', 'tls', 'udpIdleSecs',
+      'allowFrom', 'balance', 'crowdsec', 'distAddr', 'distPort', 'healthCheck', 'http', 'protocol', 'sourceIp', 'srcAddr', 'srcPort', 'srcPortEnd', 'starttls', 'starttlsRequired', 'targets', 'tls', 'udpIdleSecs',
     ]);
   });
 });

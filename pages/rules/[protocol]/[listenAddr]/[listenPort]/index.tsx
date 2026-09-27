@@ -3,7 +3,10 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import type { ForwardRules, HttpStats } from '@/components/lib';
+import { healthCheckLabel, targetStatus } from '@/components/targets';
 import {
+  BALANCE_LABELS,
+  targetHostPort,
   formatBytes,
   formatCount,
   formatDuration,
@@ -25,6 +28,43 @@ import {
 import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, StaticBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
 import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE } from '@/components/messages';
 import HttpSummary from '@/components/HttpSummary';
+
+// 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
+const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
+  <table className="data-table mt-3 w-full text-sm" data-testid="targets-table">
+    <thead>
+      <tr>
+        <th scope="col">#</th>
+        <th scope="col">宛先</th>
+        <th scope="col">重み</th>
+        <th scope="col">予備</th>
+        <th scope="col">状態</th>
+        <th scope="col">接続数</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rule.targets.map((t, i) => {
+        const s = targetStatus(rule.targets, rule.stats?.targets, i);
+        return (
+          <tr key={`${t.addr}:${t.port}:${i}`}>
+            <td>{i + 1}</td>
+            <td className="font-mono break-all">{targetHostPort(t, rule)}</td>
+            <td>{rule.balance === 'failover' ? '-' : t.weight ?? 1}</td>
+            <td>{t.backup ? '予備' : ''}</td>
+            <td>
+              {s?.up === undefined || s === null
+                ? '-'
+                : s.up
+                  ? <span className="badge bg-green-100 text-green-800">稼働</span>
+                  : <span className="badge bg-red-100 text-red-800">停止</span>}
+            </td>
+            <td>{s?.connections !== undefined ? formatCount(s.connections) : '-'}</td>
+          </tr>
+        );
+      })}
+    </tbody>
+  </table>
+);
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
   <section className="card p-4" aria-labelledby={id}>
@@ -316,6 +356,18 @@ const RuleDetailPage: React.FC = () => {
                   <p className="mt-2 text-xs text-gray-600" data-testid="http-note">
                     HTTP のリクエストごとに、下の「L7 (HTTP)」のルートとサービスで振り分けます。{rule.origin === 'static' ? '固定ルールなので、rproxy の設定ファイルで変更してください。' : '変更は「編集」の「L7 (HTTP)」タブで行います。'}
                   </p>
+                </>
+              ) : rule.targets.length > 0 ? (
+                <>
+                  <Fields items={[
+                    ['振り分け方', BALANCE_LABELS[rule.balance]],
+                    ['宛先の数', `${rule.targets.length} 件`],
+                    ['ヘルスチェック', healthCheckLabel(rule.healthCheck)],
+                    ['解決したアドレス', rule.resolved.length > 0
+                      ? <ul key="r" className="font-mono">{rule.resolved.map((a) => <li key={a}>{a}</li>)}</ul>
+                      : live ? 'まだ名前解決できていません' : null],
+                  ]} />
+                  <TargetsTable rule={rule} />
                 </>
               ) : (
                 <Fields items={[

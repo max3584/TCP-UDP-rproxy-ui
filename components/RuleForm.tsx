@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { InterfacesInfo, listenOptions, reservedClash } from './listen';
 import {
+  Balance,
   CLIENT_AUTH_MODES,
   ClientAuthMode,
+  DEFAULT_BALANCE,
   DEFAULT_MAX_RANGE_PORTS,
   DEFAULT_UDP_IDLE_SECS,
   ForwardRule,
@@ -22,6 +24,9 @@ import { transparentHint } from './sourceip';
 import { ACME_UNSUPPORTED_NOTE } from './messages';
 import HttpEditor from './HttpEditor';
 import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHttp } from './httpspec';
+import TargetsEditor from './TargetsEditor';
+import { EMPTY_ROW, HealthCheckRow, TargetRow, buildBalancing, toHealthCheckRow, toRows } from './targets';
+import { Balancing, NO_BALANCING } from './tls';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -117,6 +122,7 @@ type FieldErrors = {
   srcPortEnd: string;
   distAddr: string;
   distPort: string;
+  targets: string;
   sourceIp: string;
   udpIdleSecs: string;
   allowFrom: string;
@@ -126,7 +132,7 @@ type FieldErrors = {
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
 const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
-  basic: ['srcAddr', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort'],
+  basic: ['srcAddr', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort', 'targets'],
   http: ['http'],
   tls: ['tls'],
   mail: [],
@@ -139,6 +145,7 @@ const EMPTY_ERRORS: FieldErrors = {
   srcPortEnd: '',
   distAddr: '',
   distPort: '',
+  targets: '',
   sourceIp: '',
   udpIdleSecs: '',
   allowFrom: '',
@@ -166,6 +173,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [crowdsec, setCrowdsec] = useState(initialData?.crowdsec ?? false);
   const [distAddr, setDistAddr] = useState(initialData?.distAddr || '');
   const [distPort, setDistPort] = useState<number | ''>(initialData?.distPort || '');
+  // 宛先を複数にしたとき（rproxy の targets）。空なら単一の宛先（distAddr / distPort）
+  const [targetRows, setTargetRows] = useState<TargetRow[]>(toRows(initialData?.targets ?? []));
+  const [balance, setBalance] = useState<Balance>(initialData?.balance ?? DEFAULT_BALANCE);
+  const [healthCheck, setHealthCheck] = useState<HealthCheckRow>(toHealthCheckRow(initialData?.healthCheck ?? null));
+  const multi = targetRows.length > 0;
   const [sourceIp, setSourceIp] = useState<SourceIp>(initialData?.sourceIp || 'proxy');
   const [udpIdleSecs, setUdpIdleSecs] = useState<number | ''>(initialData?.udpIdleSecs || DEFAULT_UDP_IDLE_SECS);
   const [tlsMode, setTlsMode] = useState<TlsMode>(tls.mode);
@@ -313,6 +325,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     setSrcPort(p.srcPort);
     setSrcPortEnd(p.srcPortEnd ?? '');
     setDistPort(p.distPort);
+    setTargetRows([]);
     setSourceIp(p.sourceIp ?? 'proxy');
     setUdpIdleSecs(p.udpIdleSecs ?? DEFAULT_UDP_IDLE_SECS);
     setTlsMode(p.tlsMode);
@@ -412,8 +425,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         (clash ? `rproxy の${clash.purpose === 'control API' ? '制御 API' : clash.purpose}（${clash.addr}:${clash.port}）と重なります。別のアドレスかポートを選んでください。` : ''),
       srcPort: validatePort(srcPort),
       srcPortEnd: validateRange(),
-      distAddr: l7 ? '' : validateDistAddress(distAddr),
-      distPort: l7 ? '' : validatePort(distPort),
+      distAddr: l7 || multi ? '' : validateDistAddress(distAddr),
+      distPort: l7 || multi ? '' : validatePort(distPort),
+      targets: '',
       sourceIp: editMode || availableSourceIps.includes(sourceIp) ? '' : 'この送信元 IP の扱いは選択できません。',
       udpIdleSecs: validateUdpIdleSecs(udpIdleSecs),
       allowFrom: '',
@@ -433,12 +447,21 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     if (!allowFrom.ok) newErrors.allowFrom = allowFrom.error;
 
     const end = editMode ? initialData?.srcPortEnd ?? null : rangeEnd();
+    let balancing: Balancing = NO_BALANCING;
+    if (multi && !l7) {
+      try {
+        const count = newErrors.srcPortEnd || newErrors.srcPort ? 1 : portCount(Number(srcPort), end, 0);
+        balancing = buildBalancing(targetRows, balance, healthCheck, protocol, count);
+      } catch (err) {
+        newErrors.targets = err instanceof Error ? err.message : String(err);
+      }
+    }
     const starttlsValue = showStartTls && starttls !== '' ? starttls : null;
     let tlsSpec: TlsSpec = { mode: 'passthrough' };
     try {
       tlsSpec = normalizeTls(buildTls());
       const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort || l7
-        ? 1 : portCount(Number(srcPort), end, Number(distPort));
+        ? 1 : portCount(Number(srcPort), end, multi ? 0 : Number(distPort));
       checkTls(protocol, tlsSpec, starttlsValue, count);
     } catch (err) {
       newErrors.tls = err instanceof Error ? err.message : String(err);
@@ -457,8 +480,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       srcAddr: srcAddr,
       srcPort: Number(srcPort),
       srcPortEnd: end,
-      distAddr: l7 ? '' : distAddr,
-      distPort: l7 ? 0 : Number(distPort),
+      distAddr: l7 || multi ? '' : distAddr,
+      distPort: l7 || multi ? 0 : Number(distPort),
       sourceIp: sourceIp,
       udpIdleSecs: protocol === 'udp' ? Number(udpIdleSecs) : DEFAULT_UDP_IDLE_SECS,
       tls: tlsSpec,
@@ -467,6 +490,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       allowFrom: allowFrom.ok ? allowFrom.value : [],
       http: l7 ? cleanHttp(httpRules) : null,
       crowdsec: crowdsec,
+      ...(l7 ? NO_BALANCING : balancing),
     };
 
     void onSubmit(rule);
@@ -716,6 +740,27 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             このルールは L7（HTTP）のルールです。転送先は「L7 (HTTP)」タブのルートとサービスで決まります。
             <button type="button" className="ml-1 text-blue-700 underline" onClick={() => setActiveTab('http')}>L7 の設定を開く</button>
           </p>
+        ) : multi ? (
+          <TargetsEditor
+            protocol={protocol}
+            rows={targetRows}
+            onRowsChange={setTargetRows}
+            balance={balance}
+            onBalanceChange={setBalance}
+            healthCheck={healthCheck}
+            onHealthCheckChange={setHealthCheck}
+            range={srcPortEnd !== '' || (initialData?.srcPortEnd ?? null) !== null}
+            onSingle={() => {
+              // 1 件目を単一の宛先として残す
+              const first = targetRows[0];
+              if (first) {
+                setDistAddr(first.addr);
+                setDistPort(first.port);
+              }
+              setTargetRows([]);
+            }}
+            error={errors.targets}
+          />
         ) : (
           <>
           <div className="mb-4">
@@ -745,6 +790,16 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               aria-invalid={errors.distPort !== '' || undefined}
             />
             {errors.distPort && <p className={errorClass}>{errors.distPort}</p>}
+          </div>
+          <div className="mb-4">
+            <button
+              type="button"
+              className={smallButtonClass}
+              onClick={() => setTargetRows([{ addr: distAddr, port: distPort, weight: '', backup: false }, { ...EMPTY_ROW }])}
+            >
+              宛先を追加
+            </button>
+            <p className={helpClass}>宛先を複数にすると、ラウンドロビン・最少接続・フェイルオーバーで振り分けられます。</p>
           </div>
           </>
         )}

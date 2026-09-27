@@ -113,6 +113,7 @@ describe('HttpEditor and the L7 parts of RuleForm', () => {
     protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null, distAddr: '', distPort: 0, sourceIp: 'proxy', udpIdleSecs: 30,
     tls: { mode: 'terminate', certificates: [{ cert_file: '/c.pem', key_file: '/k.pem' }] },
     starttls: null, starttlsRequired: true, allowFrom: [], http: cleanHttp(gitlab), crowdsec: true,
+    targets: [], balance: 'round_robin', healthCheck: null,
   };
 
   it('shows routes in order with their middlewares, services and typed middleware forms', () => {

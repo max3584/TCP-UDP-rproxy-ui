@@ -1,7 +1,7 @@
 // rproxy-api の HTTP クライアント（契約は ../rproxy-api/docs/API.md）
 
 import { Agent, fetch as undiciFetch } from 'undici';
-import type { HttpSpec, Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec } from './lib';
+import type { Balance, HealthCheck, HttpSpec, Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, Target, TlsMode, TlsSpec } from './lib';
 import type { InterfacesInfo } from './listen';
 
 export type { HttpSpec, Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec };
@@ -25,6 +25,10 @@ export interface RproxyRule {
   http?: HttpSpec;
   // CrowdSec の判定での切断（v0.3.2。rproxy に global.crowdsec が必要）。応答では false のとき省かれる
   crowdsec?: boolean;
+  // 宛先を複数にするとき（v0.3.3）。remote_addr / remote_port の代わり
+  targets?: Target[];
+  balance?: Balance;
+  health_check?: HealthCheck;
 }
 
 // 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）。
@@ -64,6 +68,10 @@ export interface RproxyRulePatch {
   http?: HttpSpec;
   // 付けると有効・無効を切り替える
   crowdsec?: boolean;
+  // 付けると宛先を丸ごと置き換える（そのときは remote_addr / remote_port を付けない）
+  targets?: Target[];
+  balance?: Balance;
+  health_check?: HealthCheck | null;
 }
 
 // この版の rproxy で動かせる v0.3 の機能（古い rproxy は features を返さない）
