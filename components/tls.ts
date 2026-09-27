@@ -3,6 +3,11 @@
 // エラーコードも rproxy に揃える（組み合わせの誤りは tls_config、UDP の sni は unsupported、形の誤りは invalid）。
 
 import {
+  BALANCES,
+  Balance,
+  DEFAULT_BALANCE,
+  HealthCheck,
+  Target,
   CLIENT_AUTH_MODES,
   ClientAuthMode,
   Protocol,
@@ -311,10 +316,91 @@ export function portCount(srcPort: number, srcPortEnd: number | null, distPort: 
   return count;
 }
 
-// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec"} の JSON）。既定のままなら null を保存する。
-// allow_from は空なら、http は null なら、crowdsec は false なら省く。
-// rproxy は deny_unknown_fields で読むので、この 6 つ以外のキーを入れてはいけない（crowdsec は rproxy v0.3.2 から）
-export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec'];
+// 宛先を複数にしたとき（rproxy v0.3.3 の targets / balance / health_check）。targets が空なら単一の宛先
+export interface Balancing {
+  targets: Target[];
+  balance: Balance;
+  healthCheck: HealthCheck | null;
+}
+
+export const NO_BALANCING: Balancing = { targets: [], balance: DEFAULT_BALANCE, healthCheck: null };
+
+// 宛先は最大 64 件（rproxy と同じ上限の目安）
+export const MAX_TARGETS = 64;
+
+const DURATION_PATTERN = /^[0-9]+(ms|s|m|h)$/;
+
+// targets の 1 件ずつを確かめ、既定値（weight 1、backup false）を省いた形に揃える
+export function normalizeTargets(value: unknown): Target[] {
+  const items = list(value, 'targets');
+  if (items.length > MAX_TARGETS) throw invalid(`宛先は ${MAX_TARGETS} 件までです。`);
+  const targets = items.map((t, i): Target => {
+    const where = `宛先 ${i + 1}`;
+    if (!isObject(t)) throw invalid(`${where} の形式が不正です。`);
+    checkKeys(t, ['addr', 'port', 'weight', 'backup'], 'targets');
+    const addr = requiredString(t.addr, `${where} のアドレス`);
+    if (!isRemoteAddr(addr)) throw invalid(`${where} には IP アドレスかホスト名を指定してください。`);
+    if (!isPort(t.port)) throw invalid(`${where} のポート番号は1から65535の範囲で指定してください。`);
+    const target: Target = { addr: addr, port: t.port };
+    if (t.weight !== undefined && t.weight !== null) {
+      if (typeof t.weight !== 'number' || !Number.isInteger(t.weight) || t.weight < 1 || t.weight > 1000) {
+        throw invalid(`${where} の重みは1から1000の整数で指定してください。`);
+      }
+      if (t.weight !== 1) target.weight = t.weight;
+    }
+    if (optionalBool(t.backup, `${where} の backup`)) target.backup = true;
+    return target;
+  });
+  if (targets.length > 0 && targets.every((t) => t.backup)) {
+    throw invalid('予備（backup）でない宛先を 1 件以上指定してください。');
+  }
+  return targets;
+}
+
+export function normalizeBalance(value: unknown): Balance {
+  if (value === undefined || value === null || value === '') return DEFAULT_BALANCE;
+  if (!BALANCES.includes(value as Balance)) throw invalid('振り分け方は round_robin / least_conn / failover から選んでください。');
+  return value as Balance;
+}
+
+export function normalizeHealthCheck(value: unknown): HealthCheck | null {
+  if (value === undefined || value === null) return null;
+  if (!isObject(value)) throw invalid('ヘルスチェックの設定の形式が不正です。');
+  checkKeys(value, ['interval', 'timeout', 'port'], 'health_check');
+  const hc: HealthCheck = {};
+  for (const [key, label] of [['interval', '間隔'], ['timeout', 'タイムアウト']] as const) {
+    const v = optionalString(value[key], `ヘルスチェックの${label}`);
+    if (v === undefined) continue;
+    if (!DURATION_PATTERN.test(v)) throw invalid(`ヘルスチェックの${label}は 10s・500ms・1m のように指定してください。`);
+    hc[key] = v;
+  }
+  if (value.port !== undefined && value.port !== null) {
+    if (!isPort(value.port)) throw invalid('ヘルスチェックのポート番号は1から65535の範囲で指定してください。');
+    hc.port = value.port;
+  }
+  return hc;
+}
+
+// 宛先の組み合わせを確かめる（ポート範囲では各宛先のポートも範囲の長さだけずれる）
+export function checkBalancing(protocol: Protocol, b: Balancing, portCount: number): void {
+  if (b.targets.length === 0) {
+    if (b.healthCheck !== null) throw invalid('ヘルスチェックは宛先を複数にしたときだけ使えます。');
+    return;
+  }
+  for (const [i, t] of b.targets.entries()) {
+    if (t.port + portCount - 1 > 65535) throw invalid(`宛先 ${i + 1} のポートにポート範囲の長さを足すと 65535 を超えます。`);
+  }
+  if (protocol === 'udp' && b.healthCheck !== null && b.healthCheck.port === undefined) {
+    throw invalid('UDP のルールのヘルスチェックには、確かめる TCP のポートを指定してください。');
+  }
+}
+
+// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check"} の JSON）。
+// 既定のままなら null を保存する。allow_from は空なら、http は null なら、crowdsec は false なら省く。
+// targets は空なら省き、balance（既定の round_robin は省く）と health_check は targets があるときだけ書く。
+// rproxy は deny_unknown_fields で読むので、これ以外のキーを入れてはいけない
+// （crowdsec は rproxy v0.3.2、targets / balance / health_check は v0.3.3 から）
+export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec', 'targets', 'balance', 'health_check'];
 
 export function optionsJson(
   tls: TlsSpec,
@@ -323,8 +409,10 @@ export function optionsJson(
   allowFrom: string[] = [],
   http: HttpSpec | null = null,
   crowdsec = false,
+  balancing: Balancing = NO_BALANCING,
 ): string | null {
-  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec) return null;
+  const multi = balancing.targets.length > 0;
+  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec && !multi) return null;
   return JSON.stringify({
     tls: tls,
     starttls: starttls,
@@ -332,6 +420,9 @@ export function optionsJson(
     ...(allowFrom.length > 0 ? { allow_from: allowFrom } : {}),
     ...(http !== null ? { http: http } : {}),
     ...(crowdsec ? { crowdsec: true } : {}),
+    ...(multi ? { targets: balancing.targets } : {}),
+    ...(multi && balancing.balance !== DEFAULT_BALANCE ? { balance: balancing.balance } : {}),
+    ...(multi && balancing.healthCheck !== null ? { health_check: balancing.healthCheck } : {}),
   });
 }
 
@@ -356,11 +447,14 @@ export interface RuleOptions {
   allowFrom: string[];
   http: HttpSpec | null;
   crowdsec: boolean;
+  balancing: Balancing;
 }
 
 // options 列を読む。ドライバによっては JSON がオブジェクトで返るので両方を受け付ける
 export function parseOptions(value: unknown): RuleOptions {
-  const empty = (): RuleOptions => ({ tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false });
+  const empty = (): RuleOptions => ({
+    tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false, balancing: { ...NO_BALANCING },
+  });
   if (value === undefined || value === null || value === '') return empty();
   const data = typeof value === 'string' ? JSON.parse(value) : value;
   if (data === null) return empty();
@@ -375,5 +469,10 @@ export function parseOptions(value: unknown): RuleOptions {
     allowFrom: normalizeAllowFrom(data.allow_from),
     http: normalizeHttp(data.http),
     crowdsec: normalizeCrowdsec(data.crowdsec),
+    balancing: {
+      targets: normalizeTargets(data.targets),
+      balance: normalizeBalance(data.balance),
+      healthCheck: normalizeHealthCheck(data.health_check),
+    },
   };
 }

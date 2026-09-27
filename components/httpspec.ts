@@ -3,6 +3,7 @@
 // ここでは画面で先に分かる誤り（名前の重複、存在しない参照、match の書き方、URL の形）だけを確かめる。
 // React にも Node にも依存しない（画面と API route の両方で使う）
 
+import { BALANCES, type Balance } from './lib';
 import type { HttpSpec } from './lib';
 
 export interface RouteSpec {
@@ -25,6 +26,8 @@ export interface ServiceSpec {
   sticky?: { cookie: string };
   pass_host_header?: boolean;
   timeouts?: { connect?: string; response?: string };
+  // 転送先の振り分け方（rproxy v0.3.3。省略は round_robin。failover は servers の順）
+  balance?: Balance;
 }
 
 // {種類: 設定}（種類は 1 つだけ）
@@ -267,6 +270,7 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
       if (srv.weight !== undefined && !(Number.isInteger(srv.weight) && srv.weight >= 0)) errors.push(`サービス「${name}」の重みは 0 以上の整数にしてください。`);
     }
     if (s.health_check && !(s.health_check.path ?? '').startsWith('/')) errors.push(`サービス「${name}」のヘルスチェックのパスは / で始めてください。`);
+    if (s.balance !== undefined && !BALANCES.includes(s.balance)) errors.push(`サービス「${name}」の振り分け方は round_robin / least_conn / failover から選んでください。`);
   }
 
   for (const [name, m] of Object.entries(middlewares)) {
@@ -337,6 +341,7 @@ export function cleanHttp(spec: HttpRules): HttpSpec {
       }
       if (s.sticky?.cookie) svc.sticky = { cookie: s.sticky.cookie };
       if (s.pass_host_header === false) svc.pass_host_header = false;
+      if (s.balance !== undefined && s.balance !== 'round_robin') svc.balance = s.balance;
       const t = Object.fromEntries(Object.entries(s.timeouts ?? {}).filter(([, v]) => v !== undefined && v !== ''));
       if (Object.keys(t).length > 0) svc.timeouts = t;
       return [name, svc];

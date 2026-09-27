@@ -12,12 +12,12 @@ const render = (initialData?: ForwardRule, submitting = false) =>
 
 const udpRule: ForwardRule = {
   protocol: 'udp', srcAddr: '0.0.0.0', srcPort: 8000, srcPortEnd: 8001, distAddr: '10.0.0.30', distPort: 8000,
-  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false,
+  sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false, targets: [], balance: 'round_robin', healthCheck: null,
 };
 
 const terminateRule: ForwardRule = {
   protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null, distAddr: '10.0.0.5', distPort: 8080,
-  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false,
+  sourceIp: 'proxy', udpIdleSecs: 30, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false, targets: [], balance: 'round_robin', healthCheck: null,
   tls: {
     mode: 'terminate',
     certificates: [

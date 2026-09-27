@@ -65,6 +65,8 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 | `components/apiguard.ts` | API route の共通の確認（サインインとロール、`requireRole`）と、rproxy の失敗の返し方（`rproxyFailure`。rproxy の 401 は `rproxy_unauthorized`） |
 | `components/httpspec.ts` | L7（ルールの `http`）の型、`match` の式の検査（rproxy の `src/http/matcher.rs` と同じ書き方）と組み立て、`validateHttp`・`cleanHttp`。画面と API route の両方で使う |
 | `components/HttpEditor.tsx` | RuleForm の「L7 (HTTP)」タブ（ルート・サービス・ミドルウェア・一致しないとき）。ミドルウェアの種類は `features.middlewares`、サービスのヘルスチェック・スティッキーは `features.services` にあるものだけ出す |
+| `components/targets.ts` | 宛先を複数にしたとき（`targets` / `balance` / `health_check`）のフォームの行・組み立て・宛先ごとの状態の探し方。形の検証は `tls.ts` の `normalizeTargets` / `checkBalancing` |
+| `components/TargetsEditor.tsx` | RuleForm の「基本」タブの宛先の一覧・振り分け方・ヘルスチェック（「宛先を追加」で出る） |
 | `components/HttpSummary.tsx` | 詳細画面の L7 の読み取り専用の表示（ルートは rproxy が試す順） |
 | `keycloak/` | Keycloak のレルム定義（読み込み用の JSON。シークレットとユーザーは含めない） |
 | `db/` | テーブル定義（`schema.sql`）とマイグレーション。`db/README.md` を参照 |
@@ -79,8 +81,8 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
    証明書ファイルが読めるか、範囲の上限（`max_range_ports`）、範囲の重なりは rproxy が判定する。
 3. トランザクション内で `forward_rules` を更新し、履歴を `forward_rules_log` に書き込む（`update_action` 列は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者）。
    ルールは Keycloak の `sub`（`auth_id`）ごとに持ち、キーは `protocol`、`src_addr`、`src_port` の組み合わせ（DB 全体で一意。範囲ルールでは先頭のポート）。
-   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from / L7 は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from", "http"}` の JSON で保存する（`allow_from` は空なら、`http` は null なら省く。すべて既定なら NULL）。
-   rproxy は `options` を未知のキーを拒否して読むので、この 5 つ以外のキーを入れないこと（`parseOptions` も未知のキーを拒否する）。
+   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from / L7 / CrowdSec / 複数の宛先は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check"}` の JSON で保存する（`allow_from` は空なら、`http` は null なら、`crowdsec` は false なら、`targets` は空なら省き、`balance` / `health_check` は `targets` があるときだけ。すべて既定なら NULL）。
+   rproxy は `options` を未知のキーを拒否して読むので、`OPTIONS_KEYS` 以外のキーを入れないこと（`parseOptions` も未知のキーを拒否する）。
 4. rproxy-api の HTTP API を呼ぶ（`POST /rules`、`PATCH /rules/{protocol}/{addr}/{port}`、`DELETE ...`）。成功したときだけ COMMIT し、失敗したら ROLLBACK する。
    rproxy に反映した後で COMMIT だけが失敗した場合は、rproxy 側の変更を元に戻す（`withTransaction` に渡す undo）。
    - rproxy の 4xx はそのままのステータスで返す（401/403 は UI サーバ側の設定ミスなので 502）。それ以外の失敗は 502。本文は `{error, code}`。
@@ -107,6 +109,7 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
   ACME は rproxy に内蔵しない方針（rproxy-api#17）なので、ACME の証明書は詳細画面とフォームに「この rproxy では使えない設定」と出す（`ACME_UNSUPPORTED_NOTE`。設定は消さずに保つ）。証明書は certbot / cert-manager で取ったファイルで、rproxy が変更を検知して読み直す（`RPROXY_CERT_CHECK_SECS`）。
   rproxy の 403 `forbidden`（UI のトークンのスコープ・`allow_listen_ports` の不足）は 502 で `code: forbidden` を返し、画面は `FORBIDDEN_MESSAGE` で説明する。UI のトークンに要るスコープは `rules:read` と `rules:write`。
   フォームは ACME の証明書と `tls.options` を読み取り専用で残して送る。
+  宛先を複数にしたルール（rproxy v0.3.3 の `targets` / `balance` / `health_check`）は、`options` に `targets` があるときだけ書き、DB の `dist_addr` は `''`、`dist_port` は `0`。rproxy へは `remote_addr` / `remote_port` の代わりに送る（PATCH では宛先の一覧・振り分け方・ヘルスチェックを丸ごと置き換え、単一に戻すときは `remote_addr` と `targets: []`）。`modify` の body に `targets` がなければ DB の値を保つ。
   ルールの `crowdsec`（L4 の CrowdSec。rproxy v0.3.2 から）は `options` に true のときだけ保存し、rproxy へも true のとき（PATCH では有効から無効にするときも）だけ送る（古い rproxy は知らない項目を拒否する）。
 - ロール：`rproxy-admin` はすべての利用者のルール（`owner` 付き。WHERE に `auth_id` を付けない）、`rproxy-user` は自分のルールだけ（`RPROXY_UI_USER_ROLE` が空（既定）なら、サインインした人はだれでも user）、ロールを必須にしてどちらもなければ 403 `no_role`（画面は `RequireAuth` が出す）。`RPROXY_UI_USER_PORTS` で `rproxy-user` の待ち受けポートを制限できる（403 `port_not_allowed`）。
   rproxy の 401（UI の `RPROXY_API_TOKEN` の誤り・期限切れ）は 502 `rproxy_unauthorized`（利用者のサインインの問題と区別する）。

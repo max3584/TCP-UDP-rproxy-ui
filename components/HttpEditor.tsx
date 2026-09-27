@@ -2,6 +2,9 @@
 // 値は親が持ち、変更は onChange で丸ごと返す。検証は httpspec.ts の validateHttp（送信時に親が呼ぶ）
 
 import React, { useState } from 'react';
+import { BALANCES, type Balance } from './lib';
+import { BALANCE_LABELS } from './dashboard';
+import { BALANCE_HELP } from './targets';
 import {
   HttpRules,
   MIDDLEWARE_KINDS,
@@ -431,6 +434,16 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                   <input type="checkbox" checked={s.pass_host_header !== false} onChange={(e) => updateService(name, { pass_host_header: e.target.checked ? undefined : false })} />
                   クライアントの Host ヘッダをそのまま送る（外すと転送先の URL のホスト名）
                 </label>
+                {(serviceOptions === null || serviceOptions.includes('balance') || s.balance !== undefined) && (
+                  <div className="sm:col-span-3">
+                    <label htmlFor={`${id}-balance`} className={labelClass}>振り分け方</label>
+                    <select id={`${id}-balance`} className={inputClass} value={s.balance ?? 'round_robin'}
+                      onChange={(e) => updateService(name, { balance: e.target.value === 'round_robin' ? undefined : e.target.value as Balance })}>
+                      {BALANCES.map((b) => <option key={b} value={b}>{BALANCE_LABELS[b]}</option>)}
+                    </select>
+                    <p className="mt-1 text-xs text-gray-600">{BALANCE_HELP[s.balance ?? 'round_robin']}{s.balance === 'failover' ? '（転送先の上から順）' : ''}</p>
+                  </div>
+                )}
                 <div>
                   <label htmlFor={`${id}-connect`} className={labelClass}>接続のタイムアウト（既定 5s）</label>
                   <input id={`${id}-connect`} className={monoInput} value={s.timeouts?.connect ?? ''} placeholder="5s"

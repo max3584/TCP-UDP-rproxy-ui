@@ -19,8 +19,13 @@ import {
   DEFAULT_TLS,
   TlsError,
   checkTls,
+  NO_BALANCING,
+  checkBalancing,
   normalizeAllowFrom,
+  normalizeBalance,
   normalizeCrowdsec,
+  normalizeHealthCheck,
+  normalizeTargets,
   normalizeHttp,
   normalizeStartTls,
   normalizeStartTlsRequired,
@@ -169,12 +174,20 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     allowFrom: [],
     http: null,
     crowdsec: false,
+    ...NO_BALANCING,
   };
   if (keyOnly) return rule;
 
   // L7（http）のルールは転送先を持たない（転送先は http.services / routes[].to）
   const http = parseHttp(body.http, protocol as Protocol);
-  const withoutRemote = http !== null || (forModify && noRemote(body));
+  // 宛先を複数にしたルールも remote_addr / remote_port を持たない（転送先は targets）
+  const targets = normalizeTargets(body.targets);
+  const balance = normalizeBalance(body.balance);
+  const healthCheck = normalizeHealthCheck(body.healthCheck);
+  if (targets.length > 0 && http !== null) {
+    throw invalid('L7（HTTP）のルールでは宛先を複数にできません。L7 タブのサービスで転送先を並べてください。');
+  }
+  const withoutRemote = http !== null || targets.length > 0 || (forModify && noRemote(body));
   const distAddr = withoutRemote ? '' : typeof body.distAddr === 'string' ? body.distAddr.trim() : '';
   const distPort = withoutRemote ? 0 : body.distPort;
   if (!withoutRemote) {
@@ -206,6 +219,7 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
   const starttls = normalizeStartTls(body.starttls);
   const starttlsRequired = normalizeStartTlsRequired(body.starttlsRequired, starttls);
   checkTls(protocol as Protocol, tls, starttls, count);
+  checkBalancing(protocol as Protocol, { targets: targets, balance: balance, healthCheck: healthCheck }, count);
   const allowFrom = normalizeAllowFrom(body.allowFrom);
   if (http !== null) {
     // rproxy と同じ組み合わせの制限（tcp は parseHttp で確かめた）
@@ -228,7 +242,15 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     allowFrom: allowFrom,
     http: http,
     crowdsec: normalizeCrowdsec(body.crowdsec),
+    targets: targets,
+    balance: balance,
+    healthCheck: targets.length > 0 ? healthCheck : null,
   };
+}
+
+// body に targets があるか（なければ変更の前の宛先・振り分け方・ヘルスチェックを保つ）
+function hasTargets(body: any): boolean {
+  return typeof body === 'object' && body !== null && body.targets !== undefined;
 }
 
 // body の http（L7 の設定）。null / 省略なら L4 のルール
@@ -280,11 +302,18 @@ function starttlsFields(rule: ForwardRule) {
   return rule.starttls !== null ? { starttls: rule.starttls, starttls_required: rule.starttlsRequired } : {};
 }
 
-// 転送先。http のルールは remote_addr / remote_port を書かず、http を付ける（書くと rproxy が invalid を返す）
+// 転送先。http のルールは remote_addr / remote_port を書かず、http を付ける（書くと rproxy が invalid を返す）。
+// 宛先を複数にしたルールは targets と balance（・health_check）を付ける（rproxy v0.3.3）
 function remoteFields(rule: ForwardRule) {
-  return rule.http !== null
-    ? { http: rule.http }
-    : { remote_addr: rule.distAddr, remote_port: rule.distPort };
+  if (rule.http !== null) return { http: rule.http };
+  if (rule.targets.length > 0) {
+    return {
+      targets: rule.targets,
+      balance: rule.balance,
+      ...(rule.healthCheck !== null ? { health_check: rule.healthCheck } : {}),
+    };
+  }
+  return { remote_addr: rule.distAddr, remote_port: rule.distPort };
 }
 
 function toRproxyRule(rule: ForwardRule): RproxyRule {
@@ -306,10 +335,12 @@ function toRproxyRule(rule: ForwardRule): RproxyRule {
 
 // PATCH では tls と allow_from を毎回付けて丸ごと置き換える（allow_from の [] はすべて許可に戻す）。
 // http のルールは http を付けて L7 の設定も丸ごと置き換える。範囲と source_ip は変えられないので送らない。
-// crowdsec は有効なとき、または有効から無効にするとき（wasOn）だけ付ける（古い rproxy は知らない項目を拒否する）
-function toRproxyPatch(rule: ForwardRule, wasOn = false): RproxyRulePatch {
+// crowdsec は有効なとき、または有効から無効にするとき（wasOn）だけ付ける（古い rproxy は知らない項目を拒否する）。
+// 宛先を複数から単一に戻すとき（wasMulti）は targets: [] も付けて、rproxy の宛先の一覧を外す
+function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false): RproxyRulePatch {
   return {
     ...remoteFields(rule),
+    ...(wasMulti && rule.http === null && rule.targets.length === 0 ? { targets: [] } : {}),
     ...(rule.protocol === 'udp' ? { udp_idle_secs: rule.udpIdleSecs } : {}),
     tls: rule.tls,
     ...starttlsFields(rule),
@@ -319,7 +350,11 @@ function toRproxyPatch(rule: ForwardRule, wasOn = false): RproxyRulePatch {
 }
 
 function options(rule: ForwardRule): string | null {
-  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired, rule.allowFrom, rule.http, rule.crowdsec);
+  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired, rule.allowFrom, rule.http, rule.crowdsec, {
+    targets: rule.targets,
+    balance: rule.balance,
+    healthCheck: rule.healthCheck,
+  });
 }
 
 // forward_rules の行（src_port_end と options を含む）をルールにする
@@ -340,6 +375,9 @@ function fromRow(row: any): ForwardRule {
     allowFrom: opts.allowFrom,
     http: opts.http,
     crowdsec: opts.crowdsec,
+    targets: opts.balancing.targets,
+    balance: opts.balancing.balance,
+    healthCheck: opts.balancing.healthCheck,
   };
 }
 
@@ -509,7 +547,17 @@ function hasAllowFrom(body: any): boolean {
   return typeof body === 'object' && body !== null && body.allowFrom !== undefined;
 }
 
-async function editForwardingRule(actor: Actor, rule: ForwardRule, rangeGiven: boolean, allowFromGiven: boolean, httpGiven: boolean, crowdsecGiven: boolean, logger: AppLogger): Promise<void> {
+// given：body にその項目があったか（なければ DB の値を保つ）
+interface Given {
+  range: boolean;
+  allowFrom: boolean;
+  http: boolean;
+  crowdsec: boolean;
+  targets: boolean;
+}
+
+async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given, logger: AppLogger): Promise<void> {
+  const { range: rangeGiven, allowFrom: allowFromGiven, http: httpGiven, crowdsec: crowdsecGiven } = given;
   const owner = ownerClause(actor);
   await withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, actor, rule, logger);
@@ -525,8 +573,12 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, rangeGiven: b
         ? 'L4 のルールを L7（HTTP）に変えることはできません。削除してから作り直してください。'
         : 'L7（HTTP）のルールを L4 に戻すことはできません。削除してから作り直してください。', 'unsupported');
     }
-    // L7 でないルールには転送先が必須
-    if (http === null && rule.distAddr === '') {
+    // 宛先（複数）の指定がなければ DB の値を保つ
+    const balancing = given.targets
+      ? { targets: rule.targets, balance: rule.balance, healthCheck: rule.healthCheck }
+      : { targets: current.targets, balance: current.balance, healthCheck: current.healthCheck };
+    // L7 でもなく宛先が複数でもないルールには転送先が必須
+    if (http === null && balancing.targets.length === 0 && rule.distAddr === '') {
       throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
     }
     // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
@@ -537,11 +589,14 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, rangeGiven: b
       allowFrom: allowFromGiven ? rule.allowFrom : current.allowFrom,
       crowdsec: crowdsecGiven ? rule.crowdsec : current.crowdsec,
       http: http,
-      ...(http !== null ? { distAddr: '', distPort: 0 } : {}),
+      ...balancing,
+      ...(http !== null || balancing.targets.length > 0 ? { distAddr: '', distPort: 0 } : {}),
     };
     try {
       // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
-      checkTls(updated.protocol, updated.tls, updated.starttls, portCount(updated.srcPort, updated.srcPortEnd, updated.distPort));
+      const count = portCount(updated.srcPort, updated.srcPortEnd, updated.distPort);
+      checkTls(updated.protocol, updated.tls, updated.starttls, count);
+      checkBalancing(updated.protocol, updated, count);
     } catch (err) {
       throw fromTlsError(err);
     }
@@ -552,7 +607,7 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, rangeGiven: b
     // 履歴の auth_id は操作した利用者（admin がほかの人のルールを変えたときは admin）
     await insertLog(conn, actor.id, updated, 'UPDATE');
     try {
-      await modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec));
+      await modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec, current.targets.length > 0));
     } catch (err) {
       if (!isNotFound(err)) throw err;
       // rproxy にないルール（missing）は作り直す
@@ -561,7 +616,7 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, rangeGiven: b
       return () => deleteRule(toKey(updated));
     }
     // 元の転送先・TLS の設定・allow_from に戻す
-    return () => modifyRule(toKey(current), toRproxyPatch(current, updated.crowdsec));
+    return () => modifyRule(toKey(current), toRproxyPatch(current, updated.crowdsec, updated.targets.length > 0));
   });
 }
 
@@ -666,7 +721,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         logger.info('Forwarding rule added successfully');
         return res.status(200).json({ message: 'Forwarding rule added successfully' });
       } else if (query === 'modify') {
-        await editForwardingRule(actor, parseRule(req.body, false, true), hasRangeEnd(req.body), hasAllowFrom(req.body), hasHttp(req.body), hasCrowdsec(req.body), logger);
+        await editForwardingRule(actor, parseRule(req.body, false, true), {
+          range: hasRangeEnd(req.body),
+          allowFrom: hasAllowFrom(req.body),
+          http: hasHttp(req.body),
+          crowdsec: hasCrowdsec(req.body),
+          targets: hasTargets(req.body),
+        }, logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json({ message: 'Forwarding rule modified successfully' });
       } else if (query === 'delete') {
