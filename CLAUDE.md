@@ -81,7 +81,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
    証明書ファイルが読めるか、範囲の上限（`max_range_ports`）、範囲の重なりは rproxy が判定する。
 3. トランザクション内で `forward_rules` を更新し、履歴を `forward_rules_log` に書き込む（`update_action` 列は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者）。
    ルールは Keycloak の `sub`（`auth_id`）ごとに持ち、キーは `protocol`、`src_addr`、`src_port` の組み合わせ（DB 全体で一意。範囲ルールでは先頭のポート）。
-   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from / L7 / CrowdSec / 複数の宛先は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check"}` の JSON で保存する（`allow_from` は空なら、`http` は null なら、`crowdsec` は false なら、`targets` は空なら省き、`balance` / `health_check` は `targets` があるときだけ。すべて既定なら NULL）。
+   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from / L7 / CrowdSec / 複数の宛先は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check", "extra_listen_addrs"}` の JSON で保存する（`allow_from` は空なら、`http` は null なら、`crowdsec` は false なら、`targets` と `extra_listen_addrs` は空なら省き、`balance` / `health_check` は `targets` があるときだけ。すべて既定なら NULL）。
    rproxy は `options` を未知のキーを拒否して読むので、`OPTIONS_KEYS` 以外のキーを入れないこと（`parseOptions` も未知のキーを拒否する）。
 4. rproxy-api の HTTP API を呼ぶ（`POST /rules`、`PATCH /rules/{protocol}/{addr}/{port}`、`DELETE ...`）。成功したときだけ COMMIT し、失敗したら ROLLBACK する。
    rproxy に反映した後で COMMIT だけが失敗した場合は、rproxy 側の変更を元に戻す（`withTransaction` に渡す undo）。
@@ -111,6 +111,8 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
   フォームは ACME の証明書と `tls.options` を読み取り専用で残して送る。
   宛先を複数にしたルール（rproxy v0.3.3 の `targets` / `balance` / `health_check`）は、`options` に `targets` があるときだけ書き、DB の `dist_addr` は `''`、`dist_port` は `0`。rproxy へは `remote_addr` / `remote_port` の代わりに送る（PATCH では宛先の一覧・振り分け方・ヘルスチェックを丸ごと置き換え、単一に戻すときは `remote_addr` と `targets: []`）。`modify` の body に `targets` がなければ DB の値を保つ。
   ルールの `crowdsec`（L4 の CrowdSec。rproxy v0.3.2 から）は `options` に true のときだけ保存し、rproxy へも true のとき（PATCH では有効から無効にするときも）だけ送る（古い rproxy は知らない項目を拒否する）。
+  追加の待ち受けアドレス（`extraListenAddrs`、rproxy の `extra_listen_addrs`。v0.3.3）は IP アドレスだけで最大 16 件（`normalizeExtraListenAddrs`）。rproxy へは空でないとき（PATCH では空にするときも）だけ送る。`modify` の body になければ DB の値を保つ。
+  TLS の `routes[]` は `server_name` か `server_names`（フォームはカンマ区切りの 1 欄）と `passthrough`（terminate のときだけ。L7 のルールでは passthrough の行だけ、`unmatched: reject` も不可。`checkTls` の 5 番目の引数）。`**.` は何階層でも一致するワイルドカード。
 - ロール：`rproxy-admin` はすべての利用者のルール（`owner` 付き。WHERE に `auth_id` を付けない）、`rproxy-user` は自分のルールだけ（`RPROXY_UI_USER_ROLE` が空（既定）なら、サインインした人はだれでも user）、ロールを必須にしてどちらもなければ 403 `no_role`（画面は `RequireAuth` が出す）。`RPROXY_UI_USER_PORTS` で `rproxy-user` の待ち受けポートを制限できる（403 `port_not_allowed`）。
   rproxy の 401（UI の `RPROXY_API_TOKEN` の誤り・期限切れ）は 502 `rproxy_unauthorized`（利用者のサインインの問題と区別する）。
 

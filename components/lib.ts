@@ -147,7 +147,11 @@ export interface ForwardRule {
   balance: Balance;
   // targets があるときの死活確認。null なら接続の失敗だけで判定する
   healthCheck: HealthCheck | null;
+  // 同じポート（範囲）で追加で待ち受けるアドレス（IPv4 と IPv6 を同時に、など。rproxy v0.3.3。最大 16 件）。省略は []
+  extraListenAddrs?: string[];
 }
+
+export const MAX_EXTRA_LISTEN_ADDRS = 16;
 
 // dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）
 export type RuleOrigin = 'dynamic' | 'static';

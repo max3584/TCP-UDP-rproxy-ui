@@ -24,8 +24,9 @@ import {
   TlsUnmatched,
   TlsUpstream,
   routeNames,
+  MAX_EXTRA_LISTEN_ADDRS,
 } from './lib';
-import { checkAllowFrom } from './cidr';
+import { checkAllowFrom, parseCidr } from './cidr';
 
 export type TlsErrorCode = 'invalid' | 'tls_config' | 'unsupported';
 
@@ -435,12 +436,34 @@ export function checkBalancing(protocol: Protocol, b: Balancing, portCount: numb
   }
 }
 
-// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check"} の JSON）。
+// 追加の待ち受けアドレス（rproxy の extra_listen_addrs）。IP アドレスだけで最大 16 件、待ち受けアドレス（listenAddr）と重ならない。
+// rproxy の応答と比べられるように、IPv6 は圧縮表記、IPv4-mapped は IPv4 にする
+export function normalizeExtraListenAddrs(value: unknown, listenAddr?: string): string[] {
+  const items = list(value, 'extra_listen_addrs').map((v) => {
+    if (typeof v !== 'string') throw invalid('追加の待ち受けアドレスは文字列（IP アドレス）で指定してください。');
+    const parsed = v.includes('/') ? null : parseCidr(v);
+    if (!parsed || !parsed.ok) throw invalid(`追加の待ち受けアドレスには IP アドレスを指定してください: ${v}`);
+    return parsed.value.replace(/\/\d+$/, '');
+  });
+  if (items.length > MAX_EXTRA_LISTEN_ADDRS) throw invalid(`追加の待ち受けアドレスは ${MAX_EXTRA_LISTEN_ADDRS} 件までです。`);
+  const main = listenAddr !== undefined && listenAddr !== '' ? parseCidr(listenAddr) : null;
+  const mainValue = main && main.ok ? main.value.replace(/\/\d+$/, '') : null;
+  const seen = new Set<string>();
+  for (const a of items) {
+    if (a === mainValue) throw invalid(`追加の待ち受けアドレスが待ち受けアドレスと同じです: ${a}`);
+    if (seen.has(a)) throw invalid(`追加の待ち受けアドレスが重複しています: ${a}`);
+    seen.add(a);
+  }
+  return items;
+}
+
+// DB の options 列（{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check",
+// "extra_listen_addrs"} の JSON）。
 // 既定のままなら null を保存する。allow_from は空なら、http は null なら、crowdsec は false なら省く。
 // targets は空なら省き、balance（既定の round_robin は省く）と health_check は targets があるときだけ書く。
 // rproxy は deny_unknown_fields で読むので、これ以外のキーを入れてはいけない
-// （crowdsec は rproxy v0.3.2、targets / balance / health_check は v0.3.3 から）
-export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec', 'targets', 'balance', 'health_check'];
+// （crowdsec は rproxy v0.3.2、targets / balance / health_check / extra_listen_addrs は v0.3.3 から。extra_listen_addrs は空なら省く）
+export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec', 'targets', 'balance', 'health_check', 'extra_listen_addrs'];
 
 export function optionsJson(
   tls: TlsSpec,
@@ -450,9 +473,12 @@ export function optionsJson(
   http: HttpSpec | null = null,
   crowdsec = false,
   balancing: Balancing = NO_BALANCING,
+  extraListenAddrs: string[] = [],
 ): string | null {
   const multi = balancing.targets.length > 0;
-  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec && !multi) return null;
+  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec && !multi && extraListenAddrs.length === 0) {
+    return null;
+  }
   return JSON.stringify({
     tls: tls,
     starttls: starttls,
@@ -463,6 +489,7 @@ export function optionsJson(
     ...(multi ? { targets: balancing.targets } : {}),
     ...(multi && balancing.balance !== DEFAULT_BALANCE ? { balance: balancing.balance } : {}),
     ...(multi && balancing.healthCheck !== null ? { health_check: balancing.healthCheck } : {}),
+    ...(extraListenAddrs.length > 0 ? { extra_listen_addrs: extraListenAddrs } : {}),
   });
 }
 
@@ -488,12 +515,14 @@ export interface RuleOptions {
   http: HttpSpec | null;
   crowdsec: boolean;
   balancing: Balancing;
+  extraListenAddrs: string[];
 }
 
 // options 列を読む。ドライバによっては JSON がオブジェクトで返るので両方を受け付ける
 export function parseOptions(value: unknown): RuleOptions {
   const empty = (): RuleOptions => ({
     tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false, balancing: { ...NO_BALANCING },
+    extraListenAddrs: [],
   });
   if (value === undefined || value === null || value === '') return empty();
   const data = typeof value === 'string' ? JSON.parse(value) : value;
@@ -514,5 +543,6 @@ export function parseOptions(value: unknown): RuleOptions {
       balance: normalizeBalance(data.balance),
       healthCheck: normalizeHealthCheck(data.health_check),
     },
+    extraListenAddrs: normalizeExtraListenAddrs(data.extra_listen_addrs),
   };
 }

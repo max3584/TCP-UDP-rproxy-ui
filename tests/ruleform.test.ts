@@ -137,6 +137,16 @@ describe('RuleForm: allow_from and unmatched', () => {
   });
 });
 
+describe('RuleForm: extra listen addresses', () => {
+  it('lists them in the basic tab with an add button, empty by default', () => {
+    const html = render({ ...terminateRule, srcAddr: '203.0.113.5', extraListenAddrs: ['2001:db8::5'] });
+    expect(html).toContain('追加の待ち受けアドレス（任意）');
+    expect(html).toMatch(/<input type="text" list="rule-listen-candidates"[^>]*aria-label="追加の待ち受けアドレス 1"[^>]*value="2001:db8::5"\/>/);
+    expect(html).toContain('＋ 待ち受けアドレスを追加');
+    expect(render(terminateRule)).not.toContain('aria-label="追加の待ち受けアドレス 1"');
+  });
+});
+
 describe('RuleForm: SNI passthrough and several server names', () => {
   const panel = (html: string, tab: string) => {
     const start = html.indexOf(`id="rule-panel-${tab}"`);

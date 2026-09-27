@@ -350,6 +350,11 @@ const RuleDetailPage: React.FC = () => {
               <Fields items={[
                 ['プロトコル', rule.protocol.toUpperCase()],
                 ['アドレス', <Mono key="a">{rule.srcAddr}</Mono>],
+                ...((rule.extraListenAddrs ?? []).length > 0 ? [['追加の待ち受けアドレス', (
+                  <span key="x" data-testid="extra-listen-addrs">
+                    {(rule.extraListenAddrs ?? []).map((x) => <Mono key={x}>{x} </Mono>)}
+                  </span>
+                )] as [string, React.ReactNode]] : []),
                 [rule.srcPortEnd === null ? 'ポート' : 'ポート範囲', <Mono key="p">{portsLabel(rule.srcPort, rule.srcPortEnd)}</Mono>],
                 ...(rule.srcPortEnd !== null ? [['ポート数', `${rule.srcPortEnd - rule.srcPort + 1}`] as [string, React.ReactNode]] : []),
               ]} />

@@ -1,7 +1,9 @@
 // allow_from の CIDR の検証（components/cidr.ts）と、options 列・unmatched・v0.3 の TLS（ACME・options）の検証（components/tls.ts）
 import { describe, expect, it } from 'vitest';
 import { MAX_ALLOW_FROM, checkAllowFrom, formatIpv6, parseCidr, splitAllowFromText } from '@/components/cidr';
-import { TlsError, checkTls, isServerNamePattern, normalizeAllowFrom, normalizeTls, optionsJson, parseOptions, splitServerNames } from '@/components/tls';
+import {
+  TlsError, checkTls, isServerNamePattern, normalizeAllowFrom, normalizeExtraListenAddrs, normalizeTls, optionsJson, parseOptions, splitServerNames,
+} from '@/components/tls';
 
 const value = (s: string) => {
   const r = parseCidr(s);
@@ -118,7 +120,7 @@ describe('options JSON with allow_from', () => {
     expect(parseOptions(JSON.stringify({ tls: { mode: 'sni' }, starttls: null, starttls_required: true })).allowFrom).toEqual([]);
     expect(parseOptions(null)).toEqual({
       tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false,
-      balancing: { targets: [], balance: 'round_robin', healthCheck: null },
+      balancing: { targets: [], balance: 'round_robin', healthCheck: null }, extraListenAddrs: [],
     });
     expect(() => parseOptions(JSON.stringify({ ...stored, extra: 1 }))).toThrow(/不明な項目/);
   });
@@ -179,6 +181,18 @@ describe('tls.unmatched', () => {
     expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [route] }, null, 1, true))).toBe('tls_config');
     expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [pt], unmatched: 'reject' }, null, 1, true))).toBe('tls_config');
     expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [{ ...pt, server_name: 'bad name' }] }, null, 1))).toBe('tls_config');
+  });
+
+  it('normalizes extra listen addresses and stores them only when present', () => {
+    expect(normalizeExtraListenAddrs(['2001:DB8::5', '0.0.0.0'], '::')).toEqual(['2001:db8::5', '0.0.0.0']);
+    expect(normalizeExtraListenAddrs(undefined)).toEqual([]);
+    expect(code(() => normalizeExtraListenAddrs(['::'], '::0'))).toBe('invalid');
+    expect(code(() => normalizeExtraListenAddrs(['10.0.0.1', '10.0.0.1']))).toBe('invalid');
+    expect(code(() => normalizeExtraListenAddrs(['host.example']))).toBe('invalid');
+    expect(optionsJson({ mode: 'passthrough' }, null, true, [], null, false, undefined, [])).toBeNull();
+    const json = optionsJson({ mode: 'passthrough' }, null, true, [], null, false, undefined, ['::'])!;
+    expect(JSON.parse(json)).toEqual({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, extra_listen_addrs: ['::'] });
+    expect(parseOptions(json).extraListenAddrs).toEqual(['::']);
   });
 
   it('splits the form field into names', () => {

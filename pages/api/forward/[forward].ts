@@ -24,6 +24,7 @@ import {
   normalizeAllowFrom,
   normalizeBalance,
   normalizeCrowdsec,
+  normalizeExtraListenAddrs,
   normalizeHealthCheck,
   normalizeTargets,
   normalizeHttp,
@@ -175,6 +176,7 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     http: null,
     crowdsec: false,
     ...NO_BALANCING,
+    extraListenAddrs: [],
   };
   if (keyOnly) return rule;
 
@@ -245,7 +247,17 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     targets: targets,
     balance: balance,
     healthCheck: targets.length > 0 ? healthCheck : null,
+    extraListenAddrs: normalizeExtraListenAddrs(body.extraListenAddrs, rule.srcAddr),
   };
+}
+
+// body に extraListenAddrs があるか（なければ変更の前の値を保つ）
+function hasExtraListenAddrs(body: any): boolean {
+  return typeof body === 'object' && body !== null && body.extraListenAddrs !== undefined;
+}
+
+function extraAddrs(rule: ForwardRule): string[] {
+  return rule.extraListenAddrs ?? [];
 }
 
 // body に targets があるか（なければ変更の前の宛先・振り分け方・ヘルスチェックを保つ）
@@ -330,14 +342,16 @@ function toRproxyRule(rule: ForwardRule): RproxyRule {
     ...(rule.allowFrom.length > 0 ? { allow_from: rule.allowFrom } : {}),
     // 古い rproxy（v0.3.2 より前）は知らない項目を拒否するので、使うときだけ付ける
     ...(rule.crowdsec ? { crowdsec: true } : {}),
+    ...(extraAddrs(rule).length > 0 ? { extra_listen_addrs: extraAddrs(rule) } : {}),
   };
 }
 
 // PATCH では tls と allow_from を毎回付けて丸ごと置き換える（allow_from の [] はすべて許可に戻す）。
 // http のルールは http を付けて L7 の設定も丸ごと置き換える。範囲と source_ip は変えられないので送らない。
 // crowdsec は有効なとき、または有効から無効にするとき（wasOn）だけ付ける（古い rproxy は知らない項目を拒否する）。
-// 宛先を複数から単一に戻すとき（wasMulti）は targets: [] も付けて、rproxy の宛先の一覧を外す
-function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false): RproxyRulePatch {
+// 宛先を複数から単一に戻すとき（wasMulti）は targets: [] も付けて、rproxy の宛先の一覧を外す。
+// 追加の待ち受けアドレスは、あるとき、またはあったものを外すとき（hadExtra）だけ付ける
+function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false, hadExtra = false): RproxyRulePatch {
   return {
     ...remoteFields(rule),
     ...(wasMulti && rule.http === null && rule.targets.length === 0 ? { targets: [] } : {}),
@@ -346,6 +360,7 @@ function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false): Rpro
     ...starttlsFields(rule),
     allow_from: rule.allowFrom,
     ...(rule.crowdsec || wasOn ? { crowdsec: rule.crowdsec } : {}),
+    ...(extraAddrs(rule).length > 0 || hadExtra ? { extra_listen_addrs: extraAddrs(rule) } : {}),
   };
 }
 
@@ -354,7 +369,7 @@ function options(rule: ForwardRule): string | null {
     targets: rule.targets,
     balance: rule.balance,
     healthCheck: rule.healthCheck,
-  });
+  }, extraAddrs(rule));
 }
 
 // forward_rules の行（src_port_end と options を含む）をルールにする
@@ -378,6 +393,7 @@ function fromRow(row: any): ForwardRule {
     targets: opts.balancing.targets,
     balance: opts.balancing.balance,
     healthCheck: opts.balancing.healthCheck,
+    extraListenAddrs: opts.extraListenAddrs,
   };
 }
 
@@ -554,6 +570,7 @@ interface Given {
   http: boolean;
   crowdsec: boolean;
   targets: boolean;
+  extraListenAddrs: boolean;
 }
 
 async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given, logger: AppLogger): Promise<void> {
@@ -591,6 +608,7 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given,
       http: http,
       ...balancing,
       ...(http !== null || balancing.targets.length > 0 ? { distAddr: '', distPort: 0 } : {}),
+      extraListenAddrs: given.extraListenAddrs ? extraAddrs(rule) : extraAddrs(current),
     };
     try {
       // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
@@ -607,7 +625,7 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given,
     // 履歴の auth_id は操作した利用者（admin がほかの人のルールを変えたときは admin）
     await insertLog(conn, actor.id, updated, 'UPDATE');
     try {
-      await modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec, current.targets.length > 0));
+      await modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec, current.targets.length > 0, extraAddrs(current).length > 0));
     } catch (err) {
       if (!isNotFound(err)) throw err;
       // rproxy にないルール（missing）は作り直す
@@ -616,7 +634,7 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given,
       return () => deleteRule(toKey(updated));
     }
     // 元の転送先・TLS の設定・allow_from に戻す
-    return () => modifyRule(toKey(current), toRproxyPatch(current, updated.crowdsec, updated.targets.length > 0));
+    return () => modifyRule(toKey(current), toRproxyPatch(current, updated.crowdsec, updated.targets.length > 0, extraAddrs(updated).length > 0));
   });
 }
 
@@ -727,6 +745,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           http: hasHttp(req.body),
           crowdsec: hasCrowdsec(req.body),
           targets: hasTargets(req.body),
+          extraListenAddrs: hasExtraListenAddrs(req.body),
         }, logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json({ message: 'Forwarding rule modified successfully' });

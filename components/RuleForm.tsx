@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_RANGE_PORTS,
   DEFAULT_UDP_IDLE_SECS,
   ForwardRule,
+  MAX_EXTRA_LISTEN_ADDRS,
   Protocol,
   SourceIp,
   StartTls,
@@ -19,7 +20,7 @@ import {
   TlsUnmatched,
   routeNames,
 } from './lib';
-import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
+import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 import { transparentHint } from './sourceip';
@@ -126,6 +127,7 @@ const TAB_IDS: TabId[] = ['basic', 'http', 'tls', 'mail', 'advanced'];
 
 type FieldErrors = {
   srcAddr: string;
+  extraListenAddrs: string;
   srcPort: string;
   srcPortEnd: string;
   distAddr: string;
@@ -140,7 +142,7 @@ type FieldErrors = {
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
 const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
-  basic: ['srcAddr', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort', 'targets'],
+  basic: ['srcAddr', 'extraListenAddrs', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort', 'targets'],
   http: ['http'],
   tls: ['tls'],
   mail: [],
@@ -149,6 +151,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
 
 const EMPTY_ERRORS: FieldErrors = {
   srcAddr: '',
+  extraListenAddrs: '',
   srcPort: '',
   srcPortEnd: '',
   distAddr: '',
@@ -172,6 +175,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [profileId, setProfileId] = useState('');
   const [protocol, setProtocol] = useState<Protocol>(initialData?.protocol || 'tcp');
   const [srcAddr, setSrcAddr] = useState(initialData?.srcAddr || '');
+  const [extraAddrs, setExtraAddrs] = useState<string[]>(initialData?.extraListenAddrs ?? []);
   const [srcPort, setSrcPort] = useState<number | ''>(initialData?.srcPort || '');
   const [srcPortEnd, setSrcPortEnd] = useState<number | ''>(initialData?.srcPortEnd ?? '');
   // L7（http）のルールは転送先を持たず、L7 タブのルート・サービスで転送先を決める。
@@ -279,8 +283,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     sourceIp, transparentAvailable: caps.transparent, ipv6Available: caps.transparentIpv6, listenIsIPv6: isIPv6(srcAddr),
   });
 
-  const clash = reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', srcAddr,
+  const clashAt = (addr: string) => reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', addr,
     srcPort === '' ? '' : Number(srcPort), srcPortEnd === '' || srcPortEnd === null ? null : Number(srcPortEnd));
+  const clash = clashAt(srcAddr);
+  // 追加の待ち受けアドレスで rproxy の予約と重なるもの
+  const extraClash = extraAddrs.map((a) => (a.trim() === '' ? null : clashAt(a.trim()))).find((c) => c !== null) ?? null;
 
   // proxy_v1 は TCP のみ。IPv6 の待ち受けの transparent は rproxy が IPV6_TRANSPARENT を使えるときだけ
   const availableSourceIps = useMemo(() => caps.sourceIps.filter((s) => {
@@ -436,6 +443,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
   const handleSubmit = () => {
     const newErrors: FieldErrors = {
+      extraListenAddrs: (() => {
+        try {
+          normalizeExtraListenAddrs(extraAddrs.map((a) => a.trim()).filter((a) => a !== ''), srcAddr);
+          return '';
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      })(),
       srcAddr: validateSrcAddress(srcAddr) ||
         (clash ? `rproxy の${clash.purpose === 'control API' ? '制御 API' : clash.purpose}（${clash.addr}:${clash.port}）と重なります。別のアドレスかポートを選んでください。` : ''),
       srcPort: validatePort(srcPort),
@@ -506,6 +521,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       http: l7 ? cleanHttp(httpRules) : null,
       crowdsec: crowdsec,
       ...(l7 ? NO_BALANCING : balancing),
+      extraListenAddrs: normalizeExtraListenAddrs(extraAddrs.map((a) => a.trim()).filter((a) => a !== ''), srcAddr),
     };
 
     void onSubmit(rule);
@@ -688,6 +704,44 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           }
           {errors.srcAddr && <p className={errorClass}>{errors.srcAddr}</p>}
         </div>
+        <fieldset className="mb-4">
+          <legend className={labelClass}>追加の待ち受けアドレス（任意）:</legend>
+          <p className={helpClass} id="rule-extra-listen-help">
+            同じポートで、ほかのアドレスでも待ち受けます（例: 代表の IPv4 と GUA の IPv6、または 0.0.0.0 と ::）。統計とログは 1 つのルールにまとめます。
+            最大 {MAX_EXTRA_LISTEN_ADDRS} 件。
+          </p>
+          <datalist id="rule-listen-candidates">
+            {addrOptions.filter((o) => o.value !== srcAddr).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </datalist>
+          {extraAddrs.map((a, i) => (
+            <div key={i} className="flex gap-1 mb-1" data-testid="extra-listen-row">
+              <input
+                type="text"
+                list="rule-listen-candidates"
+                value={a}
+                onChange={(e) => setExtraAddrs(extraAddrs.map((x, j) => (j === i ? e.target.value : x)))}
+                className={inputClass}
+                placeholder="例: 2001:db8::5、::"
+                aria-label={`追加の待ち受けアドレス ${i + 1}`}
+                aria-describedby="rule-extra-listen-help"
+                aria-invalid={errors.extraListenAddrs !== '' || undefined}
+              />
+              <button type="button" onClick={() => setExtraAddrs(extraAddrs.filter((_, j) => j !== i))} className={removeButtonClass}
+                aria-label={`追加の待ち受けアドレス ${i + 1} を削除`}>削除</button>
+            </div>
+          ))}
+          {extraAddrs.length < MAX_EXTRA_LISTEN_ADDRS && (
+            <button type="button" onClick={() => setExtraAddrs([...extraAddrs, ''])} className={smallButtonClass}>
+              ＋ 待ち受けアドレスを追加
+            </button>
+          )}
+          {extraClash && !errors.extraListenAddrs && (
+            <p className="text-yellow-800 text-xs mt-1">
+              追加の待ち受けアドレスが rproxy の制御 API（{extraClash.addr}:{extraClash.port}）と重なります。別のアドレスかポートを選んでください。
+            </p>
+          )}
+          {errors.extraListenAddrs && <p className={errorClass}>{errors.extraListenAddrs}</p>}
+        </fieldset>
         <div className="mb-4 flex flex-col sm:flex-row gap-2">
           <div className="flex-1">
             <label htmlFor="rule-src-port" className={labelClass}>待ち受けポート:</label>
