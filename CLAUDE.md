@@ -31,7 +31,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 - react-hooks v7 の規則（`set-state-in-effect` など）が有効。選べなくなった値を既定に戻す処理は、エフェクトではなく描画中に条件つきで `setState` する（React の「props が変わったときに state を直す」の書き方）。初回の取得（`await` の後でだけ state を変える）はコメントを付けて規則を外している。
 - DB の接続プールは、開発モードでは `globalThis` に置いて使い回す（読み直しのたびにプールが増えて Too many connections になるのを防ぐ）。
 
-- `package-lock.json` と `pnpm-lock.yaml` の両方がある。依存関係を変えるときはどちらも更新すること（`pnpm install --lockfile-only`）。
+- パッケージマネージャは npm だけ（`package-lock.json`）。CI・.deb の作成・Renovate もこれを使う。ほかのロックファイル（`pnpm-lock.yaml` など）は足さない（Renovate が「複数の npm のロックファイル」の警告を出す）。
 - 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`。
 - import のパスエイリアスは `@/`（リポジトリのルート）。vitest でも `vitest.config.mts` で同じエイリアスを設定している。
 - テストは MariaDB・rproxy・NextAuth をすべてモックする（`tests/forward.test.ts`）。実際の DB や rproxy は不要。

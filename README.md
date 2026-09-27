@@ -26,13 +26,8 @@ sudo apt update && sudo apt install rproxy-ui
 First, run the development server:
 
 ```bash
+npm ci        # 依存は npm（package-lock.json）で入れる
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 各種必要な情報
