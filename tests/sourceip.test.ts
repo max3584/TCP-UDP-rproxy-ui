@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { transparentHint } from '@/components/sourceip';
+import { PROXY_PROTOCOL_HINT, proxyProtocolHint, transparentHint } from '@/components/sourceip';
 
 describe('transparentHint', () => {
   it('explains the prerequisites once transparent is chosen', () => {
@@ -30,5 +30,14 @@ describe('transparentHint', () => {
   it('says nothing when transparent is available, or when capabilities are unknown', () => {
     expect(transparentHint({ sourceIp: 'proxy', transparentAvailable: true, listenIsIPv6: false })).toBeNull();
     expect(transparentHint({ sourceIp: 'proxy_v2', transparentAvailable: null, listenIsIPv6: true })).toBeNull();
+  });
+});
+
+describe('proxyProtocolHint', () => {
+  it('reminds that the backend must accept PROXY protocol', () => {
+    expect(proxyProtocolHint('proxy_v2')).toEqual({ kind: 'selected', message: PROXY_PROTOCOL_HINT });
+    expect(proxyProtocolHint('proxy_v1')?.message).toContain('PROXY protocol');
+    expect(proxyProtocolHint('proxy')).toBeNull();
+    expect(proxyProtocolHint('transparent')).toBeNull();
   });
 });

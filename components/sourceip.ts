@@ -39,3 +39,16 @@ export function transparentHint(opts: {
   if (transparentAvailable === true && listenIsIPv6 && ipv6Available !== true) return { kind: 'ipv6', message: TRANSPARENT_HINTS.ipv6 };
   return null;
 }
+
+// source_ip の説明のページ（rproxy-api の docs/SOURCE-IP.md）
+export const SOURCE_IP_DOC_URL = 'https://github.com/max3584/rproxy-api/blob/master/docs/SOURCE-IP.md';
+
+// proxy_v1 / proxy_v2 を選んだときの注意。転送先が PROXY protocol を受ける設定でないと接続が壊れる
+export const PROXY_PROTOCOL_HINT =
+  'PROXY protocol は、接続の先頭にクライアントの IP を書いたヘッダを付けて送ります。'
+  + '転送先で PROXY protocol を受ける設定が必要です（Postfix: smtpd_upstream_proxy_protocol = haproxy、Dovecot: haproxy = yes、'
+  + 'nginx: listen ... proxy_protocol、ingress-nginx: use-proxy-protocol: "true" など）。設定していないと、転送先はヘッダを不正なデータとみなして接続が壊れます。';
+
+export function proxyProtocolHint(sourceIp: SourceIp): TransparentHint | null {
+  return sourceIp === 'proxy_v1' || sourceIp === 'proxy_v2' ? { kind: 'selected', message: PROXY_PROTOCOL_HINT } : null;
+}
