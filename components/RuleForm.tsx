@@ -23,7 +23,7 @@ import {
 import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
-import { transparentHint } from './sourceip';
+import { SOURCE_IP_DOC_URL, proxyProtocolHint, transparentHint } from './sourceip';
 import { ACME_UNSUPPORTED_NOTE } from './messages';
 import HttpEditor from './HttpEditor';
 import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHttp } from './httpspec';
@@ -52,10 +52,10 @@ const UNMATCHED_LABELS: Record<TlsUnmatched, string> = {
 };
 
 const SOURCE_IP_LABELS: Record<SourceIp, string> = {
-  proxy: 'proxy（送信元 IP を引き渡さない）',
-  proxy_v1: 'proxy_v1（PROXY protocol v1）',
-  proxy_v2: 'proxy_v2（PROXY protocol v2）',
-  transparent: 'transparent（透過プロキシ）',
+  proxy: 'proxy（渡さない。転送先からは rproxy の IP に見える）',
+  proxy_v1: 'proxy_v1（PROXY protocol v1 のヘッダで渡す。古い転送先向け）',
+  proxy_v2: 'proxy_v2（PROXY protocol v2 のヘッダで渡す。推奨。転送先の対応が必要）',
+  transparent: 'transparent（クライアントの IP のまま接続する）',
 };
 
 const tlsModeLabel = (mode: TlsMode, protocol: Protocol): string => {
@@ -281,7 +281,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
   const sourceIpHint = transparentHint({
     sourceIp, transparentAvailable: caps.transparent, ipv6Available: caps.transparentIpv6, listenIsIPv6: isIPv6(srcAddr),
-  });
+  }) ?? proxyProtocolHint(sourceIp);
 
   const clashAt = (addr: string) => reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', addr,
     srcPort === '' ? '' : Number(srcPort), srcPortEnd === '' || srcPortEnd === null ? null : Number(srcPortEnd));
@@ -1163,6 +1163,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               {sourceIpHint.message}
             </p>
           )}
+          <p className="text-xs mt-1 text-gray-700">
+            それぞれの意味と転送先の設定の例：
+            <a href={SOURCE_IP_DOC_URL} target="_blank" rel="noreferrer" className="link">送信元 IP の引き渡し（rproxy-api のドキュメント）</a>
+          </p>
           {errors.sourceIp && <p className={errorClass}>{errors.sourceIp}</p>}
         </div>
         {protocol === 'udp' && (
