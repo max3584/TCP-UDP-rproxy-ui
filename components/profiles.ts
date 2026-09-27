@@ -24,7 +24,7 @@ export interface Profile {
 export const PROFILES: Profile[] = [
   {
     id: 'https-l7', label: 'HTTPS リバースプロキシ（L7）', protocol: 'tcp', srcPort: 443, distPort: 443, tlsMode: 'terminate', l7: 'proxy',
-    description: 'rproxy で TLS を終端し、Host・パスなどでリクエストごとに転送先を選びます（Traefik のルーターと同じ）。TLS タブで証明書を、「L7 (HTTP)」タブでルートとサービスを設定してください。証明書は certbot / cert-manager で取ったファイルを指定します（更新は rproxy が自動で読み直します）。',
+    description: 'rproxy で TLS を終端し、Host・パスなどでリクエストごとに転送先を選びます（Traefik のルーターと同じ）。TLS タブで証明書を、「L7 (HTTP)」タブでルートとサービスを設定してください。証明書は certbot / cert-manager で取ったファイルを指定します（更新は rproxy が自動で読み直します）。同じポートで一部のサーバ名（例: registry・**.tenant）だけ終端せずに Kubernetes などへそのまま流すときは、TLS タブの「終端せずにそのまま流すサーバ名」に書きます。',
   },
   {
     id: 'http-redirect', label: 'HTTP→HTTPS リダイレクト（80 番、L7）', protocol: 'tcp', srcPort: 80, distPort: 80, tlsMode: 'passthrough', l7: 'redirect',

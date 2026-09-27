@@ -1,6 +1,6 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
-import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS } from './lib';
+import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames } from './lib';
 import type { Balance, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
@@ -236,7 +236,7 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
     // L7 のルールは転送先を持たない（'L7 (HTTP)' で探せる）
     ...(rule.http === null ? [rule.distAddr, `${rule.distAddr}:${targetPortsLabel(rule)}`] : ['L7 (HTTP)']),
     ...(rule.targets ?? []).flatMap((t) => [t.addr, targetHostPort(t, rule)]),
-    ...(rule.tls.routes ?? []).flatMap((r) => [r.server_name, r.remote_addr]),
+    ...(rule.tls.routes ?? []).flatMap((r) => [...routeNames(r), r.remote_addr]),
   ];
   return haystack.some((h) => h.toLowerCase().includes(q));
 }

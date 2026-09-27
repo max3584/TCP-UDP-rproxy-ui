@@ -23,6 +23,7 @@ import {
   TlsSpec,
   TlsUnmatched,
   TlsUpstream,
+  routeNames,
 } from './lib';
 import { checkAllowFrom } from './cidr';
 
@@ -50,11 +51,17 @@ function isPort(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
 }
 
-// `*.example.com` は 1 階層だけのワイルドカード（rproxy の valid_pattern と同じ）
+// `*.example.com` は 1 階層だけ、`**.example.com` は 1 階層以上（何階層でも。example.com 自体は含まない）のワイルドカード
+// （rproxy の valid_pattern と同じ）
 export function isServerNamePattern(pattern: string): boolean {
-  const name = pattern.startsWith('*.') ? pattern.slice(2) : pattern;
+  const name = pattern.startsWith('**.') ? pattern.slice(3) : pattern.startsWith('*.') ? pattern.slice(2) : pattern;
   return name.length > 0 && name.length <= 253
     && name.split('.').every((l) => l.length > 0 && l.length <= 63 && /^[A-Za-z0-9-]+$/.test(l));
+}
+
+// フォームのサーバ名の欄（カンマか空白で区切って複数）を名前の配列にする
+export function splitServerNames(text: string): string[] {
+  return text.split(/[\s,]+/).map((n) => n.trim()).filter((n) => n !== '');
 }
 
 function invalid(message: string): TlsError {
@@ -109,13 +116,31 @@ export function normalizeTls(input: unknown): TlsSpec {
 
   const routes = list(input.routes, 'tls.routes').map((r): TlsRoute => {
     if (!isObject(r)) throw invalid('サーバ名ごとの転送先の形式が不正です。');
-    checkKeys(r, ['server_name', 'remote_addr', 'remote_port'], 'tls.routes');
+    checkKeys(r, ['server_name', 'server_names', 'remote_addr', 'remote_port', 'passthrough'], 'tls.routes');
     const remotePort = r.remote_port;
     if (!isPort(remotePort)) throw invalid('サーバ名ごとの転送先のポート番号は1から65535の範囲で指定してください。');
+    const hasOne = r.server_name !== undefined && r.server_name !== null;
+    const hasMany = r.server_names !== undefined && r.server_names !== null;
+    if (hasOne === hasMany) {
+      throw new TlsError('サーバ名ごとの転送先には、サーバ名（server_name）か複数のサーバ名（server_names）のどちらか一方を指定してください。', 'tls_config');
+    }
+    if (r.passthrough !== undefined && r.passthrough !== null && typeof r.passthrough !== 'boolean') {
+      throw invalid('passthrough は true か false で指定してください。');
+    }
+    // キーの順番は rproxy の応答（server_name / server_names, remote_addr, remote_port, passthrough）に揃える
+    const names: Pick<TlsRoute, 'server_name' | 'server_names'> = hasOne
+      ? { server_name: requiredString(r.server_name, 'サーバ名').toLowerCase() }
+      : {
+        server_names: list(r.server_names, 'tls.routes.server_names').map((n) => requiredString(n, 'サーバ名').toLowerCase()),
+      };
+    if (names.server_names !== undefined && names.server_names.length === 0) {
+      throw new TlsError('複数のサーバ名（server_names）には 1 つ以上の名前を指定してください。', 'tls_config');
+    }
     return {
-      server_name: requiredString(r.server_name, 'サーバ名').toLowerCase(),
+      ...names,
       remote_addr: requiredString(r.remote_addr, 'サーバ名ごとの転送先のアドレス'),
       remote_port: remotePort,
+      ...(r.passthrough === true ? { passthrough: true } : {}),
     };
   });
   if (routes.length > 0) tls.routes = routes;
@@ -235,8 +260,8 @@ export function isDefaultTls(tls: TlsSpec): boolean {
   return tls.mode === 'passthrough' && Object.keys(tls).length === 1;
 }
 
-// 組み合わせを確かめる。portCount はポート範囲のポート数（単一ポートなら 1）
-export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | null, portCount: number): void {
+// 組み合わせを確かめる。portCount はポート範囲のポート数（単一ポートなら 1）。http は L7（ルールの http）のルールか
+export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | null, portCount: number, http = false): void {
   const certificates = tls.certificates ?? [];
   const routes = tls.routes ?? [];
   if (protocol === 'udp' && tls.mode === 'sni') {
@@ -273,16 +298,31 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
     throw new TlsError('ALPN は TCP でのみ使えます。', 'tls_config');
   }
   for (const route of routes) {
-    if (!isServerNamePattern(route.server_name)) {
-      throw new TlsError(`サーバ名の形式が不正です: ${route.server_name}`, 'tls_config');
+    const names = routeNames(route);
+    for (const name of names) {
+      if (!isServerNamePattern(name)) {
+        throw new TlsError(`サーバ名の形式が不正です: ${name}`, 'tls_config');
+      }
     }
     if (!isRemoteAddr(route.remote_addr)) {
       throw invalid(`サーバ名ごとの転送先には IP アドレスかホスト名を指定してください: ${route.remote_addr}`);
     }
     // ポート範囲では routes の remote_port も同じだけずれる
     if (route.remote_port + portCount - 1 > 65535) {
-      throw invalid(`${route.server_name} の転送先ポートにポート範囲の長さを足すと 65535 を超えます。`);
+      throw invalid(`${names.join(', ')} の転送先ポートにポート範囲の長さを足すと 65535 を超えます。`);
     }
+    if (route.passthrough && tls.mode !== 'terminate') {
+      throw new TlsError('「終端しない（passthrough）」は終端（terminate）のルールでだけ指定できます（sni ではすべての名前が終端されずに流れます）。', 'tls_config');
+    }
+    if (route.passthrough && starttls !== null) {
+      throw new TlsError('STARTTLS のルールでは「終端しない（passthrough）」を使えません。', 'tls_config');
+    }
+    if (http && !route.passthrough) {
+      throw new TlsError('L7（HTTP）のルールでは、サーバ名ごとの転送先は「終端しない（passthrough）」ものだけ使えます（ほかの名前は L7 のルートで振り分けます）。', 'tls_config');
+    }
+  }
+  if (http && tls.unmatched === 'reject') {
+    throw new TlsError('L7（HTTP）のルールでは「一致しない接続を切断する（unmatched: reject）」を使えません（一致しない名前は L7 の「一致しないとき」で扱います）。', 'tls_config');
   }
   if (starttls !== null && (protocol !== 'tcp' || tls.mode !== 'terminate')) {
     throw new TlsError('STARTTLS は TCP で終端（terminate）のときだけ使えます。', 'tls_config');

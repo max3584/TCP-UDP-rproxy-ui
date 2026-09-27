@@ -14,10 +14,12 @@ import {
   TCP_ONLY_SOURCE_IPS,
   TlsCertificate,
   TlsMode,
+  TlsRoute,
   TlsSpec,
   TlsUnmatched,
+  routeNames,
 } from './lib';
-import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount } from './tls';
+import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 import { transparentHint } from './sourceip';
@@ -77,9 +79,15 @@ const isIPv4 = (address: string) => ipv4Pattern.test(address);
 const isIPv6 = (address: string) => address.includes(':') && ipv6Pattern.test(address);
 
 interface RouteRow {
-  server_name: string;
+  // サーバ名（カンマか空白で区切って複数書ける。1 つなら server_name、複数なら server_names で送る）
+  names: string;
   remote_addr: string;
   remote_port: number | '';
+  passthrough: boolean;
+}
+
+function routeRow(r: TlsRoute): RouteRow {
+  return { names: routeNames(r).join(', '), remote_addr: r.remote_addr, remote_port: r.remote_port, passthrough: r.passthrough === true };
 }
 
 interface Caps {
@@ -181,7 +189,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [sourceIp, setSourceIp] = useState<SourceIp>(initialData?.sourceIp || 'proxy');
   const [udpIdleSecs, setUdpIdleSecs] = useState<number | ''>(initialData?.udpIdleSecs || DEFAULT_UDP_IDLE_SECS);
   const [tlsMode, setTlsMode] = useState<TlsMode>(tls.mode);
-  const [routes, setRoutes] = useState<RouteRow[]>(tls.routes ?? []);
+  const [routes, setRoutes] = useState<RouteRow[]>((tls.routes ?? []).map(routeRow));
   const [certificates, setCertificates] = useState<TlsCertificate[]>(tls.certificates ?? []);
   const [clientAuthMode, setClientAuthMode] = useState<ClientAuthMode>(tls.client_auth?.mode ?? 'none');
   const [clientAuthCa, setClientAuthCa] = useState(tls.client_auth?.ca_file ?? '');
@@ -314,7 +322,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   if (l7 && !editMode && protocol !== 'tcp') setL7(false);
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate' && !l7;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
-  const showUnmatched = protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate') && routes.length > 0;
+  // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
+  const showUnmatched = protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate') && routes.length > 0 && !l7;
   const profile = PROFILES.find((p) => p.id === profileId);
 
   const applyProfile = (id: string) => {
@@ -384,11 +393,17 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const buildTls = (): unknown => {
     const spec: Record<string, unknown> = { mode: tlsMode };
     if (tlsMode === 'sni' || tlsMode === 'terminate') {
-      spec.routes = routes.map((r) => ({
-        server_name: r.server_name,
-        remote_addr: r.remote_addr,
-        remote_port: r.remote_port === '' ? 0 : r.remote_port,
-      }));
+      spec.routes = routes.map((r) => {
+        const names = splitServerNames(r.names);
+        // L7 のルールでは passthrough の転送先だけ使える
+        const passthrough = tlsMode === 'terminate' && (l7 || r.passthrough);
+        return {
+          ...(names.length > 1 ? { server_names: names } : { server_name: names[0] ?? '' }),
+          remote_addr: r.remote_addr,
+          remote_port: r.remote_port === '' ? 0 : r.remote_port,
+          ...(passthrough ? { passthrough: true } : {}),
+        };
+      });
       if (showUnmatched) spec.unmatched = unmatched;
     }
     if (tlsMode === 'terminate') {
@@ -462,7 +477,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       tlsSpec = normalizeTls(buildTls());
       const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort || l7
         ? 1 : portCount(Number(srcPort), end, multi ? 0 : Number(distPort));
-      checkTls(protocol, tlsSpec, starttlsValue, count);
+      checkTls(protocol, tlsSpec, starttlsValue, count, l7);
     } catch (err) {
       newErrors.tls = err instanceof Error ? err.message : String(err);
     }
@@ -845,20 +860,38 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
         {(tlsMode === 'sni' || tlsMode === 'terminate') && (
           <fieldset className="mb-4">
-            <legend className={labelClass}>サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:</legend>
+            <legend className={labelClass}>
+              {l7
+                ? '終端せずにそのまま流すサーバ名（任意。ほかの名前は L7 のルートで振り分け）:'
+                : 'サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:'}
+            </legend>
+            <p className={helpClass} id="rule-tls-routes-help">
+              サーバ名はカンマ区切りで複数書けます。<span className="font-mono">*.example.com</span> は 1 階層（a.example.com）だけ、
+              <span className="font-mono">**.example.com</span> は何階層でも（a.example.com、a.b.example.com）一致します（example.com 自体には一致しない）。
+              複数に一致するときは、完全一致 → <span className="font-mono">*.</span> → <span className="font-mono">**.</span>（長い方）→ 上の行の順に選びます。
+              {tlsMode === 'terminate' && '「終端しない」にした名前は、rproxy で TLS を終端せずに ClientHello ごと転送先へ流します（証明書は転送先のもの）。'}
+            </p>
             {routes.map((r, i) => (
-              <div key={i} className="flex flex-col sm:flex-row gap-1 mb-1">
-                <input type="text" value={r.server_name} onChange={(e) => updateRoute(i, { server_name: e.target.value.trim() })}
-                  className={inputClass} placeholder="例: git.example.com / *.example.com" aria-label={`サーバ名 ${i + 1}`} />
+              <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-1 mb-1" data-testid="tls-route-row">
+                <input type="text" value={r.names} onChange={(e) => updateRoute(i, { names: e.target.value })}
+                  className={inputClass} placeholder="例: git.example.com, **.tenant.example.com" aria-label={`サーバ名 ${i + 1}`}
+                  aria-describedby="rule-tls-routes-help" />
                 <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
                   className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
                 <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
                   className="border border-gray-300 rounded px-2 py-1 sm:w-28" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
+                {tlsMode === 'terminate' && (
+                  <label className="flex items-center gap-1 text-sm text-gray-900 whitespace-nowrap">
+                    <input type="checkbox" checked={l7 || r.passthrough} disabled={l7}
+                      onChange={(e) => updateRoute(i, { passthrough: e.target.checked })} aria-label={`転送先 ${i + 1} は終端しない（passthrough）`} />
+                    終端しない
+                  </label>
+                )}
                 <button type="button" onClick={() => setRoutes(routes.filter((_, j) => j !== i))} className={removeButtonClass}
                   aria-label={`転送先 ${i + 1} を削除`}>削除</button>
               </div>
             ))}
-            <button type="button" onClick={() => setRoutes([...routes, { server_name: '', remote_addr: '', remote_port: '' }])} className={smallButtonClass}>
+            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7 }])} className={smallButtonClass}>
               ＋ 転送先を追加
             </button>
           </fieldset>

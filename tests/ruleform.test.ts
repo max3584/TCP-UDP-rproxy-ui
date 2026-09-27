@@ -137,6 +137,35 @@ describe('RuleForm: allow_from and unmatched', () => {
   });
 });
 
+describe('RuleForm: SNI passthrough and several server names', () => {
+  const panel = (html: string, tab: string) => {
+    const start = html.indexOf(`id="rule-panel-${tab}"`);
+    const next = html.indexOf('role="tabpanel"', start + 1);
+    return html.slice(start, next < 0 ? undefined : next);
+  };
+  const passthrough = { server_names: ['registry.example.com', '**.tenant.example.com'], remote_addr: '10.0.1.10', remote_port: 443, passthrough: true };
+
+  it('shows the names comma separated and a passthrough checkbox for terminate rules', () => {
+    const tls = panel(render({ ...terminateRule, tls: { ...terminateRule.tls, routes: [passthrough] } }), 'tls');
+    expect(tls).toContain('value="registry.example.com, **.tenant.example.com"');
+    expect(tls).toMatch(/<input type="checkbox" aria-label="転送先 1 は終端しない（passthrough）" checked=""\/>/);
+    expect(tls).toContain('**.example.com</span> は何階層でも');
+    // sni では passthrough の欄を出さない（すべて終端しない）
+    const sni = panel(render({ ...terminateRule, tls: { mode: 'sni', routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.1', remote_port: 443 }] } }), 'tls');
+    expect(sni).toContain('value="a.example.com"');
+    expect(sni).not.toContain('終端しない（passthrough）');
+  });
+
+  it('for L7 rules lists only passthrough names and hides the unmatched choice', () => {
+    const http = { routes: [{ name: 'all', match: 'PathPrefix(`/`)', to: 'http://10.0.0.20:80' }] };
+    const html = render({ ...terminateRule, distAddr: '', distPort: 0, http: http, tls: { ...terminateRule.tls, routes: [passthrough] } });
+    const tls = panel(html, 'tls');
+    expect(tls).toContain('終端せずにそのまま流すサーバ名');
+    expect(tls).toContain('<input type="checkbox" disabled="" aria-label="転送先 1 は終端しない（passthrough）" checked=""/>');
+    expect(html).not.toContain('rule-tls-unmatched');
+  });
+});
+
 describe('RuleForm: v0.3 settings the form cannot edit yet', () => {
   const http = { routes: [{ match: 'Host(`app.example.com`)', to: 'http://10.0.0.20:80' }] };
   const httpRule: ForwardRule = {

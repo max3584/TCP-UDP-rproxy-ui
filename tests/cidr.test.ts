@@ -1,7 +1,7 @@
 // allow_from の CIDR の検証（components/cidr.ts）と、options 列・unmatched・v0.3 の TLS（ACME・options）の検証（components/tls.ts）
 import { describe, expect, it } from 'vitest';
 import { MAX_ALLOW_FROM, checkAllowFrom, formatIpv6, parseCidr, splitAllowFromText } from '@/components/cidr';
-import { TlsError, checkTls, normalizeAllowFrom, normalizeTls, optionsJson, parseOptions } from '@/components/tls';
+import { TlsError, checkTls, isServerNamePattern, normalizeAllowFrom, normalizeTls, optionsJson, parseOptions, splitServerNames } from '@/components/tls';
 
 const value = (s: string) => {
   const r = parseCidr(s);
@@ -150,6 +150,40 @@ describe('tls.unmatched', () => {
     expect(code(() => checkTls('udp', { mode: 'terminate', certificates: [cert], routes: [route], unmatched: 'reject' }, null, 1))).toBe('tls_config');
     // default（省略）ならどのモードでもよい
     expect(code(() => checkTls('tcp', { mode: 'passthrough' }, null, 1))).toBeNull();
+  });
+
+  it('reads server_names and passthrough, in the key order rproxy returns', () => {
+    const many = { server_names: ['A.example.com', '**.Tenant.example.com'], remote_addr: '10.0.0.1', remote_port: 443, passthrough: true };
+    const tls = normalizeTls({ mode: 'terminate', certificates: [cert], routes: [many, { ...route, passthrough: false }] });
+    expect(tls.routes).toEqual([
+      { server_names: ['a.example.com', '**.tenant.example.com'], remote_addr: '10.0.0.1', remote_port: 443, passthrough: true },
+      route,
+    ]);
+    expect(Object.keys(tls.routes![0])).toEqual(['server_names', 'remote_addr', 'remote_port', 'passthrough']);
+    expect(code(() => normalizeTls({ mode: 'sni', routes: [{ ...route, server_names: ['b.example.com'] }] }))).toBe('tls_config');
+    expect(code(() => normalizeTls({ mode: 'sni', routes: [{ remote_addr: '10.0.0.1', remote_port: 443 }] }))).toBe('tls_config');
+    expect(code(() => normalizeTls({ mode: 'sni', routes: [{ ...many, passthrough: undefined, server_names: [] }] }))).toBe('tls_config');
+    expect(code(() => normalizeTls({ mode: 'terminate', routes: [{ ...route, passthrough: 'yes' }] }))).toBe('invalid');
+  });
+
+  it('checks ** wildcards and where passthrough may be used', () => {
+    expect(isServerNamePattern('**.tenant.example.com')).toBe(true);
+    expect(isServerNamePattern('*.example.com')).toBe(true);
+    for (const bad of ['**', '**.', 'a.**.example.com', '***.example.com', '*.*.example.com']) expect(isServerNamePattern(bad)).toBe(false);
+    const pt = { ...route, passthrough: true };
+    expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [pt] }, null, 1))).toBeNull();
+    expect(code(() => checkTls('tcp', { mode: 'sni', routes: [pt] }, null, 1))).toBe('tls_config');
+    expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [pt] }, 'smtp', 1))).toBe('tls_config');
+    // L7 のルール：passthrough の転送先だけ、unmatched: reject は使えない
+    expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [pt] }, null, 1, true))).toBeNull();
+    expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [route] }, null, 1, true))).toBe('tls_config');
+    expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [pt], unmatched: 'reject' }, null, 1, true))).toBe('tls_config');
+    expect(code(() => checkTls('tcp', { mode: 'terminate', certificates: [cert], routes: [{ ...pt, server_name: 'bad name' }] }, null, 1))).toBe('tls_config');
+  });
+
+  it('splits the form field into names', () => {
+    expect(splitServerNames(' a.example.com, **.b.example.com\nc.example.com ')).toEqual(['a.example.com', '**.b.example.com', 'c.example.com']);
+    expect(splitServerNames('  ')).toEqual([]);
   });
 
   it('reads the full tls object rproxy returns (all default fields included)', () => {

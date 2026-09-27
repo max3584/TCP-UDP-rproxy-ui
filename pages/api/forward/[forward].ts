@@ -218,7 +218,7 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
   const tls = normalizeTls(body.tls);
   const starttls = normalizeStartTls(body.starttls);
   const starttlsRequired = normalizeStartTlsRequired(body.starttlsRequired, starttls);
-  checkTls(protocol as Protocol, tls, starttls, count);
+  checkTls(protocol as Protocol, tls, starttls, count, http !== null);
   checkBalancing(protocol as Protocol, { targets: targets, balance: balance, healthCheck: healthCheck }, count);
   const allowFrom = normalizeAllowFrom(body.allowFrom);
   if (http !== null) {
@@ -595,7 +595,7 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given,
     try {
       // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
       const count = portCount(updated.srcPort, updated.srcPortEnd, updated.distPort);
-      checkTls(updated.protocol, updated.tls, updated.starttls, count);
+      checkTls(updated.protocol, updated.tls, updated.starttls, count, updated.http !== null);
       checkBalancing(updated.protocol, updated, count);
     } catch (err) {
       throw fromTlsError(err);

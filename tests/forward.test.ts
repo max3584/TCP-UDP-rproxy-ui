@@ -1092,6 +1092,30 @@ describe('/api/forward/[forward]: L7 (http) rules and v0.3 TLS', () => {
     expect(mocks.addRule).not.toHaveBeenCalled();
   });
 
+  // SNI の passthrough（rproxy v0.3.3）：registry と **.tenant は終端せず、ほかの名前は L7 で振り分ける
+  it('add sends passthrough tls.routes with server_names on an http rule, and refuses non-passthrough ones', async () => {
+    mocks.addRule.mockResolvedValue({});
+    const passthrough = {
+      server_names: ['Registry.Example.com', '**.tenant.example.com'], remote_addr: '10.0.1.10', remote_port: 443, passthrough: true,
+    };
+    const tlsWithRoutes = { mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], routes: [passthrough] };
+    const { status } = await call('add', { ...tcpRule, srcPort: 443, distAddr: '', distPort: 0, http: http, tls: tlsWithRoutes });
+    expect(status).toBe(200);
+    const expected = { ...passthrough, server_names: ['registry.example.com', '**.tenant.example.com'] };
+    expect(mocks.addRule.mock.calls[0][0].tls.routes).toEqual([expected]);
+    expect(Object.keys(mocks.addRule.mock.calls[0][0].tls.routes[0])).toEqual(['server_names', 'remote_addr', 'remote_port', 'passthrough']);
+    expect(JSON.parse(sqlCalls()[0][1][9] as string).tls.routes).toEqual([expected]);
+
+    for (const tlsOver of [
+      { routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.1', remote_port: 443 }] },
+      { routes: [passthrough], unmatched: 'reject' },
+    ]) {
+      const res = await call('add', { ...tcpRule, srcPort: 443, distAddr: '', distPort: 0, http: http, tls: { ...tlsWithRoutes, ...tlsOver } });
+      expect([tlsOver, res.status, res.body.code]).toEqual([tlsOver, 400, 'tls_config']);
+    }
+    expect(mocks.addRule).toHaveBeenCalledTimes(1);
+  });
+
   it('add passes ACME certificates and TLS options through to rproxy and options', async () => {
     mocks.addRule.mockResolvedValue({});
 
