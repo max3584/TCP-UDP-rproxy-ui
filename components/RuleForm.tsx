@@ -8,16 +8,19 @@ import {
   DEFAULT_MAX_RANGE_PORTS,
   DEFAULT_UDP_IDLE_SECS,
   ForwardRule,
+  MAX_EXTRA_LISTEN_ADDRS,
   Protocol,
   SourceIp,
   StartTls,
   TCP_ONLY_SOURCE_IPS,
   TlsCertificate,
   TlsMode,
+  TlsRoute,
   TlsSpec,
   TlsUnmatched,
+  routeNames,
 } from './lib';
-import { checkTls, normalizeStartTlsRequired, normalizeTls, portCount } from './tls';
+import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 import { transparentHint } from './sourceip';
@@ -77,9 +80,15 @@ const isIPv4 = (address: string) => ipv4Pattern.test(address);
 const isIPv6 = (address: string) => address.includes(':') && ipv6Pattern.test(address);
 
 interface RouteRow {
-  server_name: string;
+  // サーバ名（カンマか空白で区切って複数書ける。1 つなら server_name、複数なら server_names で送る）
+  names: string;
   remote_addr: string;
   remote_port: number | '';
+  passthrough: boolean;
+}
+
+function routeRow(r: TlsRoute): RouteRow {
+  return { names: routeNames(r).join(', '), remote_addr: r.remote_addr, remote_port: r.remote_port, passthrough: r.passthrough === true };
 }
 
 interface Caps {
@@ -118,6 +127,7 @@ const TAB_IDS: TabId[] = ['basic', 'http', 'tls', 'mail', 'advanced'];
 
 type FieldErrors = {
   srcAddr: string;
+  extraListenAddrs: string;
   srcPort: string;
   srcPortEnd: string;
   distAddr: string;
@@ -132,7 +142,7 @@ type FieldErrors = {
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
 const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
-  basic: ['srcAddr', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort', 'targets'],
+  basic: ['srcAddr', 'extraListenAddrs', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort', 'targets'],
   http: ['http'],
   tls: ['tls'],
   mail: [],
@@ -141,6 +151,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
 
 const EMPTY_ERRORS: FieldErrors = {
   srcAddr: '',
+  extraListenAddrs: '',
   srcPort: '',
   srcPortEnd: '',
   distAddr: '',
@@ -164,6 +175,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [profileId, setProfileId] = useState('');
   const [protocol, setProtocol] = useState<Protocol>(initialData?.protocol || 'tcp');
   const [srcAddr, setSrcAddr] = useState(initialData?.srcAddr || '');
+  const [extraAddrs, setExtraAddrs] = useState<string[]>(initialData?.extraListenAddrs ?? []);
   const [srcPort, setSrcPort] = useState<number | ''>(initialData?.srcPort || '');
   const [srcPortEnd, setSrcPortEnd] = useState<number | ''>(initialData?.srcPortEnd ?? '');
   // L7（http）のルールは転送先を持たず、L7 タブのルート・サービスで転送先を決める。
@@ -181,7 +193,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [sourceIp, setSourceIp] = useState<SourceIp>(initialData?.sourceIp || 'proxy');
   const [udpIdleSecs, setUdpIdleSecs] = useState<number | ''>(initialData?.udpIdleSecs || DEFAULT_UDP_IDLE_SECS);
   const [tlsMode, setTlsMode] = useState<TlsMode>(tls.mode);
-  const [routes, setRoutes] = useState<RouteRow[]>(tls.routes ?? []);
+  const [routes, setRoutes] = useState<RouteRow[]>((tls.routes ?? []).map(routeRow));
   const [certificates, setCertificates] = useState<TlsCertificate[]>(tls.certificates ?? []);
   const [clientAuthMode, setClientAuthMode] = useState<ClientAuthMode>(tls.client_auth?.mode ?? 'none');
   const [clientAuthCa, setClientAuthCa] = useState(tls.client_auth?.ca_file ?? '');
@@ -271,8 +283,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     sourceIp, transparentAvailable: caps.transparent, ipv6Available: caps.transparentIpv6, listenIsIPv6: isIPv6(srcAddr),
   });
 
-  const clash = reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', srcAddr,
+  const clashAt = (addr: string) => reservedClash(interfaces?.reserved ?? [], protocol as 'tcp' | 'udp', addr,
     srcPort === '' ? '' : Number(srcPort), srcPortEnd === '' || srcPortEnd === null ? null : Number(srcPortEnd));
+  const clash = clashAt(srcAddr);
+  // 追加の待ち受けアドレスで rproxy の予約と重なるもの
+  const extraClash = extraAddrs.map((a) => (a.trim() === '' ? null : clashAt(a.trim()))).find((c) => c !== null) ?? null;
 
   // proxy_v1 は TCP のみ。IPv6 の待ち受けの transparent は rproxy が IPV6_TRANSPARENT を使えるときだけ
   const availableSourceIps = useMemo(() => caps.sourceIps.filter((s) => {
@@ -314,7 +329,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   if (l7 && !editMode && protocol !== 'tcp') setL7(false);
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate' && !l7;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
-  const showUnmatched = protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate') && routes.length > 0;
+  // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
+  const showUnmatched = protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate') && routes.length > 0 && !l7;
   const profile = PROFILES.find((p) => p.id === profileId);
 
   const applyProfile = (id: string) => {
@@ -384,11 +400,17 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const buildTls = (): unknown => {
     const spec: Record<string, unknown> = { mode: tlsMode };
     if (tlsMode === 'sni' || tlsMode === 'terminate') {
-      spec.routes = routes.map((r) => ({
-        server_name: r.server_name,
-        remote_addr: r.remote_addr,
-        remote_port: r.remote_port === '' ? 0 : r.remote_port,
-      }));
+      spec.routes = routes.map((r) => {
+        const names = splitServerNames(r.names);
+        // L7 のルールでは passthrough の転送先だけ使える
+        const passthrough = tlsMode === 'terminate' && (l7 || r.passthrough);
+        return {
+          ...(names.length > 1 ? { server_names: names } : { server_name: names[0] ?? '' }),
+          remote_addr: r.remote_addr,
+          remote_port: r.remote_port === '' ? 0 : r.remote_port,
+          ...(passthrough ? { passthrough: true } : {}),
+        };
+      });
       if (showUnmatched) spec.unmatched = unmatched;
     }
     if (tlsMode === 'terminate') {
@@ -421,6 +443,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
   const handleSubmit = () => {
     const newErrors: FieldErrors = {
+      extraListenAddrs: (() => {
+        try {
+          normalizeExtraListenAddrs(extraAddrs.map((a) => a.trim()).filter((a) => a !== ''), srcAddr);
+          return '';
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      })(),
       srcAddr: validateSrcAddress(srcAddr) ||
         (clash ? `rproxy の${clash.purpose === 'control API' ? '制御 API' : clash.purpose}（${clash.addr}:${clash.port}）と重なります。別のアドレスかポートを選んでください。` : ''),
       srcPort: validatePort(srcPort),
@@ -462,7 +492,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       tlsSpec = normalizeTls(buildTls());
       const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort || l7
         ? 1 : portCount(Number(srcPort), end, multi ? 0 : Number(distPort));
-      checkTls(protocol, tlsSpec, starttlsValue, count);
+      checkTls(protocol, tlsSpec, starttlsValue, count, l7);
     } catch (err) {
       newErrors.tls = err instanceof Error ? err.message : String(err);
     }
@@ -491,6 +521,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       http: l7 ? cleanHttp(httpRules) : null,
       crowdsec: crowdsec,
       ...(l7 ? NO_BALANCING : balancing),
+      extraListenAddrs: normalizeExtraListenAddrs(extraAddrs.map((a) => a.trim()).filter((a) => a !== ''), srcAddr),
     };
 
     void onSubmit(rule);
@@ -673,6 +704,44 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           }
           {errors.srcAddr && <p className={errorClass}>{errors.srcAddr}</p>}
         </div>
+        <fieldset className="mb-4">
+          <legend className={labelClass}>追加の待ち受けアドレス（任意）:</legend>
+          <p className={helpClass} id="rule-extra-listen-help">
+            同じポートで、ほかのアドレスでも待ち受けます（例: 代表の IPv4 と GUA の IPv6、または 0.0.0.0 と ::）。統計とログは 1 つのルールにまとめます。
+            最大 {MAX_EXTRA_LISTEN_ADDRS} 件。
+          </p>
+          <datalist id="rule-listen-candidates">
+            {addrOptions.filter((o) => o.value !== srcAddr).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </datalist>
+          {extraAddrs.map((a, i) => (
+            <div key={i} className="flex gap-1 mb-1" data-testid="extra-listen-row">
+              <input
+                type="text"
+                list="rule-listen-candidates"
+                value={a}
+                onChange={(e) => setExtraAddrs(extraAddrs.map((x, j) => (j === i ? e.target.value : x)))}
+                className={inputClass}
+                placeholder="例: 2001:db8::5、::"
+                aria-label={`追加の待ち受けアドレス ${i + 1}`}
+                aria-describedby="rule-extra-listen-help"
+                aria-invalid={errors.extraListenAddrs !== '' || undefined}
+              />
+              <button type="button" onClick={() => setExtraAddrs(extraAddrs.filter((_, j) => j !== i))} className={removeButtonClass}
+                aria-label={`追加の待ち受けアドレス ${i + 1} を削除`}>削除</button>
+            </div>
+          ))}
+          {extraAddrs.length < MAX_EXTRA_LISTEN_ADDRS && (
+            <button type="button" onClick={() => setExtraAddrs([...extraAddrs, ''])} className={smallButtonClass}>
+              ＋ 待ち受けアドレスを追加
+            </button>
+          )}
+          {extraClash && !errors.extraListenAddrs && (
+            <p className="text-yellow-800 text-xs mt-1">
+              追加の待ち受けアドレスが rproxy の制御 API（{extraClash.addr}:{extraClash.port}）と重なります。別のアドレスかポートを選んでください。
+            </p>
+          )}
+          {errors.extraListenAddrs && <p className={errorClass}>{errors.extraListenAddrs}</p>}
+        </fieldset>
         <div className="mb-4 flex flex-col sm:flex-row gap-2">
           <div className="flex-1">
             <label htmlFor="rule-src-port" className={labelClass}>待ち受けポート:</label>
@@ -845,20 +914,38 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
         {(tlsMode === 'sni' || tlsMode === 'terminate') && (
           <fieldset className="mb-4">
-            <legend className={labelClass}>サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:</legend>
+            <legend className={labelClass}>
+              {l7
+                ? '終端せずにそのまま流すサーバ名（任意。ほかの名前は L7 のルートで振り分け）:'
+                : 'サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:'}
+            </legend>
+            <p className={helpClass} id="rule-tls-routes-help">
+              サーバ名はカンマ区切りで複数書けます。<span className="font-mono">*.example.com</span> は 1 階層（a.example.com）だけ、
+              <span className="font-mono">**.example.com</span> は何階層でも（a.example.com、a.b.example.com）一致します（example.com 自体には一致しない）。
+              複数に一致するときは、完全一致 → <span className="font-mono">*.</span> → <span className="font-mono">**.</span>（長い方）→ 上の行の順に選びます。
+              {tlsMode === 'terminate' && '「終端しない」にした名前は、rproxy で TLS を終端せずに ClientHello ごと転送先へ流します（証明書は転送先のもの）。'}
+            </p>
             {routes.map((r, i) => (
-              <div key={i} className="flex flex-col sm:flex-row gap-1 mb-1">
-                <input type="text" value={r.server_name} onChange={(e) => updateRoute(i, { server_name: e.target.value.trim() })}
-                  className={inputClass} placeholder="例: git.example.com / *.example.com" aria-label={`サーバ名 ${i + 1}`} />
+              <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-1 mb-1" data-testid="tls-route-row">
+                <input type="text" value={r.names} onChange={(e) => updateRoute(i, { names: e.target.value })}
+                  className={inputClass} placeholder="例: git.example.com, **.tenant.example.com" aria-label={`サーバ名 ${i + 1}`}
+                  aria-describedby="rule-tls-routes-help" />
                 <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
                   className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
                 <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
                   className="border border-gray-300 rounded px-2 py-1 sm:w-28" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
+                {tlsMode === 'terminate' && (
+                  <label className="flex items-center gap-1 text-sm text-gray-900 whitespace-nowrap">
+                    <input type="checkbox" checked={l7 || r.passthrough} disabled={l7}
+                      onChange={(e) => updateRoute(i, { passthrough: e.target.checked })} aria-label={`転送先 ${i + 1} は終端しない（passthrough）`} />
+                    終端しない
+                  </label>
+                )}
                 <button type="button" onClick={() => setRoutes(routes.filter((_, j) => j !== i))} className={removeButtonClass}
                   aria-label={`転送先 ${i + 1} を削除`}>削除</button>
               </div>
             ))}
-            <button type="button" onClick={() => setRoutes([...routes, { server_name: '', remote_addr: '', remote_port: '' }])} className={smallButtonClass}>
+            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7 }])} className={smallButtonClass}>
               ＋ 転送先を追加
             </button>
           </fieldset>

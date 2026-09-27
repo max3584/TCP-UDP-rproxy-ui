@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { routeNames } from '@/components/lib';
 import type { ForwardRules, HttpStats } from '@/components/lib';
 import { healthCheckLabel, targetStatus } from '@/components/targets';
 import {
@@ -153,15 +154,24 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
           <table className="data-table">
             <thead><tr><th scope="col">サーバ名</th><th scope="col">転送先</th></tr></thead>
             <tbody>
-              {tls.routes.map((r) => (
-                <tr key={r.server_name}>
-                  <td className="font-mono">{r.server_name}</td>
-                  <td className="font-mono">{hostPort(r.remote_addr, portsLabel(r.remote_port, count > 1 ? r.remote_port + count - 1 : null))}</td>
+              {tls.routes.map((r, i) => (
+                <tr key={i} data-testid="tls-route">
+                  <td className="font-mono">
+                    {routeNames(r).map((n) => <div key={n}>{n}</div>)}
+                  </td>
+                  <td className="font-mono">
+                    {hostPort(r.remote_addr, portsLabel(r.remote_port, count > 1 ? r.remote_port + count - 1 : null))}
+                    {r.passthrough && (
+                      <span className="badge ml-2 bg-indigo-100 text-indigo-900" title="rproxy で TLS を終端せずに、ClientHello ごと転送先へ流す（証明書は転送先のもの）">
+                        終端しない（passthrough）
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {rule.protocol === 'tcp' && (
+          {rule.protocol === 'tcp' && rule.http === null && (
             <div className="mt-2">
               <Fields items={[['どのサーバ名にも一致しない接続', tls.unmatched === 'reject'
                 ? <span className="font-semibold text-red-800">切断する（unmatched: reject）</span>
@@ -340,6 +350,11 @@ const RuleDetailPage: React.FC = () => {
               <Fields items={[
                 ['プロトコル', rule.protocol.toUpperCase()],
                 ['アドレス', <Mono key="a">{rule.srcAddr}</Mono>],
+                ...((rule.extraListenAddrs ?? []).length > 0 ? [['追加の待ち受けアドレス', (
+                  <span key="x" data-testid="extra-listen-addrs">
+                    {(rule.extraListenAddrs ?? []).map((x) => <Mono key={x}>{x} </Mono>)}
+                  </span>
+                )] as [string, React.ReactNode]] : []),
                 [rule.srcPortEnd === null ? 'ポート' : 'ポート範囲', <Mono key="p">{portsLabel(rule.srcPort, rule.srcPortEnd)}</Mono>],
                 ...(rule.srcPortEnd !== null ? [['ポート数', `${rule.srcPortEnd - rule.srcPort + 1}`] as [string, React.ReactNode]] : []),
               ]} />

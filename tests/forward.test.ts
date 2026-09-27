@@ -302,6 +302,46 @@ describe('/api/forward/[forward]', () => {
     ]);
   });
 
+  // 追加の待ち受けアドレス（rproxy v0.3.3 の extra_listen_addrs）
+  it('add sends extra_listen_addrs (normalized) and stores them in options; bad lists are refused', async () => {
+    mocks.addRule.mockResolvedValue({});
+    const { status } = await call('add', { ...tcpRule, srcAddr: '203.0.113.5', extraListenAddrs: ['2001:DB8:0:0::5', '::ffff:198.51.100.7'] });
+    expect(status).toBe(200);
+    expect(mocks.addRule.mock.calls[0][0].extra_listen_addrs).toEqual(['2001:db8::5', '198.51.100.7']);
+    expect(JSON.parse(sqlCalls()[0][1][9] as string).extra_listen_addrs).toEqual(['2001:db8::5', '198.51.100.7']);
+
+    for (const extra of [['203.0.113.5'], ['::1', '::1'], ['10.0.0.0/8'], ['example.com'], Array.from({ length: 17 }, (_, i) => `10.0.0.${i + 1}`)]) {
+      const res = await call('add', { ...tcpRule, srcAddr: '203.0.113.5', extraListenAddrs: extra });
+      expect([extra.length, res.status, res.body.code]).toEqual([extra.length, 400, 'invalid']);
+    }
+    // なければ送らない（古い rproxy は知らない項目を拒否する）
+    await call('add', { ...tcpRule, srcPort: 8889 });
+    expect(mocks.addRule.mock.calls[1][0]).not.toHaveProperty('extra_listen_addrs');
+  });
+
+  it('modify keeps extra_listen_addrs when absent, replaces or removes them when given, and undoes with the old list', async () => {
+    const stored = { tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, extra_listen_addrs: ['::'] };
+    const current = { dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify(stored) };
+    mocks.modifyRule.mockResolvedValue({});
+
+    conn.query.mockResolvedValueOnce([current]);
+    expect((await call('modify', tcpRule)).status).toBe(200);
+    expect(mocks.modifyRule.mock.calls[0][1].extra_listen_addrs).toEqual(['::']);
+
+    conn.query.mockResolvedValueOnce([current]);
+    expect((await call('modify', { ...tcpRule, extraListenAddrs: [] })).status).toBe(200);
+    expect(mocks.modifyRule.mock.calls[1][1].extra_listen_addrs).toEqual([]);
+    const update = sqlCalls().filter(([sql]) => sql.startsWith('UPDATE forward_rules')).at(-1);
+    expect(JSON.parse(String(update?.[1][3] ?? 'null'))).toBeNull();
+
+    // COMMIT に失敗したら元の一覧で PATCH し直す
+    conn.query.mockResolvedValueOnce([current]);
+    conn.commit.mockRejectedValueOnce(new Error('connection lost'));
+    expect((await call('modify', { ...tcpRule, extraListenAddrs: ['::1'] })).status).toBe(500);
+    expect(mocks.modifyRule.mock.calls[2][1].extra_listen_addrs).toEqual(['::1']);
+    expect(mocks.modifyRule.mock.calls[3][1].extra_listen_addrs).toEqual(['::']);
+  });
+
   it('delete re-adds the rule to rproxy when COMMIT fails', async () => {
     conn.query.mockResolvedValueOnce([{ dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30 }]);
     mocks.deleteRule.mockResolvedValue(undefined);
@@ -1090,6 +1130,30 @@ describe('/api/forward/[forward]: L7 (http) rules and v0.3 TLS', () => {
       expect([over, res.status, res.body.code]).toEqual([over, 400, code]);
     }
     expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  // SNI の passthrough（rproxy v0.3.3）：registry と **.tenant は終端せず、ほかの名前は L7 で振り分ける
+  it('add sends passthrough tls.routes with server_names on an http rule, and refuses non-passthrough ones', async () => {
+    mocks.addRule.mockResolvedValue({});
+    const passthrough = {
+      server_names: ['Registry.Example.com', '**.tenant.example.com'], remote_addr: '10.0.1.10', remote_port: 443, passthrough: true,
+    };
+    const tlsWithRoutes = { mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], routes: [passthrough] };
+    const { status } = await call('add', { ...tcpRule, srcPort: 443, distAddr: '', distPort: 0, http: http, tls: tlsWithRoutes });
+    expect(status).toBe(200);
+    const expected = { ...passthrough, server_names: ['registry.example.com', '**.tenant.example.com'] };
+    expect(mocks.addRule.mock.calls[0][0].tls.routes).toEqual([expected]);
+    expect(Object.keys(mocks.addRule.mock.calls[0][0].tls.routes[0])).toEqual(['server_names', 'remote_addr', 'remote_port', 'passthrough']);
+    expect(JSON.parse(sqlCalls()[0][1][9] as string).tls.routes).toEqual([expected]);
+
+    for (const tlsOver of [
+      { routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.1', remote_port: 443 }] },
+      { routes: [passthrough], unmatched: 'reject' },
+    ]) {
+      const res = await call('add', { ...tcpRule, srcPort: 443, distAddr: '', distPort: 0, http: http, tls: { ...tlsWithRoutes, ...tlsOver } });
+      expect([tlsOver, res.status, res.body.code]).toEqual([tlsOver, 400, 'tls_config']);
+    }
+    expect(mocks.addRule).toHaveBeenCalledTimes(1);
   });
 
   it('add passes ACME certificates and TLS options through to rproxy and options', async () => {

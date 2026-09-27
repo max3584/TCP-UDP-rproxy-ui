@@ -5,6 +5,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import net from 'node:net';
+import tls from 'node:tls';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const run = process.env.RUN_E2E === '1';
 
@@ -25,15 +30,53 @@ async function call(action: string, body?: unknown, method = 'POST', query: Reco
   return { status, json };
 }
 
-function echoThrough(port: number, msg: string): Promise<string> {
+function echoThrough(port: number, msg: string, host = '127.0.0.1'): Promise<string> {
   return new Promise((resolve, reject) => {
-    const c = net.connect(port, '127.0.0.1', () => c.write(msg));
+    const c = net.connect(port, host, () => c.write(msg));
     c.setTimeout(3000, () => reject(new Error('timeout')));
     c.on('data', (d) => { resolve(d.toString()); c.end(); });
     c.on('error', reject);
     // 拒否された接続は RST ではなく FIN で閉じることもある（データより先に閉じたら失敗。resolve の後なら何もしない）
     c.on('close', () => reject(new Error('closed without a reply')));
   });
+}
+
+// TLS で 1 往復する（servername は SNI。証明書は検証しない）
+function tlsThrough(port: number, servername: string, msg: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const c = tls.connect({ port: port, host: '127.0.0.1', servername: servername, rejectUnauthorized: false }, () => c.write(msg));
+    c.setTimeout(3000, () => reject(new Error('timeout')));
+    c.on('data', (d) => { resolve(d.toString()); c.end(); });
+    c.on('error', reject);
+    c.on('close', () => reject(new Error('closed without a reply')));
+  });
+}
+
+function canBind(host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = net.createServer();
+    s.once('error', () => resolve(false));
+    s.listen(0, host, () => s.close(() => resolve(true)));
+  });
+}
+
+// 自己署名の証明書（openssl がなければ null）
+function selfSigned(names: string[]): { cert: string; key: string; dir: string } | null {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rproxy-ui-e2e-'));
+  const cert = path.join(dir, 'cert.pem');
+  const key = path.join(dir, 'key.pem');
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
+      '-subj', `/CN=${names[0]}`, '-addext', `subjectAltName=${names.map((n) => `DNS:${n}`).join(',')}`,
+      '-keyout', key, '-out', cert,
+    ], { stdio: 'ignore' });
+  } catch {
+    return null;
+  }
+  fs.chmodSync(dir, 0o755);
+  fs.chmodSync(key, 0o644);
+  return { cert: cert, key: key, dir: dir };
 }
 
 async function withDb(fn: (conn: any) => Promise<any>): Promise<any> {
@@ -218,6 +261,71 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
 
     expect((await call('delete', multi)).status).toBe(200);
     await expect(echoThrough(port, 'gone')).rejects.toThrow();
+  });
+
+  // 1 つのルールで 127.0.0.1 と ::1 を待ち受ける（rproxy v0.3.3 の extra_listen_addrs）。::1 がない環境・古い rproxy では飛ばす
+  it('listens on 127.0.0.1 and ::1 with one rule and drops the extra address again', async (ctx) => {
+    if (!(await canBind('::1'))) {
+      ctx.skip();
+      return;
+    }
+    const port = listenPort + 7;
+    const dual = { ...rule, srcPort: port, extraListenAddrs: ['::1'] };
+    const add = await call('add', dual);
+    if (add.status === 400 && /extra_listen_addrs/.test(String(add.json?.error))) {
+      ctx.skip();
+      return;
+    }
+    expect(add.status).toBe(200);
+    expect(await echoThrough(port, 'a')).toBe('echo:a');
+    expect(await echoThrough(port, 'b', '::1')).toBe('echo:b');
+    const one = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(port) });
+    expect(one.json.extraListenAddrs).toEqual(['::1']);
+
+    expect((await call('modify', { ...dual, extraListenAddrs: [] })).status).toBe(200);
+    await expect(echoThrough(port, 'c', '::1')).rejects.toThrow();
+    expect(await echoThrough(port, 'd')).toBe('echo:d');
+    expect((await call('delete', dual)).status).toBe(200);
+  });
+
+  // TLS を終端するルールで、一部のサーバ名だけ終端せずに流す（rproxy v0.3.3 の tls.routes[].passthrough）
+  it('passes chosen server names through untouched and terminates the others', async (ctx) => {
+    const pki = selfSigned(['front.test', 'registry.test', '*.b.tenant.test']);
+    if (!pki) {
+      ctx.skip();
+      return;
+    }
+    const tlsBackendPort = backendPort + 10;
+    const backend = tls.createServer({ cert: fs.readFileSync(pki.cert), key: fs.readFileSync(pki.key) }, (s) => s.on('data', (d) => s.end(`k8s:${d}`)));
+    await new Promise<void>((r) => backend.listen(tlsBackendPort, '127.0.0.1', () => r()));
+    const port = listenPort + 8;
+    const mixed = {
+      ...rule, srcPort: port,
+      tls: {
+        mode: 'terminate',
+        certificates: [{ cert_file: pki.cert, key_file: pki.key }],
+        routes: [{ server_names: ['registry.test', '**.tenant.test'], remote_addr: '127.0.0.1', remote_port: tlsBackendPort, passthrough: true }],
+      },
+    };
+    try {
+      const add = await call('add', mixed);
+      if (add.status === 400 && /passthrough|server_names/.test(String(add.json?.error))) {
+        ctx.skip();
+        return;
+      }
+      expect(add.status).toBe(200);
+      // passthrough：TLS は転送先（k8s 役）が終端する
+      expect(await tlsThrough(port, 'registry.test', 'p')).toBe('k8s:p');
+      expect(await tlsThrough(port, 'a.b.tenant.test', 'q')).toBe('k8s:q');
+      // それ以外は rproxy が終端して、平文のエコーサーバへ
+      expect(await tlsThrough(port, 'front.test', 'r')).toBe('echo:r');
+      const one = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(port) });
+      expect(one.json.tls.routes[0]).toMatchObject({ server_names: ['registry.test', '**.tenant.test'], passthrough: true });
+      expect((await call('delete', mixed)).status).toBe(200);
+    } finally {
+      backend.close();
+      fs.rmSync(pki.dir, { recursive: true, force: true });
+    }
   });
 
   it('deletes the range rule', async () => {

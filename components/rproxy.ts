@@ -29,6 +29,8 @@ export interface RproxyRule {
   targets?: Target[];
   balance?: Balance;
   health_check?: HealthCheck;
+  // 同じポートで追加で待ち受けるアドレス（v0.3.3）。応答では空のとき省かれる
+  extra_listen_addrs?: string[];
 }
 
 // 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）。
@@ -72,6 +74,8 @@ export interface RproxyRulePatch {
   targets?: Target[];
   balance?: Balance;
   health_check?: HealthCheck | null;
+  // 付けると追加の待ち受けアドレスを丸ごと置き換える（[] ですべて外す。v0.3.3）
+  extra_listen_addrs?: string[];
 }
 
 // この版の rproxy で動かせる v0.3 の機能（古い rproxy は features を返さない）

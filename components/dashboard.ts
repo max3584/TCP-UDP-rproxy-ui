@@ -1,6 +1,6 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
-import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS } from './lib';
+import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames } from './lib';
 import type { Balance, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
@@ -164,6 +164,7 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     http: isHttpSpec(status.http) ? status.http : null,
     crowdsec: status.crowdsec === true,
     ...balancingFromStatus(status),
+    extraListenAddrs: Array.isArray(status.extra_listen_addrs) ? status.extra_listen_addrs : [],
     state: status.state,
     error: status.error ?? null,
     connections: status.connections ?? null,
@@ -233,10 +234,11 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
   const haystack = [
     rule.srcAddr,
     `${rule.srcAddr}:${portsLabel(rule.srcPort, rule.srcPortEnd)}`,
+    ...(rule.extraListenAddrs ?? []),
     // L7 のルールは転送先を持たない（'L7 (HTTP)' で探せる）
     ...(rule.http === null ? [rule.distAddr, `${rule.distAddr}:${targetPortsLabel(rule)}`] : ['L7 (HTTP)']),
     ...(rule.targets ?? []).flatMap((t) => [t.addr, targetHostPort(t, rule)]),
-    ...(rule.tls.routes ?? []).flatMap((r) => [r.server_name, r.remote_addr]),
+    ...(rule.tls.routes ?? []).flatMap((r) => [...routeNames(r), r.remote_addr]),
   ];
   return haystack.some((h) => h.toLowerCase().includes(q));
 }
@@ -307,6 +309,13 @@ export function targetPortsLabel(rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd
 // IPv6 のアドレスは [ ] で囲む
 export function hostPort(addr: string, port: string | number): string {
   return addr.includes(':') ? `[${addr}]:${port}` : `${addr}:${port}`;
+}
+
+// 一覧の待ち受け：追加の待ち受けアドレスがあれば「203.0.113.5:443 ほか 1 件（2001:db8::5）」
+export function listenLabel(rule: Pick<ForwardRule, 'srcAddr' | 'srcPort' | 'srcPortEnd' | 'extraListenAddrs'>): string {
+  const main = hostPort(rule.srcAddr, portsLabel(rule.srcPort, rule.srcPortEnd));
+  const extra = rule.extraListenAddrs ?? [];
+  return extra.length === 0 ? main : `${main} ほか ${extra.length} 件（${extra.join(', ')}）`;
 }
 
 // L7 の設定（http）のルートの数。routes が配列でなければ 0

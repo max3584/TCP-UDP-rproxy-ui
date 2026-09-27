@@ -27,10 +27,20 @@ export const CLIENT_AUTH_MODES: ClientAuthMode[] = ['none', 'optional', 'require
 // どの routes にも一致しない名前・SNI なしの接続：default はルールの転送先へ、reject は切断する
 export type TlsUnmatched = 'default' | 'reject';
 
+// サーバ名は server_name（1 つ）か server_names（複数）のどちらか一方。`*.example.com` は 1 階層、`**.example.com` は何階層でも一致する。
+// passthrough（terminate のルールだけ）は、その名前を終端せずに ClientHello ごと転送先へ流す（証明書は転送先のもの）
 export interface TlsRoute {
-  server_name: string;
+  server_name?: string;
+  server_names?: string[];
   remote_addr: string;
   remote_port: number;
+  // true のときだけ付ける
+  passthrough?: boolean;
+}
+
+// route のサーバ名の一覧（server_name / server_names のどちらでも）
+export function routeNames(route: Pick<TlsRoute, 'server_name' | 'server_names'>): string[] {
+  return route.server_names ?? (route.server_name !== undefined ? [route.server_name] : []);
 }
 
 // ファイル（cert_file / chain_file / key_file）か ACME（acme / domains。v0.3）のどちらか一方。
@@ -137,7 +147,11 @@ export interface ForwardRule {
   balance: Balance;
   // targets があるときの死活確認。null なら接続の失敗だけで判定する
   healthCheck: HealthCheck | null;
+  // 同じポート（範囲）で追加で待ち受けるアドレス（IPv4 と IPv6 を同時に、など。rproxy v0.3.3。最大 16 件）。省略は []
+  extraListenAddrs?: string[];
 }
+
+export const MAX_EXTRA_LISTEN_ADDRS = 16;
 
 // dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）
 export type RuleOrigin = 'dynamic' | 'static';

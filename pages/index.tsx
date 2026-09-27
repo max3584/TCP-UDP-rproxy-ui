@@ -17,6 +17,7 @@ import {
   formatCount,
   formatDuration,
   hostPort,
+  listenLabel,
   needsAttention,
   portsLabel,
   ruleHref,
@@ -160,7 +161,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
             </div>
             <div className="min-w-0 flex-1 text-sm">
               <Link href={ruleHref(ruleKeyOf(r))} className="link font-mono break-all">
-                {hostPort(r.srcAddr, portsLabel(r.srcPort, r.srcPortEnd))}
+                {listenLabel(r)}
               </Link>
               <span className="text-gray-600"> → </span>
               <span className="font-mono text-gray-800 break-all">{targetLabel(r)}</span>
@@ -243,7 +244,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
                   <td className="uppercase">{r.protocol}</td>
                   <td className="font-mono whitespace-nowrap">
                     <Link href={href} className="link" onClick={(e) => e.stopPropagation()}>
-                      {hostPort(r.srcAddr, portsLabel(r.srcPort, r.srcPortEnd))}
+                      {listenLabel(r)}
                     </Link>
                     {(r.origin === 'static' || r.allowFrom.length > 0) && (
                       <div className="mt-0.5 flex gap-1 font-sans">

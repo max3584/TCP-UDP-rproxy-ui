@@ -13,6 +13,7 @@ import {
   formatDuration,
   hostPort,
   httpRouteRows,
+  listenLabel,
   mergeStaticRules,
   needsAttention,
   parseRuleKey,
@@ -118,6 +119,17 @@ describe('static rules', () => {
     source_ip: 'proxy', udp_idle_secs: 30, starttls: null, starttls_required: true, allow_from: ['172.16.0.0/16'],
     tls: { mode: 'sni', routes: [{ server_name: 'dashboard.proxy.home', remote_addr: '127.0.0.1', remote_port: 3001 }], unmatched: 'reject' },
     state: 'running', error: null, resolved: [], connections: 0, origin: 'static', ...over,
+  });
+
+  it('carries extra listen addresses and passthrough routes from the rproxy response', () => {
+    const pt = { server_names: ['registry.example.com', '**.tenant.example.com'], remote_addr: '10.0.1.10', remote_port: 443, passthrough: true };
+    const r = ruleFromStatus(status({ extra_listen_addrs: ['::'], tls: { mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], routes: [pt] } }), -1);
+    expect(r.extraListenAddrs).toEqual(['::']);
+    expect(r.tls.routes).toEqual([pt]);
+    expect(ruleFromStatus(status(), -1).extraListenAddrs).toEqual([]);
+    expect(listenLabel(r)).toBe('0.0.0.0:443 ほか 1 件（::）');
+    expect(listenLabel({ ...r, extraListenAddrs: [] })).toBe('0.0.0.0:443');
+    expect(filterRules([r], { protocol: 'all', state: 'all', text: 'tenant' })).toHaveLength(1);
   });
 
   it('builds a read-only row from the rproxy response', () => {

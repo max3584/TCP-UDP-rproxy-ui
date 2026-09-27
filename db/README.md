@@ -22,13 +22,15 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `forward_rules`：転送ルール。`(protocol, src_addr, src_port)` で一意。`auth_id` は IdP（Keycloak）の `sub`。
   `protocol` は小文字の `tcp` / `udp`、IPv6 の `src_addr` は圧縮表記（例 `::1`）で保存する。
   - `src_port_end`：ポート範囲の終わり。単一ポートなら NULL。範囲ルールのキーは先頭の `src_port`（範囲の重なりは rproxy が拒否する）。
-  - `options`：TLS / STARTTLS / 接続を許可する送信元 / L7 の設定の JSON。形は必ず `{"tls": <TLS>, "starttls": "smtp" | "imap" | "pop3" | null, "starttls_required": bool, "allow_from": [<CIDR>, ...], "http": <L7>, "crowdsec": bool, "targets": [<宛先>, ...], "balance": "round_robin" | "least_conn" | "failover", "health_check": {"interval", "timeout", "port"}}`
+  - `options`：TLS / STARTTLS / 接続を許可する送信元 / L7 の設定の JSON。形は必ず `{"tls": <TLS>, "starttls": "smtp" | "imap" | "pop3" | null, "starttls_required": bool, "allow_from": [<CIDR>, ...], "http": <L7>, "crowdsec": bool, "targets": [<宛先>, ...], "balance": "round_robin" | "least_conn" | "failover", "health_check": {"interval", "timeout", "port"}, "extra_listen_addrs": [<IP>, ...]}`
     （`<TLS>` は `../rproxy-api/docs/API.md` の「TLS」と同じ。`allow_from` は正規化した CIDR（`10.0.0.5/32` など）で、空なら省く。
     `<L7>` は API.md の「v0.3 の設定」のルールの `http` で、L7 のルールだけに付く（そのルールの `dist_addr` は `''`、`dist_port` は `0`）。rproxy は未知のキーを拒否して読み込むので、ほかのキーを足さないこと。
     `crowdsec`（L4 で CrowdSec の判定に入っている接続元を切る。rproxy-api v0.3.2 から）は true のときだけ付ける。
     `targets`（宛先を複数にしたとき。`<宛先>` は `{"addr", "port", "weight"?, "backup"?}`。rproxy-api v0.3.3 から）は宛先が複数のときだけ付け、
     `balance`（既定の `round_robin` なら省く）と `health_check` も `targets` があるときだけ付ける。そのルールの `dist_addr` は `''`、`dist_port` は `0`
     （rproxy は `targets` と `remote_addr` を一緒に受け付けないため。一覧に出す先頭の宛先は `targets[0]`）。
+    `extra_listen_addrs`（同じポートで追加で待ち受ける IP アドレスの配列、最大 16 件。rproxy-api v0.3.3 から）は空なら省く。
+    `<TLS>` の `routes[]` は `server_name` か `server_names`（どちらか一方）と、true のときだけ `passthrough` を持つ（rproxy-api v0.3.3 から）。
     passthrough で既定値のまま、STARTTLS なし、allow_from なし、http なし、crowdsec なし、宛先が 1 つのルールは NULL を保存する。列の型は変わらないので、migration は不要。
   - rproxy の固定ルール（`--static-rules` のファイル）はこのテーブルに入らない。
 - `forward_rules_log`：追加・変更・削除の履歴。`update_action` は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者（`004` より前の行は NULL）。
