@@ -3,8 +3,10 @@ import { useRouter } from 'next/router';
 
 // ルールの詳細・変更の画面はダッシュボードの下にあるものとして扱う
 const NAV: { href: string; label: string; active: (pathname: string) => boolean }[] = [
-  { href: '/', label: 'ダッシュボード', active: (p) => p === '/' || (p.startsWith('/rules/') && p !== '/rules/new') },
+  { href: '/', label: 'ダッシュボード', active: (p) => p === '/' || (p.startsWith('/rules/') && p !== '/rules/new' && p !== '/rules/import') },
   { href: '/rules/new', label: '新規ルール', active: (p) => p === '/rules/new' },
+  { href: '/rules/import', label: 'インポート', active: (p) => p === '/rules/import' },
+  { href: '/history', label: '変更の履歴', active: (p) => p === '/history' },
   { href: '/profile', label: 'Profile', active: (p) => p === '/profile' },
 ];
 
