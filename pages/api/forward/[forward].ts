@@ -53,7 +53,7 @@ import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from 
 import mariadb, { PoolConnection } from 'mariadb';
 import { Access, RoleConfig, accessOf, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
-import { ExportFormat, exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
+import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
 import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
 
 // MariaDBのコネクションプールを作成
@@ -734,17 +734,15 @@ function errorText(err: unknown): string {
 
 // ---- エクスポート / インポート（#60） ----
 
-// GET /api/forward/export?format=yaml|json[&owner=]。利用者は自分のルール、admin はすべて（owner で絞れる）
-async function exportRules(actor: Actor, query: NextApiRequest['query']): Promise<{ body: string; format: ExportFormat; count: number }> {
-  const format: ExportFormat = queryString(query.format) === 'json' ? 'json' : 'yaml';
+// GET /api/forward/export[?owner=]。JSON（format: rproxy-ui-export）。利用者は自分のルール、admin はすべて（owner で絞れる）
+async function exportRules(actor: Actor, query: NextApiRequest['query']): Promise<{ body: string; count: number }> {
   const ownerFilter = actor.access === 'admin' ? queryString(query.owner) : actor.id;
   const rows = await pool.query(
     `SELECT protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules${ownerFilter ? ' WHERE auth_id = ?' : ''} ORDER BY protocol, src_addr, src_port`,
     ownerFilter ? [ownerFilter] : []
   );
   const rules: ForwardRule[] = rows.map(fromRow);
-  const header = `rproxy のルール（TCP-UDP-rproxy-ui からエクスポート。${new Date().toISOString()}、${rules.length} 件）\nrproxy の設定ファイル（RPROXY_CONFIG）と同じ形。UI の「インポート」で読み込める`;
-  return { body: formatDoc(exportDoc(rules), format, header), format: format, count: rules.length };
+  return { body: formatDoc(exportDoc(rules, new Date().toISOString())), count: rules.length };
 }
 
 type ImportStatus = 'new' | 'exists' | 'error';
@@ -1058,8 +1056,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method === 'GET' && query === 'export') {
       const out = await exportRules(actor, req.query);
       const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      res.setHeader('Content-Type', out.format === 'json' ? 'application/json; charset=utf-8' : 'application/yaml; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="rproxy-rules-${date}.${out.format === 'json' ? 'json' : 'yaml'}"`);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="rproxy-ui-export-${date}.json"`);
       logger.info(`Exported ${out.count} rules`);
       return res.status(200).send(out.body);
     }

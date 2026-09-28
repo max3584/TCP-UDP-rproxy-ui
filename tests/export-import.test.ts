@@ -1,7 +1,6 @@
 // エクスポート / インポート（#60）と、変更の履歴・巻き戻し（#61）の API route
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { parse as parseYaml } from 'yaml';
 
 const mocks = vi.hoisted(() => {
   const conn = {
@@ -162,8 +161,8 @@ describe('settings document conversion', () => {
   });
 
   it('reads the settings file shape and a plain array, and rejects unknown keys', () => {
-    expect(parseDoc('version: 1\nglobal: {trusted_proxies: [10.0.0.0/8]}\nrules:\n  - {protocol: tcp}\n')).toEqual({ rules: [{ protocol: 'tcp' }], ignoredGlobal: true });
-    expect(parseDoc('[{"protocol": "udp"}]')).toEqual({ rules: [{ protocol: 'udp' }], ignoredGlobal: false });
+    expect(parseDoc('version: 1\nglobal: {trusted_proxies: [10.0.0.0/8]}\nrules:\n  - {protocol: tcp}\n')).toEqual({ rules: [{ protocol: 'tcp' }], ignoredGlobal: true, uiExport: false });
+    expect(parseDoc('[{"protocol": "udp"}]')).toEqual({ rules: [{ protocol: 'udp' }], ignoredGlobal: false, uiExport: false });
     expect(() => parseDoc('version: 2\nrules: []')).toThrow(/version/);
     expect(() => parseDoc('rulez: []')).toThrow(/知らない項目/);
     expect(() => parseDoc('rules: {a: 1}')).toThrow(/配列/);
@@ -172,30 +171,38 @@ describe('settings document conversion', () => {
     expect(settingsRuleToBody({ listen_addr: '::1', health_check: { port: 1 } })).toEqual({ srcAddr: '::1', healthCheck: { port: 1 } });
   });
 
-  it('formats YAML with a comment header, and JSON', () => {
-    const doc = exportDoc([RULES[0]]);
-    const yaml = formatDoc(doc, 'yaml', 'line one\nline two');
-    expect(yaml.startsWith('# line one\n# line two\n')).toBe(true);
-    expect(parseYaml(yaml)).toEqual(doc);
-    expect(JSON.parse(formatDoc(doc, 'json'))).toEqual(doc);
+  it('exports JSON marked as a UI export, which rproxy would refuse as a settings file', () => {
+    const doc = exportDoc([RULES[0]], '2026-09-28T00:00:00.000Z');
+    expect(doc).toMatchObject({ format: 'rproxy-ui-export', version: 1, exported_at: '2026-09-28T00:00:00.000Z' });
+    expect(JSON.parse(formatDoc(doc))).toEqual(doc);
+    // the export reads back; the format marker tells it apart from a settings file
+    expect(parseDoc(formatDoc(doc))).toMatchObject({ uiExport: true, rules: doc.rules });
+    expect(parseDoc('version: 1\nrules: []\n').uiExport).toBe(false);
+    expect(() => parseDoc('{"format": "other", "rules": []}')).toThrow(/format/);
+    expect(() => parseDoc('{"format": "rproxy-ui-export", "global": {}, "rules": []}')).toThrow(/global/);
+    // enabled (paused) belongs to the UI export only
+    expect(() => parseDoc('version: 1\nrules:\n  - {protocol: tcp, enabled: false}\n')).toThrow(/enabled/);
+    expect(parseDoc('{"format": "rproxy-ui-export", "version": 1, "rules": [{"protocol": "tcp", "enabled": false}]}').rules).toHaveLength(1);
   });
 });
 
 describe('/api/forward/export and /api/forward/import', () => {
   it('exports own rules (admin: all or one owner) as a downloadable file', async () => {
     pool.query.mockResolvedValueOnce(RULES.map((r) => row(r)));
-    const out = await call('export', undefined, 'GET', { format: 'yaml' });
+    const out = await call('export', undefined, 'GET');
     expect(out.status).toBe(200);
-    expect(out.headers['Content-Disposition']).toMatch(/attachment; filename="rproxy-rules-\d{8}\.yaml"/);
-    expect(parseYaml(out.text ?? '')).toEqual(exportDoc(RULES));
+    expect(out.headers['Content-Disposition']).toMatch(/attachment; filename="rproxy-ui-export-\d{8}\.json"/);
+    expect(out.headers['Content-Type']).toContain('application/json');
+    const exported = JSON.parse(out.text ?? '');
+    expect({ ...exported, exported_at: undefined }).toEqual({ ...exportDoc(RULES), exported_at: undefined });
     expect(pool.query.mock.calls[0]).toEqual([expect.stringContaining('WHERE auth_id = ?'), ['user-1']]);
 
     asAdmin();
     pool.query.mockResolvedValueOnce([]);
-    await call('export', undefined, 'GET', { format: 'json' });
+    await call('export', undefined, 'GET');
     expect(pool.query.mock.calls[1][0]).not.toContain('WHERE');
     pool.query.mockResolvedValueOnce([]);
-    const json = await call('export', undefined, 'GET', { format: 'json', owner: 'user-2' });
+    const json = await call('export', undefined, 'GET', { owner: 'user-2' });
     expect(pool.query.mock.calls[2]).toEqual([expect.stringContaining('WHERE auth_id = ?'), ['user-2']]);
     expect(json.headers['Content-Type']).toContain('application/json');
   });
