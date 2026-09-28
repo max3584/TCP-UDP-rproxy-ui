@@ -4,7 +4,10 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ForwardRules } from '@/components/lib';
 import {
+  certProblem,
   countsDescription,
+  formatIsoTime,
+  worstCertState,
   donutGradient,
   emptyCounts,
   filterRules,
@@ -32,7 +35,7 @@ import {
   toRule,
   uptimeSecs,
 } from '@/components/dashboard';
-import { AllowFromBadge, StateBadge, StaticBadge, TlsBadge } from '@/components/ui';
+import { AllowFromBadge, CertBadge, StateBadge, StaticBadge, TlsBadge } from '@/components/ui';
 import type { RproxyRuleStatus } from '@/components/rproxy';
 
 let nextId = 1;
@@ -119,6 +122,12 @@ describe('static rules', () => {
     source_ip: 'proxy', udp_idle_secs: 30, starttls: null, starttls_required: true, allow_from: ['172.16.0.0/16'],
     tls: { mode: 'sni', routes: [{ server_name: 'dashboard.proxy.home', remote_addr: '127.0.0.1', remote_port: 3001 }], unmatched: 'reject' },
     state: 'running', error: null, resolved: [], connections: 0, origin: 'static', ...over,
+  });
+
+  it('carries the certificate expiry status (rproxy cert_status)', () => {
+    const certs = [{ role: 'certificate' as const, file: '/c.pem', not_after: '2026-10-01T00:00:00Z', days_left: 3, state: 'expiring' as const }];
+    expect(ruleFromStatus(status({ cert_status: certs }), -1).certStatus).toEqual(certs);
+    expect(ruleFromStatus(status(), -1).certStatus).toBeUndefined();
   });
 
   it('carries extra listen addresses and passthrough routes from the rproxy response', () => {
@@ -263,6 +272,36 @@ describe('needsAttention', () => {
   it('lists failed rules before missing ones and leaves the rest out', () => {
     const list = needsAttention([sample[3], sample[0], sample[2], sample[5]]);
     expect(list.map((r) => r.state)).toEqual(['failed', 'missing']);
+  });
+
+  it('adds running rules whose certificates expire soon or have expired, after failed / missing', () => {
+    const cert = (state: 'ok' | 'expiring' | 'expired', days: number) =>
+      ({ role: 'certificate' as const, file: `/${state}.pem`, not_after: '2026-10-01T00:00:00Z', days_left: days, state: state });
+    const ok = rule({ state: 'running', certStatus: [cert('ok', 90)] });
+    const soon = rule({ state: 'running', certStatus: [cert('ok', 90), cert('expiring', 5)] });
+    const gone = rule({ state: 'running', certStatus: [cert('expired', -2)] });
+    const failed = rule({ state: 'failed', error: 'certificate expired: /x.pem', certStatus: [cert('expired', -1)] });
+    const list = needsAttention([ok, soon, gone, failed]);
+    expect(list).toEqual([failed, soon, gone]);
+    expect(worstCertState(ok)).toBe('ok');
+    expect(worstCertState(soon)).toBe('expiring');
+    expect(worstCertState(gone)).toBe('expired');
+    expect(worstCertState(rule())).toBeNull();
+    expect(certProblem(ok)).toBeNull();
+    expect(certProblem(soon)).toBe('サーバ証明書（/expiring.pem）があと 5 日で期限切れです。');
+    expect(certProblem(gone)).toBe('サーバ証明書（/expired.pem）が期限切れです（2 日前）。');
+  });
+
+  it('shows a badge only for expiring / expired certificates', () => {
+    expect(renderToStaticMarkup(createElement(CertBadge, { state: 'expired' }))).toContain('期限切れ');
+    expect(renderToStaticMarkup(createElement(CertBadge, { state: 'expiring' }))).toContain('期限間近');
+    expect(renderToStaticMarkup(createElement(CertBadge, { state: 'ok' }))).toBe('');
+    expect(renderToStaticMarkup(createElement(CertBadge, { state: null }))).toBe('');
+  });
+
+  it('formats RFC 3339 times in the local time zone, keeping unreadable text as is', () => {
+    expect(formatIsoTime('2026-10-01T00:00:00Z')).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(formatIsoTime('not a time')).toBe('not a time');
   });
 });
 

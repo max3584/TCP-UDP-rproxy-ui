@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listenOptions, reservedClash, type InterfacesInfo } from '@/components/listen';
-import { FORBIDDEN_MESSAGE, STATIC_RULE_MESSAGE, explainError } from '@/components/messages';
+import { CERT_EXPIRED_MESSAGE, FORBIDDEN_MESSAGE, STATIC_RULE_MESSAGE, explainError, ruleErrorText } from '@/components/messages';
 
 const info: InterfacesInfo = {
   interfaces: [
@@ -38,6 +38,15 @@ describe('reservedClash', () => {
     ['empty port', 'tcp', '0.0.0.0', '', null, false],
   ] as const)('%s', (_name, protocol, addr, port, end, expected) => {
     expect(reservedClash(r, protocol, addr, port, end) !== null).toBe(expected);
+  });
+});
+
+describe('certificate expired', () => {
+  it('explains an expired server certificate, both as an API error and as a rule error', () => {
+    const detail = 'certificate expired: /etc/rproxy/tls/a.pem (2026-09-01T00:00:00Z)';
+    expect(explainError('tls_config', detail)).toBe(`${CERT_EXPIRED_MESSAGE}（詳細: ${detail}）`);
+    expect(ruleErrorText(detail)).toBe(`${CERT_EXPIRED_MESSAGE}（詳細: ${detail}）`);
+    expect(ruleErrorText('bind failed')).toBe('bind failed');
   });
 });
 

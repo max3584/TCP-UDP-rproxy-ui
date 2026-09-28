@@ -175,6 +175,19 @@ export interface RuleStats {
   targets?: TargetStats[];
 }
 
+// rproxy の証明書の期限（ルールの cert_status の 1 要素。rproxy v0.3.5 以降）
+export type CertRole = 'certificate' | 'client_ca' | 'client_chain' | 'upstream_ca' | 'upstream_certificate';
+export type CertState = 'ok' | 'expiring' | 'expired';
+export interface CertStatus {
+  role: CertRole;
+  file: string;
+  // RFC 3339（UTC）
+  not_after: string;
+  // 残りの日数。切れたら負
+  days_left: number;
+  state: CertState;
+}
+
 // 宛先ごとの状態。rproxy の版によって項目が欠けることがあるので、どれも省略できる
 export interface TargetStats {
   addr?: string;
@@ -226,6 +239,8 @@ export interface ForwardRules extends ForwardRule {
   resolved: string[];
   // 作成した利用者（Keycloak の sub）。管理者（rproxy-admin）が見るときだけ付く
   owner?: string;
+  // 証明書の期限（rproxy の cert_status）。証明書がないルールと古い rproxy では付かない
+  certStatus?: CertStatus[];
 }
 
 // GET /api/forward/dashboard の応答

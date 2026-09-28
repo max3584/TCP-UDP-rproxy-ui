@@ -1,7 +1,7 @@
 // rproxy-api の HTTP クライアント（契約は ../rproxy-api/docs/API.md）
 
 import { Agent, fetch as undiciFetch } from 'undici';
-import type { Balance, HealthCheck, HttpSpec, Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, Target, TlsMode, TlsSpec } from './lib';
+import type { Balance, CertStatus, HealthCheck, HttpSpec, Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, Target, TlsMode, TlsSpec } from './lib';
 import type { InterfacesInfo } from './listen';
 
 export type { HttpSpec, Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec };
@@ -46,6 +46,8 @@ export interface RproxyRuleStatus extends Omit<RproxyRule, 'listen_port_end' | '
   stats?: RuleStats;
   started_at?: number | null;
   origin?: RuleOrigin;
+  // 証明書の期限（rproxy v0.3.5 以降。証明書がないルールでは省かれる）
+  cert_status?: CertStatus[];
 }
 
 export interface RproxyRuleKey {

@@ -423,6 +423,7 @@ function withLiveState(id: number, rule: ForwardRule, live: boolean, status: Rpr
     stats: status?.stats ?? null,
     startedAt: status?.started_at ?? null,
     resolved: status?.resolved ?? [],
+    ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
   };
 }
 
