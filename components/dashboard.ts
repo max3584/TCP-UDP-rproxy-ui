@@ -1,7 +1,7 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
 import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames } from './lib';
-import type { Balance, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
+import type { Balance, CertRole, CertState, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 
@@ -173,6 +173,7 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     stats: status.stats ?? null,
     startedAt: status.started_at ?? null,
     resolved: status.resolved ?? [],
+    ...(Array.isArray(status.cert_status) ? { certStatus: status.cert_status } : {}),
   };
 }
 
@@ -203,9 +204,49 @@ export function tlsBreakdown(rules: ForwardRule[]): TlsBreakdown {
   return b;
 }
 
-// 要確認のルール（failed を先に、次に missing。それぞれ元の順番のまま）
+// 証明書の役割の表示名
+export const CERT_ROLE_LABELS: Record<CertRole, string> = {
+  certificate: 'サーバ証明書',
+  client_ca: 'クライアント認証の CA',
+  client_chain: 'クライアント認証の中間 CA',
+  upstream_ca: '転送先の CA',
+  upstream_certificate: '転送先へのクライアント証明書',
+};
+
+export const CERT_STATE_LABELS: Record<CertState, string> = {
+  ok: '有効',
+  expiring: '期限が近い',
+  expired: '期限切れ',
+};
+
+// RFC 3339 の時刻を、画面のタイムゾーンの formatTimestamp の形にする（読めなければそのまま）
+export function formatIsoTime(iso: string): string {
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? iso : formatTimestamp(Math.floor(ms / 1000));
+}
+
+// ルールの証明書のうち、いちばん悪い状態（証明書がない・古い rproxy なら null）
+export function worstCertState(rule: Pick<ForwardRules, 'certStatus'>): CertState | null {
+  const list = rule.certStatus ?? [];
+  if (list.length === 0) return null;
+  if (list.some((c) => c.state === 'expired')) return 'expired';
+  if (list.some((c) => c.state === 'expiring')) return 'expiring';
+  return 'ok';
+}
+
+// 期限が近い・切れた証明書の説明（要確認の欄に出す）。問題がなければ null
+export function certProblem(rule: Pick<ForwardRules, 'certStatus'>): string | null {
+  const bad = (rule.certStatus ?? []).filter((c) => c.state !== 'ok');
+  if (bad.length === 0) return null;
+  return bad
+    .map((c) => `${CERT_ROLE_LABELS[c.role] ?? c.role}（${c.file}）が${c.state === 'expired' ? `期限切れです（${-c.days_left} 日前）` : `あと ${c.days_left} 日で期限切れです`}`)
+    .join('。') + '。';
+}
+
+// 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール。それぞれ元の順番のまま）
 export function needsAttention(rules: ForwardRules[]): ForwardRules[] {
-  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing')];
+  const certs = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certProblem(r) !== null);
+  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs];
 }
 
 export interface RuleFilter {

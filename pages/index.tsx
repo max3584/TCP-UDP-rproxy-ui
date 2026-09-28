@@ -18,17 +18,20 @@ import {
   formatDuration,
   hostPort,
   listenLabel,
+  certProblem,
   needsAttention,
   portsLabel,
   ruleHref,
   ruleKeyOf,
+  worstCertState,
   serverErrorPercent,
   summarize,
   targetLabel,
   tlsBreakdown,
   uptimeSecs,
 } from '@/components/dashboard';
-import { AllowFromBadge, AutoRefreshToggle, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
+import { ruleErrorText } from '@/components/messages';
+import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
 
 const StatTile: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({ label, value, sub }) => (
   <div className="card p-4">
@@ -149,7 +152,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
   <section className="card p-4" aria-labelledby="card-attention">
     <h2 id="card-attention" className="card-title mb-3">要確認のルール</h2>
     {rules.length === 0 ? (
-      <p className="text-sm text-gray-700">失敗・未登録のルールはありません。</p>
+      <p className="text-sm text-gray-700">失敗・未登録・証明書の期限が近いルールはありません。</p>
     ) : (
       <ul className="divide-y divide-gray-100">
         {rules.map((r) => (
@@ -158,6 +161,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
               <StateBadge state={r.state} />
               <span className="badge bg-gray-100 text-gray-800 uppercase">{r.protocol}</span>
               {r.origin === 'static' && <StaticBadge />}
+              <CertBadge state={worstCertState(r)} />
             </div>
             <div className="min-w-0 flex-1 text-sm">
               <Link href={ruleHref(ruleKeyOf(r))} className="link font-mono break-all">
@@ -166,7 +170,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
               <span className="text-gray-600"> → </span>
               <span className="font-mono text-gray-800 break-all">{targetLabel(r)}</span>
               <p className="text-xs text-red-800 break-all mt-0.5">
-                {r.error ?? (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : '')}
+                {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certProblem(r) ?? '')}
               </p>
             </div>
           </li>
@@ -276,6 +280,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () =
                       <div className="mt-0.5 flex gap-1 font-sans">
                         {r.origin === 'static' && <StaticBadge />}
                         <AllowFromBadge allowFrom={r.allowFrom} />
+                        <CertBadge state={worstCertState(r)} />
                       </div>
                     )}
                     {r.owner !== undefined && (

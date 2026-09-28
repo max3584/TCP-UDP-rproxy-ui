@@ -3,10 +3,13 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { routeNames } from '@/components/lib';
-import type { ForwardRules, HttpStats } from '@/components/lib';
+import type { CertStatus, ForwardRules, HttpStats } from '@/components/lib';
 import { healthCheckLabel, targetStatus } from '@/components/targets';
 import {
   BALANCE_LABELS,
+  CERT_ROLE_LABELS,
+  CERT_STATE_LABELS,
+  formatIsoTime,
   targetHostPort,
   formatBytes,
   formatCount,
@@ -27,7 +30,7 @@ import {
   uptimeSecs,
 } from '@/components/dashboard';
 import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, StaticBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
-import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE } from '@/components/messages';
+import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
 import HttpSummary from '@/components/HttpSummary';
 import HistoryList from '@/components/HistoryList';
 
@@ -96,6 +99,35 @@ const byMiddleware = (counts: Record<string, number>) =>
   Object.entries(counts).map(([name, n]) => `${name} ${formatCount(n)}`).join(', ');
 
 // L7（http）のルールのリクエストの数（rproxy の stats.http）
+// 証明書の期限（rproxy の cert_status）。expiring は琥珀、expired は赤
+const CERT_STATE_CLASS = { ok: 'bg-green-100 text-green-900', expiring: 'bg-amber-100 text-amber-900', expired: 'bg-red-100 text-red-900' } as const;
+
+const CertStatusSection: React.FC<{ certs: CertStatus[] }> = ({ certs }) => (
+  <Section id="section-cert-status" title="証明書の期限">
+    <table className="data-table" data-testid="cert-status">
+      <thead>
+        <tr><th>種類</th><th>ファイル</th><th>期限</th><th>残り</th><th>状態</th></tr>
+      </thead>
+      <tbody>
+        {certs.map((c) => (
+          <tr key={`${c.role}|${c.file}`}>
+            <td>{CERT_ROLE_LABELS[c.role] ?? c.role}</td>
+            <td className="font-mono break-all">{c.file}</td>
+            <td className="font-mono">{formatIsoTime(c.not_after)}</td>
+            <td>{c.days_left < 0 ? `${-c.days_left} 日前に期限切れ` : `${c.days_left} 日`}</td>
+            <td><span className={`badge ${CERT_STATE_CLASS[c.state] ?? 'bg-gray-100 text-gray-800'}`}>{CERT_STATE_LABELS[c.state] ?? c.state}</span></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    {certs.some((c) => c.state === 'expired' && c.role === 'certificate') && (
+      <p className="text-xs text-red-800 mt-2">
+        期限切れのサーバ証明書は使われていません（すべて切れるとルールは失敗になり、待ち受けを閉じます）。証明書のファイルが更新されると、rproxy が自動で読み直して元に戻します。
+      </p>
+    )}
+  </Section>
+);
+
 const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
   const rows = httpRouteRows(http);
   const pct = serverErrorPercent(http.requests, http.by_status['5xx'] ?? 0);
@@ -343,7 +375,7 @@ const RuleDetailPage: React.FC = () => {
             <Section id="section-overview" title="概要">
               <Fields items={[
                 ['状態', <StateBadge key="s" state={rule.state} />],
-                ['エラー', rule.error ? <span className="text-red-800">{rule.error}</span> : rule.state === 'missing'
+                ['エラー', rule.error ? <span className="text-red-800">{ruleErrorText(rule.error)}</span> : rule.state === 'missing'
                   ? <span className="text-amber-900">rproxy でこのルールが動いていません（編集して保存すると作り直します）。</span>
                   : rule.state === 'unknown' ? <span className="text-gray-700">rproxy に接続できないため、稼働状態がわかりません。</span>
                   : rule.state === 'paused' ? <span className="text-gray-700">一時停止中です（設定は残したまま、rproxy では動かしていません。「再開」でこの内容のまま動かします）。</span> : null],
@@ -427,6 +459,8 @@ const RuleDetailPage: React.FC = () => {
           {rule.stats?.http && <HttpStatsSection http={rule.stats.http} />}
 
           <TlsSection rule={rule} />
+
+          {rule.certStatus && rule.certStatus.length > 0 && <CertStatusSection certs={rule.certStatus} />}
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <Section id="section-starttls" title="STARTTLS">

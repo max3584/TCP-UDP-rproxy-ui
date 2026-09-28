@@ -118,6 +118,7 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
   ルールの `crowdsec`（L4 の CrowdSec。rproxy v0.3.2 から）は `options` に true のときだけ保存し、rproxy へも true のとき（PATCH では有効から無効にするときも）だけ送る（古い rproxy は知らない項目を拒否する）。
   追加の待ち受けアドレス（`extraListenAddrs`、rproxy の `extra_listen_addrs`。v0.3.3）は IP アドレスだけで最大 16 件（`normalizeExtraListenAddrs`）。rproxy へは空でないとき（PATCH では空にするときも）だけ送る。`modify` の body になければ DB の値を保つ。
   TLS の `routes[]` は `server_name` か `server_names`（フォームはカンマ区切りの 1 欄）と `passthrough`（terminate のときだけ。L7 のルールでは passthrough の行だけ、`unmatched: reject` も不可。`checkTls` の 5 番目の引数）。`**.` は何階層でも一致するワイルドカード。
+- 証明書の期限（#66）：rproxy（v0.3.5 以降）の `cert_status`（証明書ごとの `role`・`file`・`not_after`・`days_left`・`state`: ok / expiring / expired）を `certStatus` として持つ（`withLiveState`・`ruleFromStatus`。古い rproxy・証明書のないルールでは付かない）。詳細画面の「証明書の期限」、ダッシュボードの「要確認」（failed・missing のあとに、期限が近い・切れた証明書のあるルール。`needsAttention`・`certProblem`）と一覧の `CertBadge`（`worstCertState`）。サーバ証明書がすべて切れたルールは rproxy が `failed`（error は `certificate expired: ...`）にするので、`ruleErrorText` / `explainError` が対処（証明書を更新すれば自動で戻る）を添える。
 - ロール：`rproxy-admin` はすべての利用者のルール（`owner` 付き。WHERE に `auth_id` を付けない）、`rproxy-user` は自分のルールだけ（`RPROXY_UI_USER_ROLE` が空（既定）なら、サインインした人はだれでも user）、ロールを必須にしてどちらもなければ 403 `no_role`（画面は `RequireAuth` が出す）。`RPROXY_UI_USER_PORTS` で `rproxy-user` の待ち受けポートを制限できる（403 `port_not_allowed`）。
   rproxy の 401（UI の `RPROXY_API_TOKEN` の誤り・期限切れ）は 502 `rproxy_unauthorized`（利用者のサインインの問題と区別する）。
 

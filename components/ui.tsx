@@ -1,7 +1,7 @@
 // ダッシュボードと詳細画面で共通の小さな部品（状態のバッジ、エラーのバナー、確認ダイアログ、自動更新）
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { ForwardRule, ForwardRules, RuleState } from './lib';
+import type { CertState, ForwardRule, ForwardRules, RuleState } from './lib';
 import { RuleKey, STATE_LABELS, ruleApiUrl, tlsLabel } from './dashboard';
 import { explainError } from './messages';
 
@@ -37,6 +37,13 @@ export const TlsBadge: React.FC<{ rule: Pick<ForwardRule, 'protocol' | 'tls' | '
 export const StaticBadge: React.FC = () => (
   <span className="badge bg-slate-700 text-white" title="固定ルール（rproxy の設定ファイルで管理）">固定</span>
 );
+
+// 証明書の期限が近い・切れたルール（rproxy の cert_status）
+export const CertBadge: React.FC<{ state: CertState | null }> = ({ state }) => {
+  if (state === 'expired') return <span className="badge bg-red-100 text-red-900" title="期限切れの証明書があります">証明書 期限切れ</span>;
+  if (state === 'expiring') return <span className="badge bg-amber-100 text-amber-900" title="期限が近い証明書があります">証明書 期限間近</span>;
+  return null;
+};
 
 // allow_from で送信元を絞っているルール
 export const AllowFromBadge: React.FC<{ allowFrom: string[] }> = ({ allowFrom }) => (

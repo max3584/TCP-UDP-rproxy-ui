@@ -41,7 +41,19 @@ const EXPLAIN: Record<string, string> = {
 const PRIVILEGED_PORT =
   '1024 未満のポートを開く権限が rproxy にありません。1024 以上のポートを使うか、rproxy に CAP_NET_BIND_SERVICE を付けてください（setcap cap_net_bind_service=+ep、systemd なら AmbientCapabilities=CAP_NET_BIND_SERVICE）。';
 
+// rproxy がサーバ証明書の期限切れで断った・止めたとき（error は "certificate expired: ..."）
+export const CERT_EXPIRED_MESSAGE =
+  'サーバ証明書の期限が切れています。certbot / cert-manager などで証明書を更新してください。ファイルが更新されると rproxy が自動で読み直し、ルールは元に戻ります。';
+
+// ルールの error（rproxy の failed の理由）を画面に出す文にする。証明書の期限切れは対処を添える
+export function ruleErrorText(error: string): string {
+  return /certificate expired/i.test(error) ? `${CERT_EXPIRED_MESSAGE}（詳細: ${error}）` : error;
+}
+
 export function explainError(code: string | undefined, detail: string): string {
+  if (/certificate expired/i.test(detail)) {
+    return `${CERT_EXPIRED_MESSAGE}（詳細: ${detail}）`;
+  }
   if (code === 'bind_failed' && /Permission denied|os error 13/.test(detail)) {
     return `${PRIVILEGED_PORT}（詳細: ${detail}）`;
   }
