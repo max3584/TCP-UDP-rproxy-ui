@@ -344,8 +344,9 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
       setHeader() { return res; },
       send(body: string) { exported = body; return res; },
     } as unknown as NextApiResponse;
-    await handler({ method: 'GET', query: { forward: 'export', format: 'yaml' } } as unknown as NextApiRequest, res);
-    expect(exported).toContain(`listen_port: ${port}`);
+    await handler({ method: 'GET', query: { forward: 'export' } } as unknown as NextApiRequest, res);
+    expect(exported).toContain('"format": "rproxy-ui-export"');
+    expect(exported).toContain(`"listen_port": ${port}`);
 
     expect((await call('delete', r)).status).toBe(200);
     await expect(echoThrough(port, 'b')).rejects.toThrow();

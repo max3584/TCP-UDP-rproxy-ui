@@ -114,8 +114,9 @@ const ImportPage: React.FC = () => {
       <h1 className="text-2xl font-bold text-gray-900">ルールのインポート</h1>
       <div className="card p-4 space-y-3 text-sm text-gray-900">
         <p>
-          rproxy の設定ファイル（<code>RPROXY_CONFIG</code>）と同じ形の YAML / JSON を読み込みます（<code>version: 1</code> と <code>rules:</code>、またはルールの配列）。
-          ダッシュボードの「エクスポート」で書き出したファイルもそのまま読めます。<code>global</code> は rproxy 側の設定なので読み飛ばします。
+          ダッシュボードの「エクスポート」で書き出した JSON（停止中のルールは停止中のまま戻ります）と、
+          rproxy の設定ファイル（<code>RPROXY_CONFIG</code>）の YAML / JSON（<code>version: 1</code> と <code>rules:</code>、またはルールの配列）を読み込めます。
+          設定ファイルの <code>global</code> は rproxy 側の設定なので読み飛ばします。
         </p>
         <p>先に「確かめる」で 1 件ずつ検証し、結果を見てから実行します。1 件ずつ追加・置き換えるので、途中で失敗しても成功した分は残ります。</p>
         <label className="block">

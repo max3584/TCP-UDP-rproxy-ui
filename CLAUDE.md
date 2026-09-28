@@ -68,7 +68,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 | `components/targets.ts` | 宛先を複数にしたとき（`targets` / `balance` / `health_check`）のフォームの行・組み立て・宛先ごとの状態の探し方。形の検証は `tls.ts` の `normalizeTargets` / `checkBalancing` |
 | `components/TargetsEditor.tsx` | RuleForm の「基本」タブの宛先の一覧・振り分け方・ヘルスチェック（「宛先を追加」で出る） |
 | `components/HttpSummary.tsx` | 詳細画面の L7 の読み取り専用の表示（ルートは rproxy が試す順） |
-| `components/settingsdoc.ts` | ルールと rproxy の設定ファイルの形の変換（エクスポートの `toSettingsRule`・`exportDoc`・`formatDoc`、インポートの `parseDoc`・`settingsRuleToBody`）と、rproxy へ送るルールの形 `toRproxyRule`（API route と共有）。YAML は `yaml`（純粋な JS） |
+| `components/settingsdoc.ts` | ルールと rproxy の設定ファイルの形の変換（エクスポートの `toSettingsRule`・`exportDoc`・`formatDoc`、インポートの `parseDoc`・`settingsRuleToBody`）と、rproxy へ送るルールの形 `toRproxyRule`（API route と共有）。エクスポートは JSON だけで、先頭の `format: "rproxy-ui-export"` で rproxy の設定ファイルと区別する（rproxy は知らない項目として断る）。インポートは UI のエクスポートと rproxy の設定ファイル（YAML / JSON。`yaml`、純粋な JS で読む）を読む。`enabled`（停止中）は UI のエクスポートの中だけ |
 | `components/history.ts` | 変更の履歴の型（`HistoryEntry`）と、前の版との違いの文（`ruleChanges`） |
 | `components/HistoryList.tsx` | 履歴の表（ページ送り、「この版に戻す」）。`/history` と詳細画面で使う |
 | `pages/rules/import.tsx` | インポート（確かめる → 置き換えるものを選ぶ → 実行） |
@@ -121,7 +121,7 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
 - ロール：`rproxy-admin` はすべての利用者のルール（`owner` 付き。WHERE に `auth_id` を付けない）、`rproxy-user` は自分のルールだけ（`RPROXY_UI_USER_ROLE` が空（既定）なら、サインインした人はだれでも user）、ロールを必須にしてどちらもなければ 403 `no_role`（画面は `RequireAuth` が出す）。`RPROXY_UI_USER_PORTS` で `rproxy-user` の待ち受けポートを制限できる（403 `port_not_allowed`）。
   rproxy の 401（UI の `RPROXY_API_TOKEN` の誤り・期限切れ）は 502 `rproxy_unauthorized`（利用者のサインインの問題と区別する）。
 
-- エクスポート / インポート（#60）：`export` は DB のルールを `toSettingsRule`（既定値を省いた rproxy の形）で書き出す。`import` は `parseDoc` → `settingsRuleToBody` → `parseRule`（画面からの追加と同じ検証）で 1 件ずつ確かめ、`dryRun` なら結果だけ、実行では 1 件ずつ別のトランザクションで `addForwardingRule` / `replaceForwardingRule`（PATCH で変えられない違いは削除して作り直す。所有者は変えない）。書き出して読み込むと同じルールになること（DB の行と rproxy に送る形）を `tests/export-import.test.ts` で確かめている。
+- エクスポート / インポート（#60）：`export` は DB のルールを `toSettingsRule`（既定値を省いた rproxy の形）で、`{format: "rproxy-ui-export", version: 1, exported_at, rules}` の JSON に書き出す。`import` は `parseDoc` → `settingsRuleToBody` → `parseRule`（画面からの追加と同じ検証）で 1 件ずつ確かめ、`dryRun` なら結果だけ、実行では 1 件ずつ別のトランザクションで `addForwardingRule` / `replaceForwardingRule`（PATCH で変えられない違いは削除して作り直す。所有者は変えない）。書き出して読み込むと同じルールになること（DB の行と rproxy に送る形）を `tests/export-import.test.ts` で確かめている。
 - 履歴（#61）：`forward_rules_log` の行はその操作のあとの内容（DELETE は削除の前）。利用者に見せる範囲は「自分が操作した行」と「今自分が持っているルールの行」（`historyScope`。所有者の列はないので、削除されたほかの人のルールの履歴は admin だけ）。`revert` は履歴の版を置き換え / 作り直しで戻す（固定ルールと同じキーなら 409 `static`）。
 - 一時停止（#63）：`pause` は DB の `options` に `"enabled": false` を付け（`false` のときだけ保存）、rproxy から削除する。`resume` は印を外して rproxy に作る（どちらも履歴は UPDATE、COMMIT の失敗では rproxy を戻す）。停止中（`isPaused`）のルールの `modify` / `delete` は DB だけ、`add`（インポートの `enabled: false`）も DB だけ。状態は `paused`（`missing` ではない）。`enabled` は rproxy の API には送らない（rproxy は DB の復元のときだけ読む）。`modify` では停止・再開の状態を変えない（`enabled` を送っても今の状態のまま）。置き換え・巻き戻しも今の状態を保つ。
 - COMMIT が失敗して、さらに rproxy 側の取り消しも失敗した場合は、DB と rproxy が食い違う（ログに出る）。rproxy を再起動すれば DB の内容に戻る。

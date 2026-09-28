@@ -371,8 +371,7 @@ const DashboardPage: React.FC = () => {
         <div className="flex gap-2">
           <button type="button" className="btn-secondary" onClick={() => void load()}>今すぐ更新</button>
           {/* 自分のルール（rproxy-admin はすべての利用者のルール）を rproxy の設定ファイルと同じ形で書き出す */}
-          <a href="/api/forward/export?format=yaml" className="btn-secondary" download data-testid="export-yaml">エクスポート（YAML）</a>
-          <a href="/api/forward/export?format=json" className="btn-secondary" download>JSON</a>
+          <a href="/api/forward/export" className="btn-secondary" download data-testid="export">エクスポート（JSON）</a>
           <Link href="/rules/import" className="btn-secondary">インポート</Link>
           <Link href="/history" className="btn-secondary">履歴</Link>
           <Link href="/rules/new" className="btn-primary">新規ルール</Link>
