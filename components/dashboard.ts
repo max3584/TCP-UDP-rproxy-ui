@@ -5,21 +5,23 @@ import type { Balance, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol,
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 
-export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown'];
+export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
 
 export const STATE_LABELS: Record<RuleState, string> = {
   running: '稼働中',
   failed: '失敗',
   missing: '未登録',
   unknown: '不明',
+  paused: '停止中',
 };
 
-// ドーナツ・帯グラフの色（running = 緑、failed = 赤、missing = 琥珀、unknown = 灰）
+// ドーナツ・帯グラフの色（running = 緑、failed = 赤、missing = 琥珀、unknown = 灰、paused = 青）
 export const STATE_COLORS: Record<RuleState, string> = {
   running: '#16a34a',
   failed: '#dc2626',
   missing: '#f59e0b',
   unknown: '#9ca3af',
+  paused: '#60a5fa',
 };
 
 export type StateCounts = Record<RuleState, number> & { total: number };
@@ -56,7 +58,7 @@ export interface TlsBreakdown {
 }
 
 export function emptyCounts(): StateCounts {
-  return { running: 0, failed: 0, missing: 0, unknown: 0, total: 0 };
+  return { running: 0, failed: 0, missing: 0, unknown: 0, paused: 0, total: 0 };
 }
 
 export function countStates(rules: Pick<ForwardRules, 'state'>[]): StateCounts {

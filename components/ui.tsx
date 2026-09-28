@@ -10,6 +10,7 @@ const STATE_BADGE: Record<RuleState, string> = {
   failed: 'bg-red-100 text-red-800 border border-red-300',
   missing: 'bg-amber-100 text-amber-900 border border-amber-300',
   unknown: 'bg-gray-100 text-gray-700 border border-gray-300',
+  paused: 'bg-blue-50 text-blue-900 border border-blue-300',
 };
 
 export const StateBadge: React.FC<{ state: RuleState }> = ({ state }) => (
@@ -166,7 +167,7 @@ export function goBack(router: { back: () => void; push: (url: string) => unknow
 // 画面から API へルールを送る。失敗したら表示用のメッセージで Error を投げる
 // L7 の設定（http）は送らない（API は受け取らず、変更では DB の値を保つ。UI #34 まで）
 // http は L7 のルールのときだけ送る（null を送ると、変更では L7 の設定を外す指定になる）
-export async function postRule(action: 'add' | 'modify' | 'delete', rule: unknown): Promise<void> {
+export async function postRule(action: 'add' | 'modify' | 'delete' | 'pause' | 'resume', rule: unknown): Promise<void> {
   const body = typeof rule === 'object' && rule !== null && 'http' in rule && (rule as { http: unknown }).http === null
     ? Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'http'))
     : rule;

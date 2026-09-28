@@ -28,7 +28,7 @@ import {
   tlsBreakdown,
   uptimeSecs,
 } from '@/components/dashboard';
-import { AllowFromBadge, AutoRefreshToggle, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, useAutoRefresh } from '@/components/ui';
+import { AllowFromBadge, AutoRefreshToggle, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
 
 const StatTile: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({ label, value, sub }) => (
   <div className="card p-4">
@@ -176,7 +176,32 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
   </section>
 );
 
-const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, now }) => {
+// 一覧の行の一時停止・再開のボタン（詳細画面を開かずに切り替える。停止は確認してから）
+const PauseResumeButton: React.FC<{ rule: ForwardRules; onDone: () => void; onError: (message: string) => void }> = ({ rule, onDone, onError }) => {
+  const [busy, setBusy] = useState(false);
+  if (rule.origin === 'static') return null;
+  const paused = rule.state === 'paused';
+  const run = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!paused && !window.confirm(`${listenLabel(rule)} の転送を一時停止しますか？（既存の接続は切断されます。設定は残ります）`)) return;
+    setBusy(true);
+    try {
+      await postRule(paused ? 'resume' : 'pause', rule);
+      onDone();
+    } catch (err) {
+      onError(`ルールの${paused ? '再開' : '停止'}に失敗しました: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" className="btn-secondary text-xs px-2 py-1" disabled={busy} onClick={(e) => void run(e)}>
+      {busy ? '…' : paused ? '再開' : '一時停止'}
+    </button>
+  );
+};
+
+const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () => void; onError: (message: string) => void }> = ({ rules, now, onChanged, onError }) => {
   const router = useRouter();
   const [filter, setFilter] = useState<RuleFilter>(EMPTY_FILTER);
   const shown = useMemo(() => filterRules(rules, filter), [rules, filter]);
@@ -225,12 +250,13 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
               <th scope="col" className="text-right">接続数</th>
               <th scope="col" className="text-right">転送量</th>
               <th scope="col">稼働時間</th>
+              <th scope="col"><span className="sr-only">操作</span></th>
             </tr>
           </thead>
           <tbody>
             {shown.length === 0 && (
               <tr>
-                <td colSpan={8} className="text-center text-gray-700 py-6">
+                <td colSpan={9} className="text-center text-gray-700 py-6">
                   {rules.length === 0 ? 'ルールはまだありません。' : '条件に一致するルールはありません。'}
                 </td>
               </tr>
@@ -283,6 +309,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number }> = ({ rules, n
                     ) : '-'}
                   </td>
                   <td className="whitespace-nowrap">{formatDuration(uptimeSecs(r.startedAt, now))}</td>
+                  <td className="whitespace-nowrap"><PauseResumeButton rule={r} onDone={onChanged} onError={onError} /></td>
                 </tr>
               );
             })}
@@ -384,7 +411,7 @@ const DashboardPage: React.FC = () => {
 
           <AttentionCard rules={attention} />
 
-          <RulesTable rules={rules} now={now} />
+          <RulesTable rules={rules} now={now} onChanged={() => void load()} onError={setError} />
         </>
       )}
     </div>

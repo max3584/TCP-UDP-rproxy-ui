@@ -82,9 +82,9 @@ const sample: ForwardRules[] = [
 describe('summarize', () => {
   it('counts states and adds up connections and bytes per protocol', () => {
     const s = summarize(sample);
-    expect(s.tcp.counts).toEqual({ running: 2, failed: 1, missing: 0, unknown: 0, total: 3 });
-    expect(s.udp.counts).toEqual({ running: 1, failed: 0, missing: 1, unknown: 1, total: 3 });
-    expect(s.all).toEqual({ running: 3, failed: 1, missing: 1, unknown: 1, total: 6 });
+    expect(s.tcp.counts).toEqual({ running: 2, failed: 1, missing: 0, unknown: 0, paused: 0, total: 3 });
+    expect(s.udp.counts).toEqual({ running: 1, failed: 0, missing: 1, unknown: 1, paused: 0, total: 3 });
+    expect(s.all).toEqual({ running: 3, failed: 1, missing: 1, unknown: 1, paused: 0, total: 6 });
     expect(s.tcp).toMatchObject({ connections: 3, totalConnections: 15, rxBytes: 1024, txBytes: 2048, tlsFailures: 4 });
     // null（missing / unknown）は 0 として足す
     expect(s.udp).toMatchObject({ connections: 4, totalConnections: 7, rxBytes: 1024 * 1024, txBytes: 5, tlsFailures: 2 });
@@ -340,7 +340,7 @@ describe('formatting', () => {
 
 describe('donut', () => {
   it('draws one conic-gradient segment per non-empty state', () => {
-    const counts = { running: 2, failed: 1, missing: 1, unknown: 0, total: 4 };
+    const counts = { running: 2, failed: 1, missing: 1, unknown: 0, paused: 0, total: 4 };
     expect(donutGradient(counts)).toBe('conic-gradient(#16a34a 0% 50%, #dc2626 50% 75%, #f59e0b 75% 100%)');
     expect(countsDescription(counts)).toBe('稼働中 2、失敗 1、未登録 1');
   });

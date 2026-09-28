@@ -56,6 +56,8 @@ export function toSettingsRule(rule: ForwardRule): Record<string, unknown> {
   if (rule.protocol === 'tcp' || rule.udpIdleSecs === DEFAULT_UDP_IDLE_SECS) delete out.udp_idle_secs;
   if (isDefaultTls(rule.tls)) delete out.tls;
   if (rule.balance === 'round_robin') delete out.balance;
+  // 一時停止中のルール（UI だけの印。rproxy の設定ファイルには書けないので、そのまま RPROXY_CONFIG には使えない）
+  if (rule.enabled === false) out.enabled = false;
   return out;
 }
 
@@ -101,6 +103,8 @@ const FIELD_MAP: Record<string, string> = {
   balance: 'balance',
   health_check: 'healthCheck',
   extra_listen_addrs: 'extraListenAddrs',
+  // UI での一時停止（エクスポートした停止中のルール）。rproxy の設定ファイルにはない項目
+  enabled: 'enabled',
 };
 
 export function settingsRuleToBody(value: unknown): Record<string, unknown> {
