@@ -55,7 +55,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 | `components/lib.ts` | 共通の型（`ForwardRule`、`TlsSpec`、`ForwardRules`、`RuleStats`、`DashboardData`、`sessionUser` など）と pino ロガー |
 | `components/rproxy.ts` | rproxy-api の HTTP クライアント。失敗時は `RproxyError`（`code`、`status`。通信失敗は `unreachable` / 0）。`RPROXY_API_URL=unix:/path` なら Unix ソケット（rproxy の `RPROXY_API_SOCKET`）に undici の `fetch` と `Agent({ connect: { socketPath } })` で接続する（`apiTarget`。TCP はグローバルの `fetch`） |
 | `pages/api/auth/[...nextauth].ts` | Keycloak の設定。サインイン時にアクセストークンのロール（既定 `realm_access.roles`）を読んで JWT に保存し、セッションに `roles` と `access`（admin / user / none。画面の表示用）を入れる |
-| `pages/api/forward/[forward].ts` | `list` / `dashboard` / `rule` / `export` / `history`(GET)、`add` / `modify` / `delete` / `import` / `revert`(POST) のエンドポイント |
+| `pages/api/forward/[forward].ts` | `list` / `dashboard` / `rule` / `export` / `history`(GET)、`add` / `modify` / `delete` / `import` / `revert` / `pause` / `resume`(POST) のエンドポイント |
 | `pages/api/forward/capabilities.ts` | rproxy の `GET /capabilities` をそのまま返す |
 | `pages/api/forward/interfaces.ts` | rproxy の `GET /interfaces`（待ち受けアドレスの候補と、制御 API が使う予約済みのアドレス）を返す |
 | `components/sourceip.ts` | source_ip の欄に出す説明（transparent が使えない理由、IPv4 だけであること、選んだときのルーティングの前提）。`GET /capabilities` の `transparent` を使う |
@@ -86,7 +86,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
    証明書ファイルが読めるか、範囲の上限（`max_range_ports`）、範囲の重なりは rproxy が判定する。
 3. トランザクション内で `forward_rules` を更新し、履歴を `forward_rules_log` に書き込む（`update_action` 列は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者）。
    ルールは Keycloak の `sub`（`auth_id`）ごとに持ち、キーは `protocol`、`src_addr`、`src_port` の組み合わせ（DB 全体で一意。範囲ルールでは先頭のポート）。
-   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from / L7 / CrowdSec / 複数の宛先は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check", "extra_listen_addrs"}` の JSON で保存する（`allow_from` は空なら、`http` は null なら、`crowdsec` は false なら、`targets` と `extra_listen_addrs` は空なら省き、`balance` / `health_check` は `targets` があるときだけ。すべて既定なら NULL）。
+   ポート範囲の終わりは `src_port_end`、TLS / STARTTLS / allow_from / L7 / CrowdSec / 複数の宛先は `options` 列に `{"tls", "starttls", "starttls_required", "allow_from", "http", "crowdsec", "targets", "balance", "health_check", "extra_listen_addrs", "enabled"}` の JSON で保存する（`allow_from` は空なら、`http` は null なら、`crowdsec` は false なら、`targets` と `extra_listen_addrs` は空なら省き、`balance` / `health_check` は `targets` があるときだけ。すべて既定なら NULL）。
    rproxy は `options` を未知のキーを拒否して読むので、`OPTIONS_KEYS` 以外のキーを入れないこと（`parseOptions` も未知のキーを拒否する）。
 4. rproxy-api の HTTP API を呼ぶ（`POST /rules`、`PATCH /rules/{protocol}/{addr}/{port}`、`DELETE ...`）。成功したときだけ COMMIT し、失敗したら ROLLBACK する。
    rproxy に反映した後で COMMIT だけが失敗した場合は、rproxy 側の変更を元に戻す（`withTransaction` に渡す undo）。
@@ -96,7 +96,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
    - 変更の PATCH には毎回 `tls`（と STARTTLS を使うなら `starttls` / `starttls_required`）と `allow_from`（空なら `[]`）を付け、丸ごと置き換える。COMMIT が失敗したときの undo も、元の転送先・TLS の設定・allow_from で PATCH する。
      `modify` の body に `allowFrom` がなければ DB の値を保つ（あれば置き換える）。追加の POST には `allow_from` が空でなければ付ける。
    - 固定ルール（rproxy の `--static-rules` のファイルのルール。`origin: "static"`）は DB にない。`modify` / `delete` で自分の行がなく、rproxy の `GET /rules/{key}` が `origin: "static"` を返したら 409 `static` を返す（rproxy も PATCH / DELETE を 409 `static` で拒否する。その場合もそのまま返す）。
-5. `list` は DB のルールに rproxy の `GET /rules` の稼働状態をつけて返す（`state` は `running` / `failed` / `missing`（rproxy にない）/ `unknown`（rproxy に問い合わせできない））。
+5. `list` は DB のルールに rproxy の `GET /rules` の稼働状態をつけて返す（`state` は `running` / `failed` / `missing`（rproxy にない）/ `unknown`（rproxy に問い合わせできない）/ `paused`（UI で一時停止中））。
    稼働情報は `connections`、`stats`（rproxy の `{total_connections, rx_bytes, tx_bytes, tls_failures, denied, http}` をそのまま。`denied` は古い rproxy に、`http`（L7 のリクエスト数：`requests`・`by_status`・`routes`・`limited`・`blocked`）は v0.3.1 より前の rproxy と http のないルールにはない）、`startedAt`（rproxy の `started_at`、Unix 秒）、`resolved`。`missing` / `unknown` のときは null / 空配列。
    各行には `origin`（DB の行は常に `dynamic`）と `allowFrom` が付く。`list` は自分の DB のルールだけ（`rproxy-admin` はすべての利用者のルールで、`owner` が付く）。
    - `dashboard` は `{reachable, rproxyError, rules}`。`rules` は `list` の後ろに、rproxy の固定ルール（`origin: "static"`）を読み取り専用の行として足したもの（`mergeStaticRules`。id は負の数で、画面の key にだけ使う）。
@@ -123,6 +123,7 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
 
 - エクスポート / インポート（#60）：`export` は DB のルールを `toSettingsRule`（既定値を省いた rproxy の形）で書き出す。`import` は `parseDoc` → `settingsRuleToBody` → `parseRule`（画面からの追加と同じ検証）で 1 件ずつ確かめ、`dryRun` なら結果だけ、実行では 1 件ずつ別のトランザクションで `addForwardingRule` / `replaceForwardingRule`（PATCH で変えられない違いは削除して作り直す。所有者は変えない）。書き出して読み込むと同じルールになること（DB の行と rproxy に送る形）を `tests/export-import.test.ts` で確かめている。
 - 履歴（#61）：`forward_rules_log` の行はその操作のあとの内容（DELETE は削除の前）。利用者に見せる範囲は「自分が操作した行」と「今自分が持っているルールの行」（`historyScope`。所有者の列はないので、削除されたほかの人のルールの履歴は admin だけ）。`revert` は履歴の版を置き換え / 作り直しで戻す（固定ルールと同じキーなら 409 `static`）。
+- 一時停止（#63）：`pause` は DB の `options` に `"enabled": false` を付け（`false` のときだけ保存）、rproxy から削除する。`resume` は印を外して rproxy に作る（どちらも履歴は UPDATE、COMMIT の失敗では rproxy を戻す）。停止中（`isPaused`）のルールの `modify` / `delete` は DB だけ、`add`（インポートの `enabled: false`）も DB だけ。状態は `paused`（`missing` ではない）。`enabled` は rproxy の API には送らない（rproxy は DB の復元のときだけ読む）。`modify` では停止・再開の状態を変えない（`enabled` を送っても今の状態のまま）。置き換え・巻き戻しも今の状態を保つ。
 - COMMIT が失敗して、さらに rproxy 側の取り消しも失敗した場合は、DB と rproxy が食い違う（ログに出る）。rproxy を再起動すれば DB の内容に戻る。
 - `source_ip` とポート範囲は作成後に変更できない（API の制約）。編集画面では読み取り専用。API に違う範囲が来たら 400（`unsupported`）。
 - TLS の設定は編集できる。フォームは選んでいるモードで使う項目だけを送る（隠れている欄の値は送らない）。

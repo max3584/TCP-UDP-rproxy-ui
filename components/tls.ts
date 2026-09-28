@@ -463,7 +463,8 @@ export function normalizeExtraListenAddrs(value: unknown, listenAddr?: string): 
 // targets は空なら省き、balance（既定の round_robin は省く）と health_check は targets があるときだけ書く。
 // rproxy は deny_unknown_fields で読むので、これ以外のキーを入れてはいけない
 // （crowdsec は rproxy v0.3.2、targets / balance / health_check / extra_listen_addrs は v0.3.3 から。extra_listen_addrs は空なら省く）
-export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec', 'targets', 'balance', 'health_check', 'extra_listen_addrs'];
+// enabled は UI での一時停止（false のときだけ保存する。rproxy は起動時にその行を作らない。rproxy の API には送らない）
+export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec', 'targets', 'balance', 'health_check', 'extra_listen_addrs', 'enabled'];
 
 export function optionsJson(
   tls: TlsSpec,
@@ -474,9 +475,10 @@ export function optionsJson(
   crowdsec = false,
   balancing: Balancing = NO_BALANCING,
   extraListenAddrs: string[] = [],
+  enabled = true,
 ): string | null {
   const multi = balancing.targets.length > 0;
-  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec && !multi && extraListenAddrs.length === 0) {
+  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec && !multi && extraListenAddrs.length === 0 && enabled) {
     return null;
   }
   return JSON.stringify({
@@ -490,7 +492,15 @@ export function optionsJson(
     ...(multi && balancing.balance !== DEFAULT_BALANCE ? { balance: balancing.balance } : {}),
     ...(multi && balancing.healthCheck !== null ? { health_check: balancing.healthCheck } : {}),
     ...(extraListenAddrs.length > 0 ? { extra_listen_addrs: extraListenAddrs } : {}),
+    ...(enabled ? {} : { enabled: false }),
   });
+}
+
+// options の enabled（UI での一時停止）。省略は true
+export function normalizeEnabled(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'boolean') throw invalid('enabled は true か false で指定してください。');
+  return value;
 }
 
 // ルールの crowdsec（L4 で CrowdSec の判定に入っている接続元を切る）。省略は false
@@ -516,6 +526,8 @@ export interface RuleOptions {
   crowdsec: boolean;
   balancing: Balancing;
   extraListenAddrs: string[];
+  // false なら UI で一時停止中（rproxy には作らない）
+  enabled: boolean;
 }
 
 // options 列を読む。ドライバによっては JSON がオブジェクトで返るので両方を受け付ける
@@ -523,6 +535,7 @@ export function parseOptions(value: unknown): RuleOptions {
   const empty = (): RuleOptions => ({
     tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false, balancing: { ...NO_BALANCING },
     extraListenAddrs: [],
+    enabled: true,
   });
   if (value === undefined || value === null || value === '') return empty();
   const data = typeof value === 'string' ? JSON.parse(value) : value;
@@ -544,5 +557,6 @@ export function parseOptions(value: unknown): RuleOptions {
       healthCheck: normalizeHealthCheck(data.health_check),
     },
     extraListenAddrs: normalizeExtraListenAddrs(data.extra_listen_addrs),
+    enabled: normalizeEnabled(data.enabled),
   };
 }

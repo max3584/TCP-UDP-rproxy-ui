@@ -383,6 +383,32 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     expect((await call('delete', r)).status).toBe(200);
   });
 
+  // 一時停止すると rproxy から外れて待ち受けが閉じ、再開すると同じ内容で戻る（#63）
+  it('pauses and resumes a rule', async () => {
+    const port = listenPort + 12;
+    const r = { ...rule, srcPort: port };
+    expect((await call('add', r)).status).toBe(200);
+    expect(await echoThrough(port, 'a')).toBe('echo:a');
+
+    expect((await call('pause', r)).status).toBe(200);
+    await expect(echoThrough(port, 'b')).rejects.toThrow();
+    const paused = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(port) });
+    expect(paused.json).toMatchObject({ state: 'paused', enabled: false });
+    const stored = await withDb((c) => c.query('SELECT options FROM forward_rules WHERE src_port = ?', [port]));
+    const opts = typeof stored[0].options === 'string' ? JSON.parse(stored[0].options) : stored[0].options;
+    expect(opts).toMatchObject({ enabled: false });
+
+    // 停止中の変更は DB だけ（rproxy には作らない）
+    expect((await call('modify', { ...r, distPort: backendPort + 1 })).status).toBe(200);
+    await expect(echoThrough(port, 'c')).rejects.toThrow();
+
+    expect((await call('resume', r)).status).toBe(200);
+    expect(await echoThrough(port, 'd')).toBe('echo0:d');
+    expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(port) })).json.state).toBe('running');
+
+    expect((await call('delete', r)).status).toBe(200);
+  });
+
   it('deletes the range rule', async () => {
     expect((await call('delete', rangeRule)).status).toBe(200);
     expect((await call('list', undefined, 'GET')).json).toEqual([]);

@@ -24,6 +24,7 @@ import {
   normalizeAllowFrom,
   normalizeBalance,
   normalizeCrowdsec,
+  normalizeEnabled,
   normalizeExtraListenAddrs,
   normalizeHealthCheck,
   normalizeTargets,
@@ -250,6 +251,8 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     balance: balance,
     healthCheck: targets.length > 0 ? healthCheck : null,
     extraListenAddrs: normalizeExtraListenAddrs(body.extraListenAddrs, rule.srcAddr),
+    // 画面からの追加では送られない（有効）。インポートの停止中のルールだけ false
+    enabled: normalizeEnabled(body.enabled),
   };
 }
 
@@ -331,7 +334,12 @@ function options(rule: ForwardRule): string | null {
     targets: rule.targets,
     balance: rule.balance,
     healthCheck: rule.healthCheck,
-  }, extraAddrs(rule));
+  }, extraAddrs(rule), rule.enabled !== false);
+}
+
+// UI で一時停止中か（DB にだけあり、rproxy には作らない）
+function isPaused(rule: ForwardRule): boolean {
+  return rule.enabled === false;
 }
 
 // forward_rules の行（src_port_end と options を含む）をルールにする
@@ -356,6 +364,7 @@ function fromRow(row: any): ForwardRule {
     balance: opts.balancing.balance,
     healthCheck: opts.balancing.healthCheck,
     extraListenAddrs: opts.extraListenAddrs,
+    enabled: opts.enabled,
   };
 }
 
@@ -401,14 +410,14 @@ async function lockOwnRule(conn: PoolConnection, actor: Actor, key: ForwardRule,
 }
 
 // DB のルールに rproxy の稼働情報を付ける。status が undefined なら rproxy にない（missing）、
-// live が false なら rproxy に問い合わせできなかった（unknown）
+// live が false なら rproxy に問い合わせできなかった（unknown）。一時停止中なら paused
 function withLiveState(id: number, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined, owner?: string): ForwardRules {
   return {
     id: id,
     origin: 'dynamic',
     ...rule,
     ...(owner !== undefined ? { owner: owner } : {}),
-    state: !live ? 'unknown' : status ? status.state : 'missing',
+    state: isPaused(rule) ? 'paused' : !live ? 'unknown' : status ? status.state : 'missing',
     error: status?.error ?? null,
     connections: status?.connections ?? null,
     stats: status?.stats ?? null,
@@ -511,6 +520,8 @@ async function addForwardingRule(actor: Actor, rule: ForwardRule, logger: AppLog
       [owner, rule.protocol, rule.srcAddr, rule.srcPort, rule.srcPortEnd, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, options(rule)]
     );
     await insertLog(conn, authId, rule, 'ADD');
+    // 停止中のまま作る（インポートの停止中のルール）なら DB だけ
+    if (isPaused(rule)) return async () => undefined;
     await addRule(toRproxyRule(rule));
     return () => deleteRule(toKey(rule));
   });
@@ -572,6 +583,8 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given,
       ...balancing,
       ...(http !== null || balancing.targets.length > 0 ? { distAddr: '', distPort: 0 } : {}),
       extraListenAddrs: given.extraListenAddrs ? extraAddrs(rule) : extraAddrs(current),
+      // 停止・再開は pause / resume だけで変える（変更では今の状態を保つ）
+      enabled: current.enabled !== false,
     };
     try {
       // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
@@ -587,6 +600,8 @@ async function editForwardingRule(actor: Actor, rule: ForwardRule, given: Given,
     );
     // 履歴の auth_id は操作した利用者（admin がほかの人のルールを変えたときは admin）
     await insertLog(conn, actor.id, updated, 'UPDATE');
+    // 停止中のルールは DB だけを変える（再開のときにこの内容で作る）
+    if (isPaused(current)) return async () => undefined;
     try {
       await modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec, current.targets.length > 0, extraAddrs(current).length > 0));
     } catch (err) {
@@ -610,6 +625,8 @@ async function deleteForwardingRule(actor: Actor, key: ForwardRule, logger: AppL
       [...owner.params, key.protocol, key.srcAddr, key.srcPort]
     );
     await insertLog(conn, actor.id, current, 'DELETE');
+    // 停止中のルールは rproxy にないので DB だけ
+    if (isPaused(current)) return async () => undefined;
     try {
       await deleteRule(toKey(key));
     } catch (err) {
@@ -623,6 +640,50 @@ async function deleteForwardingRule(actor: Actor, key: ForwardRule, logger: AppL
       throw err;
     }
     return () => addRule(toRproxyRule(current));
+  });
+}
+
+// ---- 一時停止と再開 ----
+
+// 一時停止：DB に残したまま options に enabled: false を付け、rproxy から削除する（rproxy は起動時にもその行を作らない）
+async function pauseForwardingRule(actor: Actor, key: ForwardRule, logger: AppLogger): Promise<void> {
+  const owner = ownerClause(actor);
+  await withTransaction(logger, async (conn) => {
+    const current = await lockOwnRule(conn, actor, key, logger);
+    checkPorts(actor, current);
+    if (isPaused(current)) throw new HttpError(409, 'このルールは既に停止中です。', 'already_paused');
+    const paused: ForwardRule = { ...current, enabled: false };
+    await conn.query(
+      `UPDATE forward_rules SET options = ? WHERE ${owner.sql}protocol = ? AND src_addr = ? AND src_port = ?`,
+      [options(paused), ...owner.params, key.protocol, key.srcAddr, key.srcPort]
+    );
+    await insertLog(conn, actor.id, paused, 'UPDATE');
+    try {
+      await deleteRule(toKey(current));
+    } catch (err) {
+      // rproxy に既にない（missing）なら止まっているのと同じ
+      if (isNotFound(err)) return async () => undefined;
+      throw err;
+    }
+    return () => addRule(toRproxyRule(current));
+  });
+}
+
+// 再開：enabled の印を外し、DB の内容で rproxy に作る
+async function resumeForwardingRule(actor: Actor, key: ForwardRule, logger: AppLogger): Promise<void> {
+  const owner = ownerClause(actor);
+  await withTransaction(logger, async (conn) => {
+    const current = await lockOwnRule(conn, actor, key, logger);
+    checkPorts(actor, current);
+    if (!isPaused(current)) throw new HttpError(409, 'このルールは停止中ではありません。', 'not_paused');
+    const resumed: ForwardRule = { ...current, enabled: true };
+    await conn.query(
+      `UPDATE forward_rules SET options = ? WHERE ${owner.sql}protocol = ? AND src_addr = ? AND src_port = ?`,
+      [options(resumed), ...owner.params, key.protocol, key.srcAddr, key.srcPort]
+    );
+    await insertLog(conn, actor.id, resumed, 'UPDATE');
+    await addRule(toRproxyRule(resumed));
+    return () => deleteRule(toKey(resumed));
   });
 }
 
@@ -651,6 +712,8 @@ async function replaceForwardingRule(actor: Actor, rule: ForwardRule, logger: Ap
     await editForwardingRule(actor, rule, ALL_GIVEN, logger);
     return 'modified';
   }
+  // 置き換え（インポート・巻き戻し）でも停止・再開の状態は今のまま
+  rule = { ...rule, enabled: current.enabled !== false };
   await deleteForwardingRule(actor, rule, logger);
   try {
     await addForwardingRule(actor, rule, logger, ownerId);
@@ -1033,6 +1096,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const out = await revertToVersion(actor, req.body, logger);
         logger.info(`Reverted to history ${req.body?.id} (${out.result})`);
         return res.status(200).json(out);
+      } else if (query === 'pause') {
+        await pauseForwardingRule(actor, parseRule(req.body, true), logger);
+        logger.info('Forwarding rule paused');
+        return res.status(200).json({ message: 'Forwarding rule paused' });
+      } else if (query === 'resume') {
+        await resumeForwardingRule(actor, parseRule(req.body, true), logger);
+        logger.info('Forwarding rule resumed');
+        return res.status(200).json({ message: 'Forwarding rule resumed' });
       } else if (query === 'delete') {
         await deleteForwardingRule(actor, parseRule(req.body, true), logger);
         logger.info('Forwarding rule deleted successfully');

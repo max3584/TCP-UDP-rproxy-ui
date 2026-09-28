@@ -85,6 +85,8 @@ export function ruleChanges(prev: ForwardRule | null, next: ForwardRule | null):
   if (!same(prev.extraListenAddrs ?? [], next.extraListenAddrs ?? [])) {
     out.push(`追加の待ち受けアドレス: ${(prev.extraListenAddrs ?? []).join(', ') || '（なし）'} → ${(next.extraListenAddrs ?? []).join(', ') || '（なし）'}`);
   }
+  // 一時停止・再開（#63）
+  scalar('状態', prev.enabled === false ? '停止中' : '有効', next.enabled === false ? '停止中' : '有効');
   return out;
 }
 

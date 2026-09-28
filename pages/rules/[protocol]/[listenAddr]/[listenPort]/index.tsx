@@ -258,7 +258,25 @@ const RuleDetailPage: React.FC = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  useAutoRefresh(load, autoRefresh && rule !== null && !confirming);
+  const [confirmingPause, setConfirmingPause] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  useAutoRefresh(load, autoRefresh && rule !== null && !confirming && !confirmingPause);
+
+  // 一時停止（DB に残したまま rproxy から外す）と再開
+  const handlePauseResume = async (action: 'pause' | 'resume') => {
+    if (!rule) return;
+    setSwitching(true);
+    try {
+      await postRule(action, toRule(rule));
+      setConfirmingPause(false);
+      await load();
+    } catch (err) {
+      setError(`ルールの${action === 'pause' ? '停止' : '再開'}に失敗しました: ${err instanceof Error ? err.message : err}`);
+      setConfirmingPause(false);
+    } finally {
+      setSwitching(false);
+    }
+  };
 
   const handleDelete = async () => {
     if (!rule) return;
@@ -302,6 +320,9 @@ const RuleDetailPage: React.FC = () => {
         {rule && key && rule.origin !== 'static' && (
           <div className="flex gap-2">
             <Link href={ruleEditHref(key)} className="btn-primary">編集</Link>
+            {rule.state === 'paused'
+              ? <button type="button" className="btn-secondary" disabled={switching} onClick={() => void handlePauseResume('resume')}>{switching ? '再開中…' : '再開'}</button>
+              : <button type="button" className="btn-secondary" onClick={() => setConfirmingPause(true)}>一時停止</button>}
             <button type="button" className="btn-danger" onClick={() => setConfirming(true)}>削除</button>
           </div>
         )}
@@ -324,7 +345,8 @@ const RuleDetailPage: React.FC = () => {
                 ['状態', <StateBadge key="s" state={rule.state} />],
                 ['エラー', rule.error ? <span className="text-red-800">{rule.error}</span> : rule.state === 'missing'
                   ? <span className="text-amber-900">rproxy でこのルールが動いていません（編集して保存すると作り直します）。</span>
-                  : rule.state === 'unknown' ? <span className="text-gray-700">rproxy に接続できないため、稼働状態がわかりません。</span> : null],
+                  : rule.state === 'unknown' ? <span className="text-gray-700">rproxy に接続できないため、稼働状態がわかりません。</span>
+                  : rule.state === 'paused' ? <span className="text-gray-700">一時停止中です（設定は残したまま、rproxy では動かしていません。「再開」でこの内容のまま動かします）。</span> : null],
                 ['開始時刻', formatTimestamp(rule.startedAt)],
                 ['稼働時間', formatDuration(uptimeSecs(rule.startedAt, now))],
                 // 管理者（rproxy-admin）が見るときだけ付く
@@ -442,6 +464,18 @@ const RuleDetailPage: React.FC = () => {
         </Section>
       )}
 
+      <ConfirmDialog
+        open={confirmingPause}
+        title="ルールを一時停止しますか？"
+        confirmLabel="一時停止する"
+        busy={switching}
+        onConfirm={() => void handlePauseResume('pause')}
+        onCancel={() => setConfirmingPause(false)}
+      >
+        <p>
+          <span className="font-mono break-all">{title}</span> の転送を止めます。既存の接続は切断されます。設定は残り、「再開」でそのまま動かせます。
+        </p>
+      </ConfirmDialog>
       <ConfirmDialog
         open={confirming}
         title="ルールを削除しますか？"

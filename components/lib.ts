@@ -149,6 +149,8 @@ export interface ForwardRule {
   healthCheck: HealthCheck | null;
   // 同じポート（範囲）で追加で待ち受けるアドレス（IPv4 と IPv6 を同時に、など。rproxy v0.3.3。最大 16 件）。省略は []
   extraListenAddrs?: string[];
+  // false なら一時停止中（DB に残したまま rproxy から外している）。省略は true
+  enabled?: boolean;
 }
 
 export const MAX_EXTRA_LISTEN_ADDRS = 16;
@@ -156,8 +158,8 @@ export const MAX_EXTRA_LISTEN_ADDRS = 16;
 // dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）
 export type RuleOrigin = 'dynamic' | 'static';
 
-// missing: DB にはあるが rproxy にない / unknown: rproxy に問い合わせできなかった
-export type RuleState = 'running' | 'failed' | 'missing' | 'unknown';
+// missing: DB にはあるが rproxy にない / unknown: rproxy に問い合わせできなかった / paused: UI で一時停止中（DB にだけある）
+export type RuleState = 'running' | 'failed' | 'missing' | 'unknown' | 'paused';
 
 // rproxy がルールを開始してからの累計（rproxy の応答の stats をそのまま渡す）
 export interface RuleStats {
