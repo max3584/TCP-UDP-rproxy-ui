@@ -29,6 +29,7 @@ import {
 import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, StaticBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
 import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE } from '@/components/messages';
 import HttpSummary from '@/components/HttpSummary';
+import HistoryList from '@/components/HistoryList';
 
 // 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
 const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
@@ -432,6 +433,13 @@ const RuleDetailPage: React.FC = () => {
             </Section>
           </div>
         </>
+      )}
+
+      {/* 変更の履歴（#61）。固定ルールは DB にないので履歴もない */}
+      {key && !(rule && rule.origin === 'static') && (
+        <Section id="section-history" title="変更の履歴">
+          <HistoryList filter={{ protocol: key.protocol, addr: key.addr, port: key.port }} onReverted={() => void load()} />
+        </Section>
       )}
 
       <ConfirmDialog

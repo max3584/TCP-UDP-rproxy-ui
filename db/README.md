@@ -34,6 +34,7 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
     passthrough で既定値のまま、STARTTLS なし、allow_from なし、http なし、crowdsec なし、宛先が 1 つのルールは NULL を保存する。列の型は変わらないので、migration は不要。
   - rproxy の固定ルール（`--static-rules` のファイル）はこのテーブルに入らない。
 - `forward_rules_log`：追加・変更・削除の履歴。`update_action` は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者（`004` より前の行は NULL）。
+  各行はその操作のあとのルールの内容（`DELETE` は削除する前の内容）を持つので、UI の「変更の履歴」はこの行から前の版との違いを出し、「この版に戻す」でその内容に戻す（インポート・巻き戻しの操作も同じく記録する）。
 
 ## DB ユーザー
 

@@ -328,6 +328,61 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     }
   });
 
+  // エクスポート → 削除 → インポートで元に戻る。変更したあと、履歴から前の版に巻き戻せる（#60、#61）
+  it('restores a rule from its export and reverts a change from the history', async () => {
+    const port = listenPort + 9;
+    const r = { ...rule, srcPort: port };
+    expect((await call('add', r)).status).toBe(200);
+    expect(await echoThrough(port, 'a')).toBe('echo:a');
+
+    // エクスポート（自分のルール。範囲ルールも入っている）
+    const { default: handler } = await import('@/pages/api/forward/[forward]');
+    let exported = '';
+    const res = {
+      status() { return res; },
+      json() { return res; },
+      setHeader() { return res; },
+      send(body: string) { exported = body; return res; },
+    } as unknown as NextApiResponse;
+    await handler({ method: 'GET', query: { forward: 'export', format: 'yaml' } } as unknown as NextApiRequest, res);
+    expect(exported).toContain(`listen_port: ${port}`);
+
+    expect((await call('delete', r)).status).toBe(200);
+    await expect(echoThrough(port, 'b')).rejects.toThrow();
+
+    // 確かめる：消したルールは追加、残っている範囲ルールは「同じキーがある」
+    const preview = await call('import', { text: exported, dryRun: true });
+    expect(preview.status).toBe(200);
+    const statuses = Object.fromEntries(preview.json.items.map((i: { key: string; status: string }) => [i.key, i.status]));
+    expect(statuses[`tcp|127.0.0.1|${port}`]).toBe('new');
+    expect(statuses[`tcp|127.0.0.1|${rangePort}`]).toBe('exists');
+
+    const imported = await call('import', { text: exported });
+    const results = Object.fromEntries(imported.json.results.map((i: { key: string; result: string }) => [i.key, i.result]));
+    expect(results[`tcp|127.0.0.1|${port}`]).toBe('added');
+    expect(results[`tcp|127.0.0.1|${rangePort}`]).toBe('skipped');
+    expect(await echoThrough(port, 'c')).toBe('echo:c');
+
+    // 変更して、履歴から変更の前の版（インポートで追加した版）に戻す
+    expect((await call('modify', { ...r, distPort: backendPort + 1 })).status).toBe(200);
+    expect(await echoThrough(port, 'd')).toBe('echo0:d');
+    const history = await call('history', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(port) });
+    expect(history.status).toBe(200);
+    const [latest, added] = history.json.entries as { id: number; action: string; changes: string[] }[];
+    expect(latest.action).toBe('UPDATE');
+    expect(latest.changes.join(' ')).toContain(`127.0.0.1:${backendPort} → 127.0.0.1:${backendPort + 1}`);
+    expect(added.action).toBe('ADD');
+    const reverted = await call('revert', { id: added.id });
+    expect(reverted.status).toBe(200);
+    expect(reverted.json.result).toBe('modified');
+    expect(await echoThrough(port, 'e')).toBe('echo:e');
+    const after = await call('history', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(port) });
+    expect(after.json.entries[0].action).toBe('UPDATE');
+    expect(after.json.total).toBe(history.json.total + 1);
+
+    expect((await call('delete', r)).status).toBe(200);
+  });
+
   it('deletes the range rule', async () => {
     expect((await call('delete', rangeRule)).status).toBe(200);
     expect((await call('list', undefined, 'GET')).json).toEqual([]);

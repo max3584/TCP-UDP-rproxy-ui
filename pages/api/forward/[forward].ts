@@ -52,6 +52,8 @@ import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from 
 import mariadb, { PoolConnection } from 'mariadb';
 import { Access, RoleConfig, accessOf, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
+import { ExportFormat, exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
+import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
 
 // MariaDBのコネクションプールを作成
 function createPool() {
@@ -256,9 +258,6 @@ function hasExtraListenAddrs(body: any): boolean {
   return typeof body === 'object' && body !== null && body.extraListenAddrs !== undefined;
 }
 
-function extraAddrs(rule: ForwardRule): string[] {
-  return rule.extraListenAddrs ?? [];
-}
 
 // body に targets があるか（なければ変更の前の宛先・振り分け方・ヘルスチェックを保つ）
 function hasTargets(body: any): boolean {
@@ -307,43 +306,6 @@ async function withTransaction(logger: AppLogger, fn: (conn: PoolConnection) => 
   } finally {
     conn.release();
   }
-}
-
-// starttls / starttls_required は STARTTLS を使うときだけ付ける
-function starttlsFields(rule: ForwardRule) {
-  return rule.starttls !== null ? { starttls: rule.starttls, starttls_required: rule.starttlsRequired } : {};
-}
-
-// 転送先。http のルールは remote_addr / remote_port を書かず、http を付ける（書くと rproxy が invalid を返す）。
-// 宛先を複数にしたルールは targets と balance（・health_check）を付ける（rproxy v0.3.3）
-function remoteFields(rule: ForwardRule) {
-  if (rule.http !== null) return { http: rule.http };
-  if (rule.targets.length > 0) {
-    return {
-      targets: rule.targets,
-      balance: rule.balance,
-      ...(rule.healthCheck !== null ? { health_check: rule.healthCheck } : {}),
-    };
-  }
-  return { remote_addr: rule.distAddr, remote_port: rule.distPort };
-}
-
-function toRproxyRule(rule: ForwardRule): RproxyRule {
-  return {
-    protocol: rule.protocol,
-    listen_addr: rule.srcAddr,
-    listen_port: rule.srcPort,
-    ...(rule.srcPortEnd !== null ? { listen_port_end: rule.srcPortEnd } : {}),
-    ...remoteFields(rule),
-    source_ip: rule.sourceIp,
-    udp_idle_secs: rule.udpIdleSecs,
-    tls: rule.tls,
-    ...starttlsFields(rule),
-    ...(rule.allowFrom.length > 0 ? { allow_from: rule.allowFrom } : {}),
-    // 古い rproxy（v0.3.2 より前）は知らない項目を拒否するので、使うときだけ付ける
-    ...(rule.crowdsec ? { crowdsec: true } : {}),
-    ...(extraAddrs(rule).length > 0 ? { extra_listen_addrs: extraAddrs(rule) } : {}),
-  };
 }
 
 // PATCH では tls と allow_from を毎回付けて丸ごと置き換える（allow_from の [] はすべて許可に戻す）。
@@ -539,13 +501,14 @@ async function getForwardingRule(actor: Actor, query: NextApiRequest['query'], l
   return withLiveState(Number(rows[0].id), rule, live, status, actor.access === 'admin' ? String(rows[0].auth_id) : undefined);
 }
 
-async function addForwardingRule(actor: Actor, rule: ForwardRule, logger: AppLogger): Promise<void> {
+// owner：ルールの所有者（既定は操作した利用者。admin が巻き戻し・置き換えで作り直すときは元の所有者）
+async function addForwardingRule(actor: Actor, rule: ForwardRule, logger: AppLogger, owner: string = actor.id): Promise<void> {
   checkPorts(actor, rule);
   const authId = actor.id;
   await withTransaction(logger, async (conn) => {
     await conn.query(
       'INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [authId, rule.protocol, rule.srcAddr, rule.srcPort, rule.srcPortEnd, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, options(rule)]
+      [owner, rule.protocol, rule.srcAddr, rule.srcPort, rule.srcPortEnd, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, options(rule)]
     );
     await insertLog(conn, authId, rule, 'ADD');
     await addRule(toRproxyRule(rule));
@@ -663,6 +626,308 @@ async function deleteForwardingRule(actor: Actor, key: ForwardRule, logger: AppL
   });
 }
 
+// ---- 置き換え（インポートの「置き換える」と巻き戻しで使う） ----
+
+// PATCH では変えられない違い（rproxy と同じ制約）があれば、削除して作り直す
+function needsRecreate(current: ForwardRule, next: ForwardRule): boolean {
+  return current.sourceIp !== next.sourceIp
+    || current.srcPortEnd !== next.srcPortEnd
+    || (current.http === null) !== (next.http === null);
+}
+
+const ALL_GIVEN: Given = { range: true, allowFrom: true, http: true, crowdsec: true, targets: true, extraListenAddrs: true };
+
+// 同じキーのルール（自分の。admin ならだれのでも）を rule の内容で丸ごと置き換える。所有者は変えない
+async function replaceForwardingRule(actor: Actor, rule: ForwardRule, logger: AppLogger): Promise<'modified' | 'recreated'> {
+  const owner = ownerClause(actor);
+  const rows = await pool.query(
+    `SELECT auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE ${owner.sql}protocol = ? AND src_addr = ? AND src_port = ?`,
+    [...owner.params, rule.protocol, rule.srcAddr, rule.srcPort]
+  );
+  if (rows.length === 0) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
+  const current = fromRow(rows[0]);
+  const ownerId = String(rows[0].auth_id);
+  if (!needsRecreate(current, rule)) {
+    await editForwardingRule(actor, rule, ALL_GIVEN, logger);
+    return 'modified';
+  }
+  await deleteForwardingRule(actor, rule, logger);
+  try {
+    await addForwardingRule(actor, rule, logger, ownerId);
+  } catch (err) {
+    // 作れなかったら元のルールを戻す
+    await addForwardingRule(actor, current, logger, ownerId)
+      .catch((e) => logger.error(`置き換えに失敗し、元のルールも戻せませんでした（DB と rproxy から消えています）: ${e}`));
+    throw err;
+  }
+  return 'recreated';
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof HttpError || err instanceof RproxyError || err instanceof TlsError) return err.message;
+  if (isDuplicateEntry(err)) return '同じプロトコル・アドレス・ポートのルールが既に存在します。';
+  return err instanceof Error ? err.message : String(err);
+}
+
+// ---- エクスポート / インポート（#60） ----
+
+// GET /api/forward/export?format=yaml|json[&owner=]。利用者は自分のルール、admin はすべて（owner で絞れる）
+async function exportRules(actor: Actor, query: NextApiRequest['query']): Promise<{ body: string; format: ExportFormat; count: number }> {
+  const format: ExportFormat = queryString(query.format) === 'json' ? 'json' : 'yaml';
+  const ownerFilter = actor.access === 'admin' ? queryString(query.owner) : actor.id;
+  const rows = await pool.query(
+    `SELECT protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules${ownerFilter ? ' WHERE auth_id = ?' : ''} ORDER BY protocol, src_addr, src_port`,
+    ownerFilter ? [ownerFilter] : []
+  );
+  const rules: ForwardRule[] = rows.map(fromRow);
+  const header = `rproxy のルール（TCP-UDP-rproxy-ui からエクスポート。${new Date().toISOString()}、${rules.length} 件）\nrproxy の設定ファイル（RPROXY_CONFIG）と同じ形。UI の「インポート」で読み込める`;
+  return { body: formatDoc(exportDoc(rules), format, header), format: format, count: rules.length };
+}
+
+type ImportStatus = 'new' | 'exists' | 'error';
+
+interface ImportItem {
+  index: number;
+  // protocol|listen_addr|listen_port（読めなければ null）
+  key: string | null;
+  status: ImportStatus;
+  message?: string;
+  rule?: ForwardRule;
+}
+
+const MAX_IMPORT_RULES = 1000;
+
+// 読み込むルールを 1 件ずつ検証し、DB の今のルールと突き合わせる（まだ何も変えない）
+async function inspectImport(actor: Actor, text: unknown, logger: AppLogger): Promise<{ items: ImportItem[]; ignoredGlobal: boolean }> {
+  if (typeof text !== 'string' || text.trim() === '') throw invalid('読み込む内容（YAML / JSON）がありません。');
+  let doc;
+  try {
+    doc = parseDoc(text);
+  } catch (err) {
+    throw fromTlsError(err);
+  }
+  if (doc.rules.length > MAX_IMPORT_RULES) throw invalid(`一度に読み込めるルールは ${MAX_IMPORT_RULES} 件までです。`);
+
+  const rows = await pool.query('SELECT auth_id, protocol, src_addr, src_port FROM forward_rules');
+  const owners = new Map<string, string>(rows.map((r: any): [string, string] => [ruleKeyString(r.protocol, r.src_addr, Number(r.src_port)), String(r.auth_id)]));
+  let statics: Set<string> | null = null;
+  try {
+    statics = new Set((await listRules()).filter((r) => r.origin === 'static').map((r) => ruleKeyString(r.protocol, r.listen_addr, r.listen_port)));
+  } catch (err) {
+    logger.warn(`rproxy に固定ルールを問い合わせできません（固定ルールとの重なりは実行のときに rproxy が確かめます）: ${err}`);
+  }
+
+  const seen = new Set<string>();
+  const items = doc.rules.map((value, index): ImportItem => {
+    let rule: ForwardRule;
+    try {
+      rule = parseRule(settingsRuleToBody(value), false);
+      checkPorts(actor, rule);
+    } catch (err) {
+      const v = value as Record<string, unknown> | null;
+      const key = v && typeof v === 'object' && typeof v.protocol === 'string' && typeof v.listen_addr === 'string' && typeof v.listen_port === 'number'
+        ? ruleKeyString(v.protocol, v.listen_addr, v.listen_port) : null;
+      return { index: index, key: key, status: 'error', message: errorText(fromTlsError(err)) };
+    }
+    const key = ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort);
+    if (seen.has(key)) return { index: index, key: key, status: 'error', message: '同じキー（プロトコル・アドレス・ポート）のルールが、読み込む内容の中に 2 つあります。' };
+    seen.add(key);
+    if (statics?.has(key)) return { index: index, key: key, status: 'error', message: '同じキーの rproxy の固定ルールがあります（固定ルールは rproxy の設定ファイルで管理します）。' };
+    const owner = owners.get(key);
+    if (owner === undefined) return { index: index, key: key, status: 'new', rule: rule };
+    if (actor.access !== 'admin' && owner !== actor.id) {
+      return { index: index, key: key, status: 'error', message: '同じキーのルールをほかの利用者が使っています。' };
+    }
+    return { index: index, key: key, status: 'exists', rule: rule };
+  });
+  return { items: items, ignoredGlobal: doc.ignoredGlobal };
+}
+
+type ImportResult = 'added' | 'replaced' | 'skipped' | 'error';
+
+// POST /api/forward/import {text, dryRun?, replace?: [key, ...]}。
+// dryRun なら検証の結果だけを返す。実行では 1 件ずつ別のトランザクションで追加・置き換えし、途中で失敗しても成功した分は残す
+async function importRules(actor: Actor, body: any, logger: AppLogger) {
+  const { items, ignoredGlobal } = await inspectImport(actor, body?.text, logger);
+  const strip = (i: ImportItem) => ({ index: i.index, key: i.key, status: i.status, ...(i.message ? { message: i.message } : {}) });
+  if (body?.dryRun === true) return { ignoredGlobal: ignoredGlobal, items: items.map(strip) };
+
+  const replace = new Set<string>(Array.isArray(body?.replace) ? body.replace.filter((k: unknown): k is string => typeof k === 'string') : []);
+  const results: { index: number; key: string | null; result: ImportResult; message?: string }[] = [];
+  for (const item of items) {
+    if (item.status === 'error' || !item.rule) {
+      results.push({ index: item.index, key: item.key, result: 'error', ...(item.message ? { message: item.message } : {}) });
+      continue;
+    }
+    if (item.status === 'exists' && !replace.has(item.key ?? '')) {
+      results.push({ index: item.index, key: item.key, result: 'skipped' });
+      continue;
+    }
+    try {
+      if (item.status === 'new') {
+        await addForwardingRule(actor, item.rule, logger);
+        results.push({ index: item.index, key: item.key, result: 'added' });
+      } else {
+        await replaceForwardingRule(actor, item.rule, logger);
+        results.push({ index: item.index, key: item.key, result: 'replaced' });
+      }
+    } catch (err) {
+      logger.warn(`インポートの ${item.index + 1} 件目（${item.key}）に失敗しました: ${errorText(err)}`);
+      results.push({ index: item.index, key: item.key, result: 'error', message: errorText(err) });
+    }
+  }
+  const count = (r: ImportResult) => results.filter((x) => x.result === r).length;
+  logger.info(`インポート: 追加 ${count('added')} 件、置き換え ${count('replaced')} 件、スキップ ${count('skipped')} 件、失敗 ${count('error')} 件`);
+  return { ignoredGlobal: ignoredGlobal, results: results };
+}
+
+// ---- 履歴と巻き戻し（#61） ----
+
+const LOG_COLUMNS = ['id', 'auth_id', 'protocol', 'src_addr', 'src_port', 'src_port_end', 'dist_addr', 'dist_port', 'source_ip', 'udp_idle_secs', 'options', 'update_action', 'updated_at'];
+const LOG_SELECT = LOG_COLUMNS.map((c) => `l.${c}`).join(', ');
+
+// 古い行・壊れた options でも一覧は出す（内容は null）
+function logRule(row: any): ForwardRule | null {
+  try {
+    return fromRow(row);
+  } catch {
+    return null;
+  }
+}
+
+function toIso(value: unknown): string {
+  const d = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(d.getTime()) ? String(value) : d.toISOString();
+}
+
+// 利用者が見られる履歴：自分が操作した行と、今自分が持っているルールの行（admin はすべて）
+function historyScope(actor: Actor): { sql: string; params: string[] } {
+  if (actor.access === 'admin') return { sql: '', params: [] };
+  return {
+    sql: '(l.auth_id = ? OR EXISTS (SELECT 1 FROM forward_rules r WHERE r.auth_id = ? AND r.protocol = l.protocol AND r.src_addr = l.src_addr AND r.src_port = l.src_port))',
+    params: [actor.id, actor.id],
+  };
+}
+
+// GET /api/forward/history?protocol=&addr=&port=&user=&action=&from=&to=&page=&per_page=
+async function listHistory(actor: Actor, query: NextApiRequest['query']): Promise<HistoryPage> {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  const scope = historyScope(actor);
+  if (scope.sql) {
+    where.push(scope.sql);
+    params.push(...scope.params);
+  }
+  const protocol = queryString(query.protocol).toLowerCase();
+  if (protocol) {
+    if (protocol !== 'tcp' && protocol !== 'udp') throw invalid('プロトコルは tcp か udp を指定してください。');
+    where.push('l.protocol = ?');
+    params.push(protocol);
+  }
+  const addr = queryString(query.addr);
+  if (addr) {
+    if (isIP(addr) === 0) throw invalid('addr には IP アドレスを指定してください。');
+    where.push('l.src_addr = ?');
+    params.push(normalizeAddr(addr));
+  }
+  const portText = queryString(query.port);
+  if (portText) {
+    const port = /^[0-9]+$/.test(portText) ? Number(portText) : NaN;
+    if (!isPort(port)) throw invalid('ポート番号は1から65535の範囲で指定してください。');
+    where.push('l.src_port = ?');
+    params.push(port);
+  }
+  const user = queryString(query.user);
+  if (user && actor.access === 'admin') {
+    where.push('l.auth_id = ?');
+    params.push(user);
+  }
+  const action = queryString(query.action).toUpperCase();
+  if (action) {
+    if (!HISTORY_ACTIONS.includes(action as HistoryAction)) throw invalid('action は ADD / UPDATE / DELETE のどれかです。');
+    where.push('l.update_action = ?');
+    params.push(action);
+  }
+  const from = queryString(query.from);
+  if (from) {
+    if (!isDate(from)) throw invalid('from は YYYY-MM-DD で指定してください。');
+    where.push('l.updated_at >= ?');
+    params.push(`${from} 00:00:00`);
+  }
+  const to = queryString(query.to);
+  if (to) {
+    if (!isDate(to)) throw invalid('to は YYYY-MM-DD で指定してください。');
+    where.push('l.updated_at < DATE_ADD(?, INTERVAL 1 DAY)');
+    params.push(`${to} 00:00:00`);
+  }
+  const page = Math.max(1, Number.parseInt(queryString(query.page) || '1', 10) || 1);
+  const perPage = Math.min(100, Math.max(1, Number.parseInt(queryString(query.per_page) || '50', 10) || 50));
+  const whereSql = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+
+  const countRows = await pool.query(`SELECT COUNT(*) AS n FROM forward_rules_log l${whereSql}`, params);
+  const total = Number(countRows[0]?.n ?? 0);
+  const rows = await pool.query(
+    `SELECT ${LOG_SELECT} FROM forward_rules_log l${whereSql} ORDER BY l.id DESC LIMIT ? OFFSET ?`,
+    [...params, perPage, (page - 1) * perPage]
+  );
+
+  const entries: HistoryEntry[] = [];
+  for (const row of rows) {
+    const rule = logRule(row);
+    const act = String(row.update_action) as HistoryAction;
+    let changes: string[] = [];
+    if (act === 'UPDATE' && rule !== null) {
+      // 同じルールの 1 つ前の版（差分を作るためだけに読む）
+      const prev = await pool.query(
+        `SELECT ${LOG_SELECT} FROM forward_rules_log l WHERE l.protocol = ? AND l.src_addr = ? AND l.src_port = ? AND l.id < ? ORDER BY l.id DESC LIMIT 1`,
+        [row.protocol, row.src_addr, row.src_port, row.id]
+      );
+      changes = prev.length > 0 ? ruleChanges(logRule(prev[0]), rule) : [];
+    }
+    entries.push({
+      id: Number(row.id),
+      at: toIso(row.updated_at),
+      actor: row.auth_id === null || row.auth_id === undefined ? null : String(row.auth_id),
+      action: act,
+      protocol: String(row.protocol).toLowerCase(),
+      srcAddr: String(row.src_addr),
+      srcPort: Number(row.src_port),
+      rule: rule,
+      changes: changes,
+      revertible: rule !== null,
+    });
+  }
+  return { entries: entries, total: total, page: page, perPage: perPage };
+}
+
+// POST /api/forward/revert {id}：履歴の版の内容に戻す（あれば置き換え、削除されていれば作り直す）。巻き戻しも履歴に残る
+async function revertToVersion(actor: Actor, body: any, logger: AppLogger): Promise<{ result: 'added' | 'modified' | 'recreated' }> {
+  const id = body?.id;
+  if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) throw invalid('履歴の id を指定してください。');
+  const scope = historyScope(actor);
+  const rows = await pool.query(
+    `SELECT ${LOG_SELECT} FROM forward_rules_log l WHERE ${scope.sql ? `${scope.sql} AND ` : ''}l.id = ?`,
+    [...scope.params, id]
+  );
+  if (rows.length === 0) throw new HttpError(404, '履歴が見つかりません。', 'not_found');
+  const rule = logRule(rows[0]);
+  if (rule === null) throw invalid('この履歴の内容は読めないため、巻き戻せません。');
+  if (await findStaticRule(toKey(rule), logger)) throw staticRuleError();
+
+  const current = await pool.query(
+    'SELECT auth_id FROM forward_rules WHERE protocol = ? AND src_addr = ? AND src_port = ?',
+    [rule.protocol, rule.srcAddr, rule.srcPort]
+  );
+  if (current.length === 0) {
+    await addForwardingRule(actor, rule, logger);
+    return { result: 'added' };
+  }
+  if (actor.access !== 'admin' && String(current[0].auth_id) !== actor.id) {
+    throw new HttpError(403, '同じキーのルールをほかの利用者が使っているため、巻き戻せません。', 'forbidden_owner');
+  }
+  return { result: await replaceForwardingRule(actor, rule, logger) };
+}
+
 function isDuplicateEntry(err: unknown): boolean {
   return typeof err === 'object' && err !== null && ((err as any).errno === 1062 || (err as any).code === 'ER_DUP_ENTRY');
 }
@@ -727,6 +992,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const data = await listForwardingRules(actor, logger, true);
       return res.status(200).json(data);
     }
+    if (req.method === 'GET' && query === 'export') {
+      const out = await exportRules(actor, req.query);
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      res.setHeader('Content-Type', out.format === 'json' ? 'application/json; charset=utf-8' : 'application/yaml; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="rproxy-rules-${date}.${out.format === 'json' ? 'json' : 'yaml'}"`);
+      logger.info(`Exported ${out.count} rules`);
+      return res.status(200).send(out.body);
+    }
+    if (req.method === 'GET' && query === 'history') {
+      const page = await listHistory(actor, req.query);
+      return res.status(200).json(page);
+    }
     if (req.method === 'GET' && query === 'rule') {
       // 先に取得してから status を呼ぶ（失敗したら sendError がステータスを決める）
       const rule = await getForwardingRule(actor, req.query, logger);
@@ -749,6 +1026,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }, logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json({ message: 'Forwarding rule modified successfully' });
+      } else if (query === 'import') {
+        const out = await importRules(actor, req.body, logger);
+        return res.status(200).json(out);
+      } else if (query === 'revert') {
+        const out = await revertToVersion(actor, req.body, logger);
+        logger.info(`Reverted to history ${req.body?.id} (${out.result})`);
+        return res.status(200).json(out);
       } else if (query === 'delete') {
         await deleteForwardingRule(actor, parseRule(req.body, true), logger);
         logger.info('Forwarding rule deleted successfully');
