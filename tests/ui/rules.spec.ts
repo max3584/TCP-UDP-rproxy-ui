@@ -65,6 +65,14 @@ test.describe('rules from the UI', () => {
     await expect(page.getByText('稼働中').first()).toBeVisible();
     await expect.poll(() => through(LISTEN_PORT, 'hi').catch((e) => String(e))).toBe('A:hi');
 
+    // the dashboard lists it by port, with the address in the link's title
+    await page.goto('/');
+    const row = page.locator(`a[href="/rules/tcp/127.0.0.1/${LISTEN_PORT}"]`);
+    await expect(row).toHaveText(String(LISTEN_PORT));
+    await expect(row).toHaveAttribute('title', new RegExp(`127\\.0\\.0\\.1:${LISTEN_PORT}`));
+    await row.click();
+    await expect(page).toHaveURL(new RegExp(`/rules/tcp/127\\.0\\.0\\.1/${LISTEN_PORT}$`));
+
     // change the target
     await page.getByRole('link', { name: '編集' }).click();
     await expect(page).toHaveURL(/\/edit$/);
@@ -79,7 +87,8 @@ test.describe('rules from the UI', () => {
     await page.getByRole('button', { name: '削除する' }).click();
     await expect(page).toHaveURL(/\/$/);
     await expect.poll(() => through(LISTEN_PORT, 'hi').then(() => 'open', () => 'closed')).toBe('closed');
-    await expect(page.getByText(`:${LISTEN_PORT}`)).toHaveCount(0);
+    // the list shows only the port, so look for the rule's link instead of the address text
+    await expect(page.locator(`a[href="/rules/tcp/127.0.0.1/${LISTEN_PORT}"]`)).toHaveCount(0);
   });
 
   // L7（HTTP）のルールをフォームで作り、転送先のサービスを変え、削除する

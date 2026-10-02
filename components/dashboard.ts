@@ -4,6 +4,7 @@ import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames } from './lib';
 import type { Balance, CertRole, CertState, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
+import { hostsOfMatch } from './httpspec';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
 
@@ -282,6 +283,8 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
     ...(rule.http === null ? [rule.distAddr, `${rule.distAddr}:${targetPortsLabel(rule)}`] : ['L7 (HTTP)']),
     ...(rule.targets ?? []).flatMap((t) => [t.addr, targetHostPort(t, rule)]),
     ...(rule.tls.routes ?? []).flatMap((r) => [...routeNames(r), r.remote_addr]),
+    // L7 のルートの Host(...) の名前（一覧には代表の 1 つしか出さないので、ほかの名前でも探せるように）
+    ...l7Hosts(rule.http),
   ];
   return haystack.some((h) => h.toLowerCase().includes(q));
 }
@@ -359,6 +362,57 @@ export function listenLabel(rule: Pick<ForwardRule, 'srcAddr' | 'srcPort' | 'src
   const main = hostPort(rule.srcAddr, portsLabel(rule.srcPort, rule.srcPortEnd));
   const extra = rule.extraListenAddrs ?? [];
   return extra.length === 0 ? main : `${main} ほか ${extra.length} 件（${extra.join(', ')}）`;
+}
+
+// 一覧の待ち受け：ポートだけ（範囲は 2000-11999）。アドレスは詳細画面と、マウスを乗せたときの listenLabel で出す
+export function listenPortLabel(rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd'>): string {
+  return portsLabel(rule.srcPort, rule.srcPortEnd);
+}
+
+type HttpRoute = { name?: unknown; match?: unknown };
+
+function httpRoutes(http: HttpSpec | null | undefined): HttpRoute[] {
+  const routes = http?.routes;
+  return Array.isArray(routes) ? routes.filter((r): r is HttpRoute => typeof r === 'object' && r !== null) : [];
+}
+
+// L7 のルートの Host(...) の名前（ルートを書いた順）
+export function l7Hosts(http: HttpSpec | null | undefined): string[] {
+  return httpRoutes(http).flatMap((r) => (typeof r.match === 'string' ? hostsOfMatch(r.match) : []));
+}
+
+// 一覧に出す代表の宛先名を 1 つ。
+// L7：最初のルートの Host(...) → passthrough の route の名前 → ルートの名前 → サービスの名前。
+// L4：最初の宛先（複数の宛先）か転送先のアドレス → サーバ名ごとの転送先の名前。どれもなければ null
+export function representativeHost(
+  rule: Pick<ForwardRule, 'distAddr' | 'http' | 'tls'> & Partial<Pick<ForwardRule, 'targets'>>,
+): string | null {
+  const passthroughName = (rule.tls.routes ?? []).filter((r) => r.passthrough).flatMap(routeNames)[0];
+  const anyRouteName = (rule.tls.routes ?? []).flatMap(routeNames)[0];
+  if (rule.http !== null && rule.http !== undefined) {
+    const host = l7Hosts(rule.http)[0];
+    if (host) return host;
+    if (passthroughName) return passthroughName;
+    const routeName = httpRoutes(rule.http).map((r) => r.name).find((n): n is string => typeof n === 'string' && n !== '');
+    if (routeName) return routeName;
+    const services = rule.http.services;
+    const service = typeof services === 'object' && services !== null ? Object.keys(services)[0] : undefined;
+    return service ?? null;
+  }
+  const first = (rule.targets ?? [])[0]?.addr ?? (rule.distAddr !== '' ? rule.distAddr : undefined);
+  return first ?? anyRouteName ?? null;
+}
+
+// 一覧の転送先：代表の名前 1 つと、小さく添える補足（「ほか 2 件」「ルート 3 件」）。全部は targetLabel（詳細画面・ツールチップ）
+export function listTarget(
+  rule: Pick<ForwardRule, 'srcPort' | 'srcPortEnd' | 'distAddr' | 'distPort' | 'http' | 'tls'> & Partial<Pick<ForwardRule, 'targets' | 'balance'>>,
+): { name: string; note: string | null } {
+  const name = representativeHost(rule);
+  if (rule.http !== null && rule.http !== undefined) {
+    return { name: name ?? 'L7 (HTTP)', note: `L7 ・ルート ${httpRouteCount(rule.http)} 件` };
+  }
+  const targets = rule.targets ?? [];
+  return { name: name ?? '-', note: targets.length > 1 ? `ほか ${targets.length - 1} 件` : null };
 }
 
 // L7 の設定（http）のルートの数。routes が配列でなければ 0

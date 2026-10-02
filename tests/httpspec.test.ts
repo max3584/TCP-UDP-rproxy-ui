@@ -10,6 +10,7 @@ import {
   redirectHttp,
   toHttpRules,
   validateHttp,
+  hostsOfMatch,
 } from '@/components/httpspec';
 import HttpEditor from '@/components/HttpEditor';
 import HttpSummary from '@/components/HttpSummary';
@@ -162,5 +163,14 @@ describe('HttpEditor and the L7 parts of RuleForm', () => {
   it('offers L7 profiles for HTTPS and the port 80 redirect', () => {
     const l7 = PROFILES.filter((p) => p.l7 !== undefined).map((p) => [p.id, p.srcPort, p.tlsMode, p.l7]);
     expect(l7).toEqual([['https-l7', 443, 'terminate', 'proxy'], ['http-redirect', 80, 'passthrough', 'redirect']]);
+  });
+});
+
+describe('hostsOfMatch', () => {
+  it('collects Host(...) names in order, skipping negated ones and broken expressions', () => {
+    expect(hostsOfMatch('Host(`a.test`, "b.test") && PathPrefix(`/x`) || Host(`c.test`)')).toEqual(['a.test', 'b.test', 'c.test']);
+    expect(hostsOfMatch('!Host(`a.test`) && Host(`b.test`)')).toEqual(['b.test']);
+    expect(hostsOfMatch('PathPrefix(`/`)')).toEqual([]);
+    expect(hostsOfMatch('Host(`a.test`')).toEqual([]);
   });
 });

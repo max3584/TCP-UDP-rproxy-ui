@@ -17,6 +17,9 @@ import {
   hostPort,
   httpRouteRows,
   listenLabel,
+  listenPortLabel,
+  listTarget,
+  representativeHost,
   mergeStaticRules,
   needsAttention,
   parseRuleKey,
@@ -444,5 +447,52 @@ describe('badges', () => {
   it('shows DTLS and STARTTLS', () => {
     expect(renderToStaticMarkup(createElement(TlsBadge, { rule: sample[4] }))).toContain('DTLS 終端');
     expect(renderToStaticMarkup(createElement(TlsBadge, { rule: sample[1] }))).toContain('STARTTLS smtp');
+  });
+});
+
+describe('list labels: port and one representative name', () => {
+  it('shows only the port (range) for the listen side; addresses stay in listenLabel', () => {
+    const r = rule({ srcPort: 2000, srcPortEnd: 11999, extraListenAddrs: ['::'] });
+    expect(listenPortLabel(r)).toBe('2000-11999');
+    expect(listenPortLabel(rule())).toBe('443');
+    expect(listenLabel(r)).toContain('::');
+  });
+
+  it('L4: the first target name, with "ほか N 件" for more', () => {
+    expect(listTarget(rule({ distAddr: 'db1.home' }))).toEqual({ name: 'db1.home', note: null });
+    const targets = [{ addr: 'db1.home', port: 5432 }, { addr: 'db2.home', port: 5432 }, { addr: '10.0.0.3', port: 5432 }];
+    expect(listTarget(rule({ distAddr: '', distPort: 0, targets: targets, balance: 'least_conn' }))).toEqual({ name: 'db1.home', note: 'ほか 2 件' });
+    // an IP when there is no name
+    expect(listTarget(rule())).toEqual({ name: '10.0.0.5', note: null });
+  });
+
+  it('L7: the first Host(...) of the routes, then passthrough names, route names, services', () => {
+    const http = {
+      routes: [
+        { name: 'api', match: 'PathPrefix(`/api`) && Host(`gitlab.example.com`, `git.example.com`)', service: 's' },
+        { name: 'cdn', match: 'Host(`cdn.example.com`)', service: 's' },
+      ],
+      services: { s: { servers: [{ url: 'http://10.0.0.20' }] } },
+    };
+    const l7 = rule({ distAddr: '', distPort: 0, http: http, tls: { mode: 'terminate' } });
+    expect(listTarget(l7)).toEqual({ name: 'gitlab.example.com', note: 'L7 ・ルート 2 件' });
+    // negated hosts are not representative
+    expect(representativeHost(rule({ distAddr: '', http: { routes: [{ name: 'x', match: '!Host(`a.test`) && Host(`b.test`)' }] } }))).toBe('b.test');
+    // no Host(): a passthrough route name, then the route name, then a service name
+    const pt = rule({
+      distAddr: '', http: { routes: [{ name: 'all', match: 'PathPrefix(`/`)' }] },
+      tls: { mode: 'terminate', routes: [{ server_names: ['registry.example.com', '**.tenant.example.com'], remote_addr: '10.0.1.10', remote_port: 443, passthrough: true }] },
+    });
+    expect(representativeHost(pt)).toBe('registry.example.com');
+    expect(representativeHost(rule({ distAddr: '', http: { routes: [{ name: 'all', match: 'PathPrefix(`/`)' }] } }))).toBe('all');
+    expect(representativeHost(rule({ distAddr: '', http: { routes: [], services: { web: {} } } }))).toBe('web');
+    expect(listTarget(rule({ distAddr: '', http: {} }))).toEqual({ name: 'L7 (HTTP)', note: 'L7 ・ルート 0 件' });
+  });
+
+  it('search still finds hidden addresses and the other L7 host names', () => {
+    const http = { routes: [{ name: 'a', match: 'Host(`a.example.com`)' }, { name: 'b', match: 'Host(`b.example.com`)' }] };
+    const rules = [rule({ extraListenAddrs: ['2001:db8::5'] }), rule({ distAddr: '', http: http })];
+    expect(filterRules(rules, { protocol: 'all', state: 'all', text: '2001:db8::5' })).toHaveLength(1);
+    expect(filterRules(rules, { protocol: 'all', state: 'all', text: 'b.example' })).toHaveLength(1);
   });
 });

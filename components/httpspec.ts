@@ -154,6 +154,27 @@ function tokenize(src: string): Token[] {
   return out;
 }
 
+// 式の中の Host(...) に書かれた名前（書いた順。! で否定されたものは除く）。式が壊れていれば空
+export function hostsOfMatch(src: string): string[] {
+  if (checkMatch(src) !== null) return [];
+  let tokens: Token[];
+  try {
+    tokens = tokenize(src);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok.t !== 'ident' || tok.v !== 'Host' || tokens[i + 1]?.t !== '(') continue;
+    if (tokens[i - 1]?.t === '!') continue;
+    for (let j = i + 2; j < tokens.length && tokens[j].t !== ')'; j++) {
+      if (tokens[j].t === 'str' && tokens[j].v) out.push(tokens[j].v as string);
+    }
+  }
+  return out;
+}
+
 // 式の誤りを日本語で返す（正しければ null）。正規表現と CIDR の中身までは確かめない（rproxy が確かめる）
 export function checkMatch(src: string): string | null {
   if (src.trim() === '') return 'match を入力してください。';
