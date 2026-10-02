@@ -18,6 +18,8 @@ import {
   formatDuration,
   hostPort,
   listenLabel,
+  listenPortLabel,
+  listTarget,
   certProblem,
   needsAttention,
   portsLabel,
@@ -32,6 +34,17 @@ import {
 } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
 import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
+
+// 一覧の転送先：代表の名前 1 つ（全部はマウスを乗せたときと詳細画面）
+const TargetName: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
+  const { name, note } = listTarget(rule);
+  return (
+    <span title={targetLabel(rule)}>
+      <span className="font-mono text-gray-900 break-all">{name}</span>
+      {note && <span className="ml-1 text-xs text-gray-600">{note}</span>}
+    </span>
+  );
+};
 
 const StatTile: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({ label, value, sub }) => (
   <div className="card p-4">
@@ -164,11 +177,11 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
               <CertBadge state={worstCertState(r)} />
             </div>
             <div className="min-w-0 flex-1 text-sm">
-              <Link href={ruleHref(ruleKeyOf(r))} className="link font-mono break-all">
-                {listenLabel(r)}
+              <Link href={ruleHref(ruleKeyOf(r))} className="link font-mono break-all" title={listenLabel(r)}>
+                {listenPortLabel(r)}
               </Link>
               <span className="text-gray-600"> → </span>
-              <span className="font-mono text-gray-800 break-all">{targetLabel(r)}</span>
+              <TargetName rule={r} />
               <p className="text-xs text-red-800 break-all mt-0.5">
                 {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certProblem(r) ?? '')}
               </p>
@@ -273,8 +286,8 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () =
                   <td><StateBadge state={r.state} /></td>
                   <td className="uppercase">{r.protocol}</td>
                   <td className="font-mono whitespace-nowrap">
-                    <Link href={href} className="link" onClick={(e) => e.stopPropagation()}>
-                      {listenLabel(r)}
+                    <Link href={href} className="link" title={listenLabel(r)} onClick={(e) => e.stopPropagation()}>
+                      {listenPortLabel(r)}
                     </Link>
                     {(r.origin === 'static' || r.allowFrom.length > 0) && (
                       <div className="mt-0.5 flex gap-1 font-sans">
@@ -289,8 +302,8 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () =
                       </div>
                     )}
                   </td>
-                  <td className="font-mono whitespace-nowrap">
-                    {targetLabel(r)}
+                  <td className="whitespace-nowrap">
+                    <TargetName rule={r} />
                     {routes > 0 && <div className="text-xs text-gray-600 font-sans">＋サーバ名ごとの転送先 {routes} 件</div>}
                   </td>
                   <td><TlsBadge rule={r} /></td>
