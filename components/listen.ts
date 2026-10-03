@@ -1,6 +1,7 @@
 // 待ち受けアドレスの選択肢と、rproxy 自身が使うアドレスとの重なりの判定（tests/listen.test.ts）
 
 import type { Protocol } from './lib';
+import { translate } from '@/i18n/core';
 
 export interface NetInterface {
   name: string;
@@ -38,7 +39,7 @@ export function listenOptions(info: InterfacesInfo | null): ListenOption[] {
     Number(a.loopback) - Number(b.loopback) || (a.family === b.family ? 0 : a.family === 'ipv4' ? -1 : 1) || a.name.localeCompare(b.name));
   for (const i of sorted) {
     if (options.some((o) => o.value === i.addr)) continue;
-    options.push({ value: i.addr, label: `${i.name} — ${i.addr}${i.loopback ? '（ループバック）' : ''}` });
+    options.push({ value: i.addr, label: `${i.name} — ${i.addr}${i.loopback ? translate('（ループバック）') : ''}` });
   }
   return options;
 }

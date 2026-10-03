@@ -131,3 +131,20 @@ export function t(text: string, params?: Record<string, string | number>): strin
   if (params) out = out.replace(/\{(\w+)\}/g, (all, k) => (k in params ? String(params[k]) : all));
   return out;
 }
+
+// 同じ日本語でも場面で訳が違う語（「有効」は証明書なら Valid、機能のオン・オフやルールの状態なら Enabled）。
+// 辞書のキーは「文言|場面」（場面は英字。extract.mjs が tc('文言', '場面') から取り出す）。場面の訳がなければ文言だけで引く
+export function tc(text: string, context: string, locale: Locale = getLocale()): string {
+  if (locale === 'ja') return text;
+  return exact.get(`${normalize(text)}|${context}`) ?? translate(text, locale);
+}
+
+// 語句を並べる。それぞれを訳し、日本語は「、」（sep で変えられる）、英語は ", " でつなぐ
+export function joinList(parts: readonly string[], sep = '、', locale: Locale = getLocale()): string {
+  return parts.map((p) => translate(p, locale)).join(locale === 'en' ? ', ' : sep);
+}
+
+// 文を並べる。それぞれを訳し、日本語はそのまま、英語は文と文の間に空白を入れてつなぐ
+export function joinSentences(parts: readonly string[], locale: Locale = getLocale()): string {
+  return parts.map((p) => translate(p, locale)).join(locale === 'en' ? ' ' : '');
+}

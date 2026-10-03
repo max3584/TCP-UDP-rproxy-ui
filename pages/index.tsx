@@ -32,7 +32,7 @@ import {
   tlsBreakdown,
   uptimeSecs, ConfigStatusView } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
-import { t } from '@/i18n/core';
+import { joinList, t, translate } from '@/i18n/core';
 import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
 
 // 一覧の転送先：代表の名前 1 つ（全部はマウスを乗せたときと詳細画面）
@@ -142,7 +142,7 @@ const TlsCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => {
       <div
         className="flex h-3 w-full overflow-hidden rounded bg-gray-200"
         role="img"
-        aria-label={TLS_SEGMENTS.map((s) => `${s.label} ${b[s.key]}`).join('、')}
+        aria-label={joinList(TLS_SEGMENTS.map((s) => `${s.label} ${b[s.key]}`))}
       >
         {total > 0 && TLS_SEGMENTS.map((s) => (b[s.key] > 0 ? (
           <div key={s.key} style={{ width: `${(b[s.key] / total) * 100}%`, background: s.color }} />
@@ -210,7 +210,8 @@ const PauseResumeButton: React.FC<{ rule: ForwardRules; onDone: () => void; onEr
       await postRule(paused ? 'resume' : 'pause', rule);
       onDone();
     } catch (err) {
-      onError(`ルールの${paused ? '再開' : '停止'}に失敗しました: ${err instanceof Error ? err.message : err}`);
+      const detail = err instanceof Error ? err.message : String(err);
+      onError(paused ? `ルールの再開に失敗しました: ${detail}` : `ルールの停止に失敗しました: ${detail}`);
     } finally {
       setBusy(false);
     }
@@ -440,7 +441,7 @@ const DashboardPage: React.FC = () => {
               sub={reachable ? '稼働状態を取得しました' : <span className="break-all">{data.rproxyError ?? '稼働状態を取得できません'}</span>}
             />
             <StatTile label="ルール" value={formatCount(summary.all.total)}
-              sub={`TCP ${summary.tcp.counts.total} / UDP ${summary.udp.counts.total}${summary.staticRules > 0 ? `（うち固定 ${summary.staticRules}）` : ''}`} />
+              sub={`TCP ${summary.tcp.counts.total} / UDP ${summary.udp.counts.total}${summary.staticRules > 0 ? translate(`（うち固定 ${summary.staticRules}）`) : ''}`} />
             <StatTile label="稼働中" value={<span className="text-green-700">{formatCount(summary.all.running)}</span>}
               sub={`失敗 ${summary.all.failed} / 未登録 ${summary.all.missing} / 不明 ${summary.all.unknown}`} />
             <StatTile label="現在の接続" value={reachable ? formatCount(summary.connections) : '-'} sub="UDP はセッション数" />

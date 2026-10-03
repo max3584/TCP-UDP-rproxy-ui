@@ -3,6 +3,7 @@
 
 import { Balance, DEFAULT_BALANCE, HealthCheck, Protocol, Target, TargetStats } from './lib';
 import { Balancing, checkBalancing, normalizeHealthCheck, normalizeTargets } from './tls';
+import { joinList } from '@/i18n/core';
 
 export const BALANCE_HELP: Record<Balance, string> = {
   round_robin: '重みの比率で順番に回します。',
@@ -83,12 +84,12 @@ export function targetStatus(targets: Target[], stats: TargetStats[] | undefined
   return null;
 }
 
-// ヘルスチェックの表示（「10s ごと、タイムアウト 3s、ポート 5432」）
+// ヘルスチェックの表示（「10s ごと、タイムアウト 3s、ポート 5432」。英語は語句ごとに訳して ", " でつなぐ）
 export function healthCheckLabel(hc: HealthCheck | null): string {
   if (hc === null) return '使わない（接続の失敗だけで判定）';
-  return [
-    `${hc.interval ?? '既定の間隔'}ごと`,
-    `タイムアウト ${hc.timeout ?? '既定'}`,
+  return joinList([
+    hc.interval !== undefined ? `${hc.interval}ごと` : '既定の間隔ごと',
+    hc.timeout !== undefined ? `タイムアウト ${hc.timeout}` : 'タイムアウト 既定',
     hc.port !== undefined ? `ポート ${hc.port}` : '各宛先のポート',
-  ].join('、');
+  ]);
 }

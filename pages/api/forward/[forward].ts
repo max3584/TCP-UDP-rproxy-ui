@@ -52,6 +52,7 @@ import { mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
 import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
 import { localizedApi } from '@/i18n/server';
+import { translate } from '@/i18n/core';
 import { Access, RoleConfig, accessOf, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
 import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
@@ -274,7 +275,7 @@ function parseHttp(value: unknown, protocol: Protocol): HttpSpec | null {
   if (http === null) return null;
   if (protocol !== 'tcp') throw invalid('L7（HTTP）は TCP のルールでだけ使えます（HTTP/3 は同じルールの http3 で有効にします）。');
   const errors = validateHttp(toHttpRules(http));
-  if (errors.length > 0) throw invalid(errors.join(' '));
+  if (errors.length > 0) throw invalid(errors.map((e) => translate(e)).join(' '));
   return http;
 }
 

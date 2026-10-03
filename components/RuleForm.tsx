@@ -32,6 +32,7 @@ import TargetsEditor from './TargetsEditor';
 import { EMPTY_ROW, HealthCheckRow, TargetRow, buildBalancing, toHealthCheckRow, toRows } from './targets';
 import { Balancing, NO_BALANCING } from './tls';
 import { hostPort, http3PortConflicts } from './dashboard';
+import { joinList } from '@/i18n/core';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -821,8 +822,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         {http3Conflicts.length > 0 && (
           <p className="-mt-3 mb-4 text-xs rounded border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1" data-testid="http3-conflict">
             {protocol === 'udp'
-              ? `同じアドレス・ポートで HTTP/3（QUIC）を受ける L7 のルールがあります（${http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`).join('、')}）。UDP の同じポートは併用できないので、rproxy に断られます。L7 のルールの HTTP/3 を外すか、別のポートを選んでください。`
-              : `同じアドレス・ポートの UDP のルールがあります（${http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`).join('、')}）。HTTP/3（QUIC）は同じポートの UDP を使うので、HTTP/3 を有効にすると rproxy に断られます。`}
+              ? `同じアドレス・ポートで HTTP/3（QUIC）を受ける L7 のルールがあります（${joinList(http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`))}）。UDP の同じポートは併用できないので、rproxy に断られます。L7 のルールの HTTP/3 を外すか、別のポートを選んでください。`
+              : `同じアドレス・ポートの UDP のルールがあります（${joinList(http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`))}）。HTTP/3（QUIC）は同じポートの UDP を使うので、HTTP/3 を有効にすると rproxy に断られます。`}
           </p>
         )}
         {!editMode && srcPortEnd !== '' && (
@@ -1060,7 +1061,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               {protocol === 'udp' && <p className={helpClass}>DTLS の秘密鍵は PKCS#8（-----BEGIN PRIVATE KEY-----）に限ります。</p>}
               {tlsOptions && (
                 <p className={helpClass} data-testid="tls-options-note">
-                  TLS のオプション（{[tlsOptions.min_version && `最小バージョン ${tlsOptions.min_version}`, tlsOptions.cipher_suites && `暗号スイート ${tlsOptions.cipher_suites.length} 件`].filter(Boolean).join('、')}）はこのフォームでは編集できません（そのまま保たれます）。
+                  TLS のオプション（{joinList([tlsOptions.min_version && `最小バージョン ${tlsOptions.min_version}`, tlsOptions.cipher_suites && `暗号スイート ${tlsOptions.cipher_suites.length} 件`].filter((s): s is string => Boolean(s)))}）はこのフォームでは編集できません（そのまま保たれます）。
                 </p>
               )}
             </fieldset>
