@@ -11,6 +11,18 @@ English: [README.en.md](README.en.md)
 [rproxy-api](https://github.com/max3584/rproxy-api) の転送ルールを管理する Web UI（Next.js、Keycloak でサインイン、ルールは MariaDB に保存）。
 バージョンは rproxy-api と同じ番号で出す（UI の vX.Y.Z は rproxy-api の vX.Y.Z と組み合わせる。docs/RELEASING.md）。
 
+## 画面
+
+![ダッシュボード（TCP / UDP の件数と状態、要確認のルール、全ルールの表）](docs/images/dashboard.ja.png)
+
+| ルールの詳細（L7 のルート・統計） | ルールの追加（L7 (HTTP) のタブ） |
+|---|---|
+| ![ルールの詳細](docs/images/rule-detail.ja.png) | ![ルールの追加](docs/images/rule-new.ja.png) |
+| **変更の履歴** | **スマホの幅（375px）とメニュー** |
+| ![変更の履歴](docs/images/history.ja.png) | <img src="docs/images/mobile-dashboard.ja.png" width="48%" alt="スマホの幅のダッシュボード"> <img src="docs/images/mobile-menu.ja.png" width="48%" alt="開いたメニュー"> |
+
+中のデータは文書用のサンプル（192.0.2.0/24・198.51.100.0/24・2001:db8::/32・example.com）。撮り直すには `npm run build && npm run screenshots`（`scripts/screenshots/`。API をサンプルのデータに差し替えるので、MariaDB・rproxy-api・Keycloak は要らない）。
+
 ## インストール（Debian / Ubuntu）
 
 rproxy-api と同じ apt リポジトリから入れられる（`rproxy-ui`、CPU を問わない 1 つのパッケージ）。
