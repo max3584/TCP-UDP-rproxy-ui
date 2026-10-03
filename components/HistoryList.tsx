@@ -5,6 +5,7 @@ import type { Protocol } from './lib';
 import { ACTION_LABELS, HistoryEntry, HistoryFilter, HistoryPage, historyQuery } from './history';
 import { hostPort, portsLabel, ruleHref } from './dashboard';
 import { ConfirmDialog, ErrorBanner, errorDetail } from './ui';
+import { localeTag } from '@/i18n/core';
 
 const RESULT_LABELS: Record<string, string> = {
   added: '作り直しました',
@@ -14,7 +15,7 @@ const RESULT_LABELS: Record<string, string> = {
 
 function formatAt(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('ja-JP');
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(localeTag());
 }
 
 const HistoryList: React.FC<{
@@ -161,11 +162,15 @@ const HistoryList: React.FC<{
         onCancel={() => setTarget(null)}
       >
         {target && (
-          <p>
-            <span className="font-mono break-all">{target.protocol.toUpperCase()} {hostPort(target.srcAddr, target.srcPort)}</span> を、
-            {formatAt(target.at)} の{ACTION_LABELS[target.action]}{target.action === 'DELETE' ? 'の直前' : 'のあと'}の内容に戻します。
-            今のルールは置き換えられます（削除されていれば作り直します）。送信元 IP の扱い・ポート範囲・L4 / L7 が違う版に戻すときは、ルールを作り直すので既存の接続が切れます。巻き戻しも履歴に残ります。
-          </p>
+          <div className="space-y-2">
+            <p className="font-mono break-all">{target.protocol.toUpperCase()} {hostPort(target.srcAddr, target.srcPort)}</p>
+            <p>
+              {target.action === 'DELETE'
+                ? `${formatAt(target.at)} の${ACTION_LABELS[target.action]}の直前の内容に戻します。`
+                : `${formatAt(target.at)} の${ACTION_LABELS[target.action]}のあとの内容に戻します。`}
+            </p>
+            <p>今のルールは置き換えられます（削除されていれば作り直します）。送信元 IP の扱い・ポート範囲・L4 / L7 が違う版に戻すときは、ルールを作り直すので既存の接続が切れます。巻き戻しも履歴に残ります。</p>
+          </div>
         )}
       </ConfirmDialog>
     </div>

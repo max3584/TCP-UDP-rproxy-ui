@@ -32,6 +32,7 @@ import {
   tlsBreakdown,
   uptimeSecs, ConfigStatusView } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
+import { t } from '@/i18n/core';
 import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
 
 // 一覧の転送先：代表の名前 1 つ（全部はマウスを乗せたときと詳細画面）
@@ -90,7 +91,7 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
           {RULE_STATES.map((s) => (
             <li key={s} className="flex items-center gap-2 text-gray-800">
               <span aria-hidden="true" className="inline-block h-3 w-3 rounded-sm" style={{ background: STATE_COLORS[s] }} />
-              <span className="w-14">{STATE_LABELS[s]}</span>
+              <span className="w-16 shrink-0">{STATE_LABELS[s]}</span>
               <span className="font-semibold tabular-nums text-gray-900">{summary.counts[s]}</span>
               <span className="text-xs text-gray-600 tabular-nums">{pct(summary.counts[s])}%</span>
             </li>
@@ -203,7 +204,7 @@ const PauseResumeButton: React.FC<{ rule: ForwardRules; onDone: () => void; onEr
   const paused = rule.state === 'paused';
   const run = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!paused && !window.confirm(`${listenLabel(rule)} の転送を一時停止しますか？（既存の接続は切断されます。設定は残ります）`)) return;
+    if (!paused && !window.confirm(t('{rule} の転送を一時停止しますか？（既存の接続は切断されます。設定は残ります）', { rule: listenLabel(rule) }))) return;
     setBusy(true);
     try {
       await postRule(paused ? 'resume' : 'pause', rule);

@@ -3,11 +3,12 @@ import { Logger } from '@/components/lib';
 import { RproxyError, getConfigStatus } from '@/components/rproxy';
 import { requireRole } from '@/components/apiguard';
 import { configStatusView } from '@/components/dashboard';
+import { localizedApi } from '@/i18n/server';
 
 // rproxy の設定ファイルの状態（GET /config）。ダッシュボードの注意の表示に使う。
 // UI のトークンで読めない（403）・古い rproxy（404）・設定ファイルを使っていない・rproxy に届かないときは
 // 何も出さない（{"show": false}）。ダッシュボードの表示を止めないように、失敗しても 200 で返す
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!(await requireRole(req, res))) return;
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', code: 'method_not_allowed' });
@@ -22,3 +23,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json(configStatusView(null));
   }
 }
+
+// エラーのメッセージは Accept-Language か画面で選んだ言語（cookie）で返す（code は変えない）
+export default localizedApi(handler);

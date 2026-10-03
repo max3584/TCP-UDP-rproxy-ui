@@ -51,6 +51,7 @@ import {
 import { mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
 import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
+import { localizedApi } from '@/i18n/server';
 import { Access, RoleConfig, accessOf, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
 import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
@@ -1021,7 +1022,7 @@ function sendError(res: NextApiResponse, err: unknown, logger: AppLogger) {
   return res.status(500).json({ error: 'Internal Server Error', code: 'internal' });
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+async function handler(req: NextApiRequest, res: NextApiResponse) {
   const session: sessionUser | null = await getServerSession(req, res, authOptions);
   const query = req.query.forward;
 
@@ -1115,3 +1116,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return sendError(res, err, logger);
   }
 }
+
+// エラーのメッセージは Accept-Language か画面で選んだ言語（cookie）で返す（code は変えない）
+export default localizedApi(handler);
