@@ -410,6 +410,23 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     expect((await call('delete', r)).status).toBe(200);
   });
 
+  it('creates a UDP rule that routes by server name (DTLS / QUIC)', async () => {
+    const port = listenPort + 13;
+    const r = {
+      ...rule, protocol: 'udp', srcPort: port,
+      tls: { mode: 'sni', routes: [{ server_names: ['a.test', '**.b.test'], remote_addr: '127.0.0.1', remote_port: backendPort + 3 }], unmatched: 'default' },
+    };
+    const add = await call('add', r);
+    expect(add.status, JSON.stringify(add.json)).toBe(200);
+    const got = await call('rule', undefined, 'GET', { protocol: 'udp', addr: '127.0.0.1', port: String(port) });
+    expect(got.json).toMatchObject({ state: 'running', tls: { mode: 'sni', unmatched: 'default' } });
+    expect(got.json.tls.routes[0]).toMatchObject({ server_names: ['a.test', '**.b.test'], remote_port: backendPort + 3 });
+    // passthrough の route は UDP では使えない（rproxy と同じく断る）
+    const bad = await call('add', { ...r, srcPort: port + 1, tls: { mode: 'sni', routes: [{ server_name: 'a.test', remote_addr: '127.0.0.1', remote_port: backendPort, passthrough: true }] } });
+    expect([bad.status, bad.json.code]).toEqual([400, 'tls_config']);
+    expect((await call('delete', r)).status).toBe(200);
+  });
+
   it('deletes the range rule', async () => {
     expect((await call('delete', rangeRule)).status).toBe(200);
     expect((await call('list', undefined, 'GET')).json).toEqual([]);

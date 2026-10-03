@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import RuleForm, { ALLOW_FROM_HELP, CHAIN_HELP } from '@/components/RuleForm';
+import RuleForm, { ALLOW_FROM_HELP, CHAIN_HELP, UDP_SNI_NOTES } from '@/components/RuleForm';
 import { PROFILES } from '@/components/profiles';
 import { DEFAULT_MAX_RANGE_PORTS, ForwardRule } from '@/components/lib';
 import { checkTls, portCount } from '@/components/tls';
@@ -128,6 +128,24 @@ describe('RuleForm: allow_from and unmatched', () => {
     expect(terminate).toMatch(/<option value="default" selected=""[^>]*>基本の転送先へ送る<\/option>/);
   });
 
+  it('offers routes, unmatched and the caveats for a UDP sni rule (DTLS / QUIC)', () => {
+    const udpSni: ForwardRule = { ...udpRule, srcPort: 443, srcPortEnd: null, tls: { mode: 'sni', routes: [route], unmatched: 'reject' } };
+    const tls = panel(render(udpSni), 'tls');
+    expect(tls).toMatch(/<option value="sni" selected=""/);
+    expect(tls).toContain('サーバ名ごとの転送先（DTLS・QUIC の名前');
+    expect(tls).toMatch(/<option value="reject" selected=""[^>]*>切断する<\/option>/);
+    // UDP の sni はすべて終端しないので、「終端しない」のチェックは出さない
+    expect(tls).not.toContain('終端しない（passthrough）');
+    expect(tls).toContain('data-testid="udp-sni-notes"');
+    for (const note of UDP_SNI_NOTES) expect(tls).toContain(note);
+    expect(UDP_SNI_NOTES.join('')).toMatch(/IKE（IPsec）・WireGuard/);
+    expect(UDP_SNI_NOTES.join('')).toContain('HTTP/3（QUIC）を受ける L7 のルール');
+    // DTLS の終端（terminate）では名前で振り分けないので注意も「一致しないとき」も出さない
+    const dtls = panel(render({ ...udpSni, tls: { mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], routes: [route] } }), 'tls');
+    expect(dtls).not.toContain('udp-sni-notes');
+    expect(dtls).not.toContain('rule-tls-unmatched');
+  });
+
   it('hides the unmatched choice without routes, for passthrough and for UDP', () => {
     expect(render({ ...sniRule, tls: { mode: 'sni' } })).not.toContain('rule-tls-unmatched');
     expect(render(terminateRule)).not.toContain('rule-tls-unmatched');
@@ -226,6 +244,11 @@ describe('profiles', () => {
     expect(byId['smtp'].description).toContain('必須にする');
     expect(byId['rtsp']).toMatchObject({ protocol: 'tcp', srcPort: 554, tlsMode: 'passthrough' });
     expect(byId['turns-dtls']).toMatchObject({ protocol: 'udp', tlsMode: 'terminate' });
+    // UDP のサーバ名での振り分け（rproxy v0.3.8）
+    expect(byId['quic-sni']).toMatchObject({ protocol: 'udp', srcPort: 443, tlsMode: 'sni' });
+    expect(byId['quic-sni'].description).toContain('HTTP/3 を受ける L7 のルール（http3）とは併用できません');
+    expect(byId['turns-dtls-sni']).toMatchObject({ protocol: 'udp', srcPort: 5349, tlsMode: 'sni' });
+    expect(byId['turns-dtls-sni'].description).toContain('名前を読めない');
     expect(byId['submission']).toMatchObject({ srcPort: 587, tlsMode: 'terminate', starttls: 'smtp' });
   });
 });

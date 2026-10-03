@@ -394,10 +394,15 @@ const RuleDetailPage: React.FC = () => {
                 ['tx（送信）', rule.stats ? formatBytes(rule.stats.tx_bytes) : null],
                 ['TLS 失敗', rule.stats ? formatCount(rule.stats.tls_failures) : null],
                 ['拒否した接続', rule.stats ? formatCount(rule.stats.denied ?? 0) : null],
+                // 古い rproxy は dropped を返さないので、そのときは出さない
+                ...(rule.protocol === 'udp' && typeof rule.stats?.dropped === 'number'
+                  ? [['捨てたデータグラム', formatCount(rule.stats.dropped)] as [string, React.ReactNode]]
+                  : []),
               ]} />
               <p className="mt-2 text-xs text-gray-600">
                 rx はクライアント → 転送先、tx は転送先 → クライアントのバイト数です。
                 拒否した接続は、許可する送信元（allow_from）の範囲外か、どのサーバ名にも一致しない（unmatched: reject）ため切断した接続です。
+                {rule.protocol === 'udp' && '捨てたデータグラムは、rproxy が転送できずに捨てた数です（セッションの待ち行列があふれた・送信に失敗した など。カーネルの受信バッファで捨てられたものは含まない）。'}
               </p>
             </Section>
 

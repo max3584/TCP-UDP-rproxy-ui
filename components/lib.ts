@@ -169,6 +169,8 @@ export interface RuleStats {
   tls_failures: number;
   // allow_from の範囲外、または unmatched: reject で切断した接続の数（古い rproxy は返さない）
   denied?: number;
+  // UDP で rproxy が転送できずに捨てたデータグラムの数（rproxy v0.3.9 以降。古い rproxy は返さない）
+  dropped?: number;
   // http のルールのリクエストの数（rproxy v0.3.1 以降。ほかのルールと古い rproxy は返さない）
   http?: HttpStats;
   // 宛先ごとの状態（宛先を複数にしたルール。rproxy v0.3.3 以降。古い rproxy は返さない）

@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ForwardRules } from '@/components/lib';
 import {
   certProblem,
+  configStatusView,
+  http3PortConflicts,
   countsDescription,
   formatIsoTime,
   worstCertState,
@@ -494,5 +496,64 @@ describe('list labels: port and one representative name', () => {
     const rules = [rule({ extraListenAddrs: ['2001:db8::5'] }), rule({ distAddr: '', http: http })];
     expect(filterRules(rules, { protocol: 'all', state: 'all', text: '2001:db8::5' })).toHaveLength(1);
     expect(filterRules(rules, { protocol: 'all', state: 'all', text: 'b.example' })).toHaveLength(1);
+  });
+});
+
+describe('UDP dropped datagrams (rproxy v0.3.9)', () => {
+  it('adds stats.dropped up only when rproxy reports it', () => {
+    const old = summarize([rule({ protocol: 'udp' })]);
+    expect(old.udp).toMatchObject({ dropped: 0, droppedReported: false });
+    const s = summarize([
+      rule({ protocol: 'udp', stats: { total_connections: 1, rx_bytes: 0, tx_bytes: 0, tls_failures: 0, dropped: 3 } }),
+      rule({ protocol: 'udp', srcPort: 53, stats: { total_connections: 1, rx_bytes: 0, tx_bytes: 0, tls_failures: 0, dropped: 4 } }),
+    ]);
+    expect(s.udp).toMatchObject({ dropped: 7, droppedReported: true });
+  });
+});
+
+describe('http3PortConflicts', () => {
+  const l7 = (over: Partial<ForwardRules> = {}) => rule({ http: { http3: true, routes: [] }, srcAddr: '0.0.0.0', srcPort: 443, ...over });
+
+  it('finds an HTTP/3 L7 rule on the same address and port for a UDP rule', () => {
+    const rules = [l7(), rule({ srcPort: 443 }), l7({ srcPort: 8443 }), l7({ srcPort: 444, http: { routes: [] } })];
+    const udp = { protocol: 'udp' as const, srcAddr: '::', srcPort: 443, srcPortEnd: null };
+    expect(http3PortConflicts(rules, udp).map((r) => r.srcPort)).toEqual([443]);
+    // ポートが違う、HTTP/3 でない L7、TCP の普通のルールは重ならない
+    expect(http3PortConflicts(rules, { ...udp, srcPort: 444 })).toEqual([]);
+    // 範囲が重なれば重なる
+    expect(http3PortConflicts(rules, { ...udp, srcPort: 8000, srcPortEnd: 9000 }).map((r) => r.srcPort)).toEqual([8443]);
+  });
+
+  it('compares the listen addresses (specific vs specific, wildcards, extra addresses)', () => {
+    const rules = [l7({ srcAddr: '192.0.2.1' })];
+    const udp = { protocol: 'udp' as const, srcAddr: '198.51.100.1', srcPort: 443, srcPortEnd: null };
+    expect(http3PortConflicts(rules, udp)).toEqual([]);
+    expect(http3PortConflicts(rules, { ...udp, srcAddr: '0.0.0.0' })).toHaveLength(1);
+    expect(http3PortConflicts(rules, { ...udp, extraListenAddrs: ['192.0.2.1'] })).toHaveLength(1);
+    // IPv6 の特定のアドレスと 0.0.0.0（IPv4 だけ）は重ならない
+    expect(http3PortConflicts([l7({ srcAddr: '2001:db8::1' })], { ...udp, srcAddr: '0.0.0.0' })).toEqual([]);
+  });
+
+  it('warns the other way round for an L7 rule turning HTTP/3 on, and skips the rule being edited', () => {
+    const udpRule = rule({ protocol: 'udp', srcPort: 443 });
+    const target = { protocol: 'tcp' as const, srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null, http: { http3: true } };
+    expect(http3PortConflicts([udpRule], target)).toHaveLength(1);
+    expect(http3PortConflicts([udpRule], { ...target, http: { http3: false } })).toEqual([]);
+    expect(http3PortConflicts([udpRule], { ...target, http: null })).toEqual([]);
+    const self = l7();
+    expect(http3PortConflicts([self], { protocol: 'udp', srcAddr: '0.0.0.0', srcPort: 443, srcPortEnd: null },
+      { protocol: 'tcp', addr: '0.0.0.0', port: 443 })).toEqual([]);
+  });
+});
+
+describe('configStatusView', () => {
+  it('shows the settings file only when it has an error or a restart is needed', () => {
+    expect(configStatusView(null).show).toBe(false);
+    expect(configStatusView({ configured: false }).show).toBe(false);
+    expect(configStatusView({ configured: true, path: '/etc/rproxy/rproxy.yaml', error: null, restart_needed: [] }).show).toBe(false);
+    expect(configStatusView({ configured: true, path: '/etc/rproxy/rproxy.yaml', error: 'bad yaml', restart_needed: [] }))
+      .toEqual({ show: true, path: '/etc/rproxy/rproxy.yaml', error: 'bad yaml', restartNeeded: [] });
+    expect(configStatusView({ configured: true, restart_needed: ['global.crowdsec'] }))
+      .toEqual({ show: true, path: null, error: null, restartNeeded: ['global.crowdsec'] });
   });
 });
