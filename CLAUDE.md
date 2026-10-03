@@ -140,6 +140,7 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
 - 中間 CA（`chain_file`）は `certificates[]`、`client_auth`、`upstream` にある。空欄は省く。rproxy と同じく、`client_auth.chain_file` は `mode` が optional / required のとき、`upstream.chain_file` は `upstream.cert_file` があるときだけ使える（`checkTls` が `tls_config` を返す）。チェーンの順番（発行した CA からルートへ）は rproxy が読み込むときに確かめる。
 - 画面の言語（日本語 / English、#82）：文言は日本語のままソースに書き、`i18n/en.ts`（キーは日本語の文言、`{0}` は差し込む値）で訳す。JSX の文字列と属性は `tsconfig.json` の `jsxImportSource: "@/i18n"`（`i18n/jsx-runtime.ts`）が自動で訳し、JSX を通らない文字列（`window.confirm` など）は `t()`、日付は `localeTag()`。API route は `localizedApi` で包み、`error` / `message` を cookie（`rproxy_ui_lang`）か Accept-Language の言語で返す（`code` は変えない）。文言を足したら `npm run i18n:check` で訳を足す。E2E は `locale: 'ja-JP'`（日本語）。
 - 画面は明るい配色だけ。カード・表・ボタンは `styles/globals.css` の `.card` / `.data-table` / `.btn-*` / `.badge` を使い、背景色と文字色を必ず両方指定する（以前、白地に白文字になる不具合があった）。
+- レスポンシブ（#88）：lg（1024px）以上は左のサイドバー、未満はヘッダーの「メニュー」で開閉する（`Layout` が状態を持ち、画面を移る・Esc で閉じる。言語の切り替えとサインアウトもメニューの中）。横に長い表は `.table-scroll` で包み、表の中だけを横にスクロールさせる（ページ全体をはみ出させない。`relative` は表の中の `sr-only` がページの幅を広げないため）。狭い幅のボタンは `max-lg:min-h-11` でタップしやすくする。`tests/ui/responsive.spec.ts` が 375px と 768px ではみ出さないことを確かめる。
 - `res.status(200).json(await ...)` と書かない（`status` が先に呼ばれて、失敗しても 200 になる）。先に値を取ってから返す。
 - `mariadb` ドライバは JSON 列をオブジェクトで返すことがある。`parseOptions` は文字列とオブジェクトの両方を受け付ける。
 - クライアント側の IPv6 の検証は緩い（文字種だけ）。最終的な検証はサーバ側の `net.isIP` で行う。

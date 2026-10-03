@@ -85,7 +85,7 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
   return (
     <section className="card p-4" aria-labelledby={`card-${summary.protocol}`}>
       <h2 id={`card-${summary.protocol}`} className="card-title mb-3">{summary.protocol.toUpperCase()} ルール</h2>
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4">
         <Donut summary={summary} />
         <ul className="text-sm space-y-1 min-w-0">
           {RULE_STATES.map((s) => (
@@ -250,15 +250,15 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () =
               {RULE_STATES.map((s) => <option key={s} value={s}>{STATE_LABELS[s]}</option>)}
             </select>
           </label>
-          <label className="text-xs text-gray-700 flex flex-col gap-1">
+          <label className="text-xs text-gray-700 flex flex-col gap-1 w-full sm:w-auto">
             検索（アドレス・ポート・SNI）
-            <input type="search" className={`${controlClass} w-56`} value={filter.text} placeholder="例: 10.0.0.5 / 443 / mail.example.com"
+            <input type="search" className={`${controlClass} w-full sm:w-56`} value={filter.text} placeholder="例: 10.0.0.5 / 443 / mail.example.com"
               onChange={(e) => setFilter({ ...filter, text: e.target.value })} />
           </label>
           <span className="text-xs text-gray-600 pb-1.5" aria-live="polite">{shown.length} / {rules.length} 件</span>
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div className="table-scroll">
         <table className="data-table">
           <caption className="sr-only">ルールの一覧。行を選ぶと詳細を開きます</caption>
           <thead>
@@ -277,7 +277,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () =
           <tbody>
             {shown.length === 0 && (
               <tr>
-                <td colSpan={9} className="text-center text-gray-700 py-6">
+                <td colSpan={9} className="text-center text-gray-700 py-6 max-md:text-left">
                   {rules.length === 0 ? 'ルールはまだありません。' : '条件に一致するルールはありません。'}
                 </td>
               </tr>
@@ -411,7 +411,7 @@ const DashboardPage: React.FC = () => {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold text-gray-900 whitespace-nowrap mr-auto">ダッシュボード</h1>
         <AutoRefreshToggle enabled={autoRefresh} onChange={setAutoRefresh} lastUpdated={lastUpdated} />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button type="button" className="btn-secondary" onClick={() => void load()}>今すぐ更新</button>
           {/* 自分のルール（rproxy-admin はすべての利用者のルール）を rproxy の設定ファイルと同じ形で書き出す */}
           <a href="/api/forward/export" className="btn-secondary" download data-testid="export">エクスポート（JSON）</a>
@@ -428,7 +428,7 @@ const DashboardPage: React.FC = () => {
         !error && <p className="text-gray-700">読み込み中…</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <StatTile
               label="rproxy"
               value={

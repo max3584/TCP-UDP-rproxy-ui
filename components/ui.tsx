@@ -57,7 +57,7 @@ export const ErrorBanner: React.FC<{ message: string; onClose?: () => void }> = 
   <div role="alert" className="bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded mb-4 flex justify-between items-start">
     <span className="break-all">{message}</span>
     {onClose && (
-      <button type="button" onClick={onClose} className="ml-4 font-bold text-red-800 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500" aria-label="閉じる">×</button>
+      <button type="button" onClick={onClose} className="ml-4 shrink-0 max-lg:min-h-11 max-lg:min-w-11 font-bold text-red-800 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500" aria-label="閉じる">×</button>
     )}
   </div>
 );
@@ -100,7 +100,7 @@ export const ConfirmDialog: React.FC<{
       <div className="p-5">
         <h2 id="confirm-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">{title}</h2>
         <div className="text-sm text-gray-800 mb-4">{children}</div>
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <button ref={cancelRef} type="button" className="btn-secondary" onClick={onCancel} disabled={busy}>キャンセル</button>
           <button type="button" className="btn-danger" onClick={onConfirm} disabled={busy}>{busy ? '処理中…' : confirmLabel}</button>
         </div>
@@ -146,8 +146,8 @@ export function useAutoRefresh(refresh: () => unknown, enabled: boolean, interva
 }
 
 export const AutoRefreshToggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; lastUpdated: number | null }> = ({ enabled, onChange, lastUpdated }) => (
-  <div className="flex items-center gap-3 text-sm text-gray-700">
-    <label className="inline-flex items-center gap-2 cursor-pointer whitespace-nowrap">
+  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-700">
+    <label className="inline-flex items-center gap-2 cursor-pointer whitespace-nowrap max-lg:min-h-11">
       <input type="checkbox" checked={enabled} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4" />
       自動更新（5 秒ごと）
     </label>

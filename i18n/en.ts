@@ -301,6 +301,7 @@ export const en: Record<string, string> = {
   "インポート": "Import",
   "変更の履歴": "History",
   "メインメニュー": "Main menu",
+  "メニュー": "Menu",
   "宛先": "Backends",
   "（ポートは範囲の先頭）": "(the port is the first of the range)",
   "アドレス": "Address",

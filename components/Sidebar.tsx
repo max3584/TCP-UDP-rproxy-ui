@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { AccountControls } from './Header';
 
 // ルールの詳細・変更の画面はダッシュボードの下にあるものとして扱う
 const NAV: { href: string; label: string; active: (pathname: string) => boolean }[] = [
@@ -10,12 +11,17 @@ const NAV: { href: string; label: string; active: (pathname: string) => boolean 
   { href: '/profile', label: 'Profile', active: (p) => p === '/profile' },
 ];
 
-const Sidebar: React.FC = () => {
+// 広い幅（lg 以上）では左の列に常に出す。狭い幅ではヘッダーの「メニュー」で開閉し、ヘッダーの下に出す
+const Sidebar: React.FC<{ open: boolean; onNavigate: () => void }> = ({ open, onNavigate }) => {
   const router = useRouter();
 
   return (
-    <nav aria-label="メインメニュー" className="w-48 md:w-56 shrink-0 bg-gray-800 text-white p-4">
-      <ul className="space-y-2 sticky top-4">
+    <nav
+      id="main-menu"
+      aria-label="メインメニュー"
+      className={`${open ? 'block' : 'hidden'} lg:block w-full lg:w-56 shrink-0 bg-gray-800 text-white p-4 max-lg:pt-0 max-lg:border-t max-lg:border-gray-700`}
+    >
+      <ul className="space-y-2 lg:sticky lg:top-4 max-lg:pt-4">
         {NAV.map((item) => {
           const active = item.active(router.pathname);
           return (
@@ -23,7 +29,8 @@ const Sidebar: React.FC = () => {
               <Link
                 href={item.href}
                 aria-current={active ? 'page' : undefined}
-                className={`block px-4 py-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                onClick={onNavigate}
+                className={`block px-4 py-3 lg:py-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
                   active ? 'bg-gray-600 text-white font-semibold' : 'text-gray-200 hover:bg-gray-700 hover:text-white'
                 }`}
               >
@@ -33,6 +40,7 @@ const Sidebar: React.FC = () => {
           );
         })}
       </ul>
+      <AccountControls className="lg:hidden mt-4 pt-4 border-t border-gray-700 text-white" />
     </nav>
   );
 };

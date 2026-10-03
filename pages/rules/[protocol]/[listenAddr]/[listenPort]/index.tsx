@@ -36,7 +36,8 @@ import HistoryList from '@/components/HistoryList';
 
 // 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
 const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
-  <table className="data-table mt-3 w-full text-sm" data-testid="targets-table">
+  <div className="mt-3 table-scroll">
+  <table className="data-table w-full text-sm" data-testid="targets-table">
     <thead>
       <tr>
         <th scope="col">#</th>
@@ -69,6 +70,7 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
       })}
     </tbody>
   </table>
+  </div>
 );
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
@@ -104,6 +106,7 @@ const CERT_STATE_CLASS = { ok: 'bg-green-100 text-green-900', expiring: 'bg-ambe
 
 const CertStatusSection: React.FC<{ certs: CertStatus[] }> = ({ certs }) => (
   <Section id="section-cert-status" title="証明書の期限">
+    <div className="table-scroll">
     <table className="data-table" data-testid="cert-status">
       <thead>
         <tr><th>種類</th><th>ファイル</th><th>期限</th><th>残り</th><th>状態</th></tr>
@@ -113,13 +116,14 @@ const CertStatusSection: React.FC<{ certs: CertStatus[] }> = ({ certs }) => (
           <tr key={`${c.role}|${c.file}`}>
             <td>{CERT_ROLE_LABELS[c.role] ?? c.role}</td>
             <td className="font-mono break-all">{c.file}</td>
-            <td className="font-mono">{formatIsoTime(c.not_after)}</td>
+            <td className="font-mono whitespace-nowrap">{formatIsoTime(c.not_after)}</td>
             <td>{c.days_left < 0 ? `${-c.days_left} 日前に期限切れ` : `${c.days_left} 日`}</td>
             <td><span className={`badge ${CERT_STATE_CLASS[c.state] ?? 'bg-gray-100 text-gray-800'}`}>{CERT_STATE_LABELS[c.state] ?? c.state}</span></td>
           </tr>
         ))}
       </tbody>
     </table>
+    </div>
     {certs.some((c) => c.state === 'expired' && c.role === 'certificate') && (
       <p className="text-xs text-red-800 mt-2">
         期限切れのサーバ証明書は使われていません（すべて切れるとルールは失敗になり、待ち受けを閉じます）。証明書のファイルが更新されると、rproxy が自動で読み直して元に戻します。
@@ -141,7 +145,7 @@ const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
         ['CrowdSec で断った数', formatCount(http.blocked ?? 0)],
       ]} />
       {rows.length > 0 && (
-        <div className="mt-4 overflow-x-auto">
+        <div className="mt-4 table-scroll">
           <h3 className="text-sm font-semibold text-gray-800 mb-1">ルートごと</h3>
           <table className="data-table" data-testid="http-routes">
             <thead>
@@ -182,17 +186,17 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
       <Fields items={[['モード', `${tlsLabel(rule)}（${tls.mode}）`]]} />
 
       {tls.routes && tls.routes.length > 0 && (
-        <div className="mt-4 overflow-x-auto">
+        <div className="mt-4 table-scroll">
           <h3 className="text-sm font-semibold text-gray-800 mb-1">サーバ名ごとの転送先</h3>
           <table className="data-table">
             <thead><tr><th scope="col">サーバ名</th><th scope="col">転送先</th></tr></thead>
             <tbody>
               {tls.routes.map((r, i) => (
                 <tr key={i} data-testid="tls-route">
-                  <td className="font-mono">
+                  <td className="font-mono break-all">
                     {routeNames(r).map((n) => <div key={n}>{n}</div>)}
                   </td>
-                  <td className="font-mono">
+                  <td className="font-mono break-all">
                     {hostPort(r.remote_addr, portsLabel(r.remote_port, count > 1 ? r.remote_port + count - 1 : null))}
                     {r.passthrough && (
                       <span className="badge ml-2 bg-indigo-100 text-indigo-900" title="rproxy で TLS を終端せずに、ClientHello ごと転送先へ流す（証明書は転送先のもの）">
@@ -215,7 +219,7 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
       )}
 
       {tls.certificates && tls.certificates.length > 0 && (
-        <div className="mt-4 overflow-x-auto">
+        <div className="mt-4 table-scroll">
           <h3 className="text-sm font-semibold text-gray-800 mb-1">証明書</h3>
           <table className="data-table">
             <thead><tr><th scope="col">#</th><th scope="col">サーバ証明書</th><th scope="col">中間 CA</th><th scope="col">秘密鍵</th></tr></thead>
@@ -344,13 +348,13 @@ const RuleDetailPage: React.FC = () => {
         <h1 className="text-2xl font-bold text-gray-900 font-mono break-all mr-auto">{title}</h1>
         {rule && <AutoRefreshToggle enabled={autoRefresh} onChange={setAutoRefresh} lastUpdated={lastUpdated} />}
         {rule && key && rule.origin === 'static' && (
-          <p className="inline-flex items-center gap-2 text-sm text-gray-800" data-testid="static-note">
+          <p className="inline-flex flex-wrap items-center gap-2 text-sm text-gray-800" data-testid="static-note">
             <StaticBadge />
             {STATIC_RULE_NOTE}
           </p>
         )}
         {rule && key && rule.origin !== 'static' && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link href={ruleEditHref(key)} className="btn-primary">編集</Link>
             {rule.state === 'paused'
               ? <button type="button" className="btn-secondary" disabled={switching} onClick={() => void handlePauseResume('resume')}>{switching ? '再開中…' : '再開'}</button>
