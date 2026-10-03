@@ -5,6 +5,7 @@ import type { Balance, CertRole, CertState, ForwardRule, ForwardRules, HttpSpec,
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 import { hostsOfMatch } from './httpspec';
+import { joinList, joinSentences, t, translate } from '@/i18n/core';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
 
@@ -248,9 +249,12 @@ export function worstCertState(rule: Pick<ForwardRules, 'certStatus'>): CertStat
 export function certProblem(rule: Pick<ForwardRules, 'certStatus'>): string | null {
   const bad = (rule.certStatus ?? []).filter((c) => c.state !== 'ok');
   if (bad.length === 0) return null;
-  return bad
-    .map((c) => `${CERT_ROLE_LABELS[c.role] ?? c.role}（${c.file}）が${c.state === 'expired' ? `期限切れです（${-c.days_left} 日前）` : `あと ${c.days_left} 日で期限切れです`}`)
-    .join('。') + '。';
+  // 文ごとに訳してつなぐ（英語は文の間に空白）
+  return joinSentences(bad.map((c) => {
+    const role = translate(CERT_ROLE_LABELS[c.role] ?? c.role);
+    const state = translate(c.state === 'expired' ? `期限切れです（${-c.days_left} 日前）` : `あと ${c.days_left} 日で期限切れです`);
+    return t('{role}（{file}）が{state}。', { role, file: c.file, state });
+  }));
 }
 
 // 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール。それぞれ元の順番のまま）
@@ -525,7 +529,7 @@ function round(n: number): number {
 // スクリーンリーダー向けの内訳（「稼働中 3、失敗 1」）
 export function countsDescription(counts: StateCounts): string {
   if (counts.total === 0) return 'ルールはありません';
-  return RULE_STATES.filter((s) => counts[s] > 0).map((s) => `${STATE_LABELS[s]} ${counts[s]}`).join('、');
+  return joinList(RULE_STATES.filter((s) => counts[s] > 0).map((s) => `${translate(STATE_LABELS[s])} ${counts[s]}`));
 }
 
 // 画面で送るルール（ForwardRules の稼働情報を落とす）

@@ -307,7 +307,8 @@ const RuleDetailPage: React.FC = () => {
       setConfirmingPause(false);
       await load();
     } catch (err) {
-      setError(`ルールの${action === 'pause' ? '停止' : '再開'}に失敗しました: ${err instanceof Error ? err.message : err}`);
+      const detail = err instanceof Error ? err.message : String(err);
+      setError(action === 'pause' ? `ルールの停止に失敗しました: ${detail}` : `ルールの再開に失敗しました: ${detail}`);
       setConfirmingPause(false);
     } finally {
       setSwitching(false);

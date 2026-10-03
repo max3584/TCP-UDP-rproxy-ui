@@ -3,6 +3,7 @@
 import React from 'react';
 import type { HttpSpec } from './lib';
 import { MIDDLEWARE_KINDS, defaultPriority, middlewareKind, toHttpRules } from './httpspec';
+import { translate } from '@/i18n/core';
 
 const Mono: React.FC<{ children: React.ReactNode }> = ({ children }) => <span className="font-mono">{children}</span>;
 
@@ -59,7 +60,7 @@ const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
             {Object.entries(services).map(([name, s]) => (
               <li key={name} className="break-all">
                 <Mono>{name}</Mono>:{' '}
-                <span className="font-mono text-xs break-all">{s.servers.map((srv) => `${srv.url}${srv.weight !== undefined && srv.weight !== 1 ? `（重み ${srv.weight}）` : ''}`).join(', ')}</span>
+                <span className="font-mono text-xs break-all">{s.servers.map((srv) => `${srv.url}${srv.weight !== undefined && srv.weight !== 1 ? translate(`（重み ${srv.weight}）`) : ''}`).join(', ')}</span>
                 {s.pass_host_header === false && <span className="text-xs text-gray-700">（Host は転送先の URL）</span>}
                 {s.health_check && <span className="text-xs text-gray-700">（ヘルスチェック {s.health_check.path}）</span>}
                 {s.sticky && <span className="text-xs text-gray-700">（スティッキー {s.sticky.cookie}）</span>}

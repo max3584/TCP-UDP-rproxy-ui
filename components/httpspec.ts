@@ -5,6 +5,7 @@
 
 import { BALANCES, type Balance } from './lib';
 import type { HttpSpec } from './lib';
+import { joinList } from '@/i18n/core';
 
 export interface RouteSpec {
   name: string;
@@ -201,7 +202,7 @@ export function checkMatch(src: string): string | null {
     if (tok.t !== 'ident') fail('Host(`...`) のような条件を書いてください');
     const name = tok.v!;
     const arity = MATCHERS[name];
-    if (!arity) fail(`知らない条件 ${name}（使えるのは ${MATCHER_NAMES.join('・')}）`);
+    if (!arity) fail(`知らない条件 ${name}（使えるのは ${joinList(MATCHER_NAMES, '・')}）`);
     if (next()?.t !== '(') fail(`${name} の後に ( が必要です`);
     const args: string[] = [];
     for (;;) {

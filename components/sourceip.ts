@@ -10,16 +10,13 @@ export interface TransparentHint {
   message: string;
 }
 
+// 説明は 1 つの文字列で書く（+ でつなぐと、画面の訳の辞書の文言と丸ごとでは一致しなくなる）
 export const TRANSPARENT_HINTS: Record<TransparentHintKind, string> = {
   unavailable:
-    'transparent（透過プロキシ）は選べません。rproxy に CAP_NET_ADMIN の権限がありません。'
-    + 'apt と install.sh で入れた rproxy では既定で有効です（手で起動している場合は rproxy-api の docs/PERMISSIONS.md を参照してください）。',
+    'transparent（透過プロキシ）は選べません。rproxy に CAP_NET_ADMIN の権限がありません。apt と install.sh で入れた rproxy では既定で有効です（手で起動している場合は rproxy-api の docs/PERMISSIONS.md を参照してください）。',
   ipv6: 'IPv6 の待ち受けアドレスでは transparent（透過プロキシ）を選べません。rproxy が IPV6_TRANSPARENT を使えません（ホストで IPv6 が無効か、古い rproxy です）。',
   selected:
-    'transparent では、転送先からの戻りのパケットが rproxy のホストを通る必要があります。'
-    + 'rproxy のホストでは install.sh --transparent-clients <クライアントのアドレス範囲> --transparent-iface <転送先側のインターフェース> でポリシールーティングを設定し、'
-    + '転送先ではデフォルトゲートウェイを rproxy のホストに向けてください。'
-    + '転送先の出口が別のルータ（代表 IP など）の場合は、転送先で rproxy から届いた接続の応答だけを rproxy に返す設定が要ります（rproxy-api の docs/TRANSPARENT.md）。',
+    'transparent では、転送先からの戻りのパケットが rproxy のホストを通る必要があります。rproxy のホストでは install.sh --transparent-clients <クライアントのアドレス範囲> --transparent-iface <転送先側のインターフェース> でポリシールーティングを設定し、転送先ではデフォルトゲートウェイを rproxy のホストに向けてください。転送先の出口が別のルータ（代表 IP など）の場合は、転送先で rproxy から届いた接続の応答だけを rproxy に返す設定が要ります（rproxy-api の docs/TRANSPARENT.md）。',
 };
 
 /**
@@ -45,9 +42,7 @@ export const SOURCE_IP_DOC_URL = 'https://github.com/max3584/rproxy-api/blob/mas
 
 // proxy_v1 / proxy_v2 を選んだときの注意。転送先が PROXY protocol を受ける設定でないと接続が壊れる
 export const PROXY_PROTOCOL_HINT =
-  'PROXY protocol は、接続の先頭にクライアントの IP を書いたヘッダを付けて送ります。'
-  + '転送先で PROXY protocol を受ける設定が必要です（Postfix: smtpd_upstream_proxy_protocol = haproxy、Dovecot: haproxy = yes、'
-  + 'nginx: listen ... proxy_protocol、ingress-nginx: use-proxy-protocol: "true" など）。設定していないと、転送先はヘッダを不正なデータとみなして接続が壊れます。';
+  'PROXY protocol は、接続の先頭にクライアントの IP を書いたヘッダを付けて送ります。転送先で PROXY protocol を受ける設定が必要です（Postfix: smtpd_upstream_proxy_protocol = haproxy、Dovecot: haproxy = yes、nginx: listen ... proxy_protocol、ingress-nginx: use-proxy-protocol: "true" など）。設定していないと、転送先はヘッダを不正なデータとみなして接続が壊れます。';
 
 export function proxyProtocolHint(sourceIp: SourceIp): TransparentHint | null {
   return sourceIp === 'proxy_v1' || sourceIp === 'proxy_v2' ? { kind: 'selected', message: PROXY_PROTOCOL_HINT } : null;

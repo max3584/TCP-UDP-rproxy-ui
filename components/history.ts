@@ -2,6 +2,7 @@
 
 import type { ForwardRule } from './lib';
 import { hostPort, portsLabel } from './dashboard';
+import { tc, translate } from '@/i18n/core';
 
 export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE';
 export const HISTORY_ACTIONS: HistoryAction[] = ['ADD', 'UPDATE', 'DELETE'];
@@ -52,41 +53,53 @@ export interface HistoryFilter {
 function destination(rule: ForwardRule): string {
   if (rule.http !== null) return 'L7 (HTTP)';
   if (rule.targets.length > 0) {
-    return rule.targets.map((t) => hostPort(t.addr, t.port)).join(', ') + `（${rule.balance}）`;
+    return translate(`${rule.targets.map((t) => hostPort(t.addr, t.port)).join(', ')}（${rule.balance}）`);
   }
   return hostPort(rule.distAddr, rule.distPort);
 }
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
-// 前の版からの違いを、画面に出す短い文にする（値の小さい項目は「前 → 後」、大きい項目は変わったことだけ）
+const NONE = '（なし）';
+// 「有効」は機能のオン・オフ・ルールの状態の意味で訳す（証明書の「有効」とは訳が違う）
+const onOff = (on: boolean) => (on ? tc('有効', 'on-off') : translate('無効'));
+const ruleState = (rule: ForwardRule) => (rule.enabled === false ? translate('停止中') : tc('有効', 'on-off'));
+
+// 前の版からの違いを、画面に出す短い文にする（値の小さい項目は「前 → 後」、大きい項目は変わったことだけ）。
+// 文は今の言語で作る（API が返す。値の「有効」などは場面に合わせて訳す）
 export function ruleChanges(prev: ForwardRule | null, next: ForwardRule | null): string[] {
   if (prev === null || next === null) return [];
   const out: string[] = [];
+  const change = (label: string, a: string, b: string) => out.push(`${translate(label)}: ${a} → ${b}`);
+  const value = (v: unknown) => (v === null || v === undefined || v === '' ? translate(NONE) : String(v));
   const scalar = (label: string, a: unknown, b: unknown) => {
-    if (!same(a, b)) out.push(`${label}: ${a === null || a === undefined || a === '' ? '（なし）' : String(a)} → ${b === null || b === undefined || b === '' ? '（なし）' : String(b)}`);
+    if (!same(a, b)) change(label, value(a), value(b));
   };
+  const note = (text: string) => out.push(translate(text));
   if (prev.srcPortEnd !== next.srcPortEnd) {
-    out.push(`待ち受けポート: ${portsLabel(prev.srcPort, prev.srcPortEnd)} → ${portsLabel(next.srcPort, next.srcPortEnd)}`);
+    change('待ち受けポート', portsLabel(prev.srcPort, prev.srcPortEnd), portsLabel(next.srcPort, next.srcPortEnd));
   }
-  if (destination(prev) !== destination(next)) out.push(`転送先: ${destination(prev)} → ${destination(next)}`);
-  else if (!same(prev.targets, next.targets)) out.push('宛先の重み・予備を変更');
+  if (destination(prev) !== destination(next)) change('転送先', destination(prev), destination(next));
+  else if (!same(prev.targets, next.targets)) note('宛先の重み・予備を変更');
   scalar('送信元 IP の扱い', prev.sourceIp, next.sourceIp);
   if (prev.protocol === 'udp' || next.protocol === 'udp') scalar('UDP のアイドルタイムアウト（秒）', prev.udpIdleSecs, next.udpIdleSecs);
   if (!same(prev.tls, next.tls)) {
-    out.push(prev.tls.mode !== next.tls.mode ? `TLS のモード: ${prev.tls.mode} → ${next.tls.mode}` : 'TLS の設定を変更');
+    if (prev.tls.mode !== next.tls.mode) change('TLS のモード', prev.tls.mode, next.tls.mode);
+    else note('TLS の設定を変更');
   }
   scalar('STARTTLS', prev.starttls, next.starttls);
   if (prev.starttls !== null && next.starttls !== null) scalar('STARTTLS を必須にする', prev.starttlsRequired, next.starttlsRequired);
-  if (!same(prev.allowFrom, next.allowFrom)) out.push(`接続を許可する送信元: ${prev.allowFrom.join(', ') || 'すべて'} → ${next.allowFrom.join(', ') || 'すべて'}`);
-  if (!same(prev.http, next.http)) out.push('L7 の設定を変更');
-  scalar('CrowdSec', prev.crowdsec ? '有効' : '無効', next.crowdsec ? '有効' : '無効');
-  if (!same(prev.healthCheck, next.healthCheck)) out.push('ヘルスチェックを変更');
+  if (!same(prev.allowFrom, next.allowFrom)) {
+    change('接続を許可する送信元', prev.allowFrom.join(', ') || translate('すべて'), next.allowFrom.join(', ') || translate('すべて'));
+  }
+  if (!same(prev.http, next.http)) note('L7 の設定を変更');
+  scalar('CrowdSec', onOff(prev.crowdsec), onOff(next.crowdsec));
+  if (!same(prev.healthCheck, next.healthCheck)) note('ヘルスチェックを変更');
   if (!same(prev.extraListenAddrs ?? [], next.extraListenAddrs ?? [])) {
-    out.push(`追加の待ち受けアドレス: ${(prev.extraListenAddrs ?? []).join(', ') || '（なし）'} → ${(next.extraListenAddrs ?? []).join(', ') || '（なし）'}`);
+    change('追加の待ち受けアドレス', value((prev.extraListenAddrs ?? []).join(', ')), value((next.extraListenAddrs ?? []).join(', ')));
   }
   // 一時停止・再開（#63）
-  scalar('状態', prev.enabled === false ? '停止中' : '有効', next.enabled === false ? '停止中' : '有効');
+  scalar('状態', ruleState(prev), ruleState(next));
   return out;
 }
 

@@ -1,5 +1,5 @@
 // 画面に出る日本語の文言を、ソースから取り出す（辞書の網羅の確認と、訳の追加に使う）。
-// 取り出すもの：日本語を含む文字列リテラル・テンプレート（${} は {0} {1}…）・JSX のテキスト。
+// 取り出すもの：日本語を含む文字列リテラル・テンプレート（${} は {0} {1}…）・JSX のテキスト・tc() の「文言|場面」。
 // 除くもの：logger / console の引数、i18n/ の中、テスト。
 import fs from 'node:fs';
 import path from 'node:path';
@@ -51,6 +51,10 @@ export function extract(root = process.cwd()) {
           add(k, node);
         } else if (ts.isJsxText(node)) {
           add(node.text, node);
+        } else if (ts.isCallExpression(node) && node.expression.getText() === 'tc' && node.arguments.length >= 2
+          && ts.isStringLiteral(node.arguments[0]) && ts.isStringLiteral(node.arguments[1])) {
+          // 場面つきの訳（i18n/core.ts の tc）：キーは「文言|場面」
+          add(`${node.arguments[0].text}|${node.arguments[1].text}`, node);
         }
         ts.forEachChild(node, visit);
       };
