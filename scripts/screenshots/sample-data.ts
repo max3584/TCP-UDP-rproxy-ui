@@ -1,7 +1,8 @@
 // README のスクリーンショット（scripts/screenshots）に出すサンプルのデータ。
 // アドレスは文書用のもの（192.0.2.0/24・198.51.100.0/24・2001:db8::/32）と example.com だけを使う
 import type { ForwardRule, ForwardRules } from '@/components/lib';
-import type { HistoryEntry } from '@/components/history';
+import { ruleChanges, type HistoryEntry } from '@/components/history';
+import { setLocale, type Locale } from '@/i18n/core';
 
 // 画面の時刻を固定する（自動更新の「最終更新」・稼働時間・履歴の日時が毎回同じになる）
 export const NOW = new Date('2026-10-01T10:00:00+09:00');
@@ -310,7 +311,7 @@ function plain(rule: ForwardRules): ForwardRule {
     allowFrom, http, crowdsec, targets, balance, healthCheck, extraListenAddrs, enabled };
 }
 
-function entry(id: number, secsAgo: number, actor: string, action: HistoryEntry['action'], rule: ForwardRules, changes: string[]): HistoryEntry {
+function entry(id: number, secsAgo: number, actor: string, action: HistoryEntry['action'], rule: ForwardRules, prev: ForwardRules | null = null): HistoryEntry {
   return {
     id,
     at: iso(secsAgo),
@@ -320,23 +321,33 @@ function entry(id: number, secsAgo: number, actor: string, action: HistoryEntry[
     srcAddr: rule.srcAddr,
     srcPort: rule.srcPort,
     rule: plain(rule),
-    changes,
+    // API と同じく、前の版との違いの文はリクエストの言語で作る
+    changes: prev ? ruleChanges(plain(prev), plain(rule)) : [],
     revertible: true,
   };
 }
 
-// 新しい順。changes は API（components/history.ts の ruleChanges）が作る文言と同じ形
-export const HISTORY: HistoryEntry[] = [
-  entry(12, 25 * 60, 'alice', 'UPDATE', l7, ['L7 の設定を変更']),
-  entry(11, 3 * 3600, 'bob', 'UPDATE', paused, ['接続を許可する送信元: すべて → 198.51.100.0/24']),
-  entry(10, 5 * 3600, 'alice', 'UPDATE', dns, ['接続を許可する送信元: すべて → 192.0.2.0/24, 2001:db8::/32']),
-  entry(9, 1 * DAY + 2 * 3600, 'bob', 'ADD', rtp, []),
-  entry(8, 2 * DAY + 5 * 3600, 'alice', 'UPDATE', db, ['転送先: 192.0.2.51:5432 → 192.0.2.51:5432, 192.0.2.52:5432（failover）', 'ヘルスチェックを変更']),
-  entry(7, 3 * DAY, 'alice', 'UPDATE', sni, ['TLS の設定を変更']),
-  entry(6, 4 * DAY, 'bob', 'ADD', turn, []),
-  entry(5, 4 * DAY + 3600, 'alice', 'DELETE', { ...turn, srcAddr: '0.0.0.0', srcPort: 3479 }, []),
-  entry(4, 6 * DAY, 'alice', 'UPDATE', l7, ['TLS のモード: passthrough → terminate', 'L7 の設定を変更']),
-  entry(3, 8 * DAY, 'bob', 'ADD', submission, []),
-  entry(2, 9 * DAY, 'alice', 'ADD', sni, []),
-  entry(1, 9 * DAY + 600, 'alice', 'ADD', l7, []),
-];
+const l7Http = l7.http as { routes: unknown[] };
+
+// 新しい順。changes は API と同じ ruleChanges で、1 つ前の版（prev）との違いから作る
+export function historyFor(lang: Locale): HistoryEntry[] {
+  setLocale(lang);
+  try {
+    return [
+      entry(12, 25 * 60, 'alice', 'UPDATE', l7, { ...l7, http: { ...l7Http, routes: l7Http.routes.slice(0, 2) } }),
+      entry(11, 3 * 3600, 'bob', 'UPDATE', paused, { ...paused, enabled: true }),
+      entry(10, 5 * 3600, 'alice', 'UPDATE', dns, { ...dns, allowFrom: [] }),
+      entry(9, 1 * DAY + 2 * 3600, 'bob', 'ADD', rtp),
+      entry(8, 2 * DAY + 5 * 3600, 'alice', 'UPDATE', db, { ...db, distAddr: '192.0.2.51', distPort: 5432, targets: [], healthCheck: null }),
+      entry(7, 3 * DAY, 'alice', 'UPDATE', sni, { ...sni, tls: { ...sni.tls, routes: sni.tls.routes?.slice(0, 1) } }),
+      entry(6, 4 * DAY, 'bob', 'ADD', turn),
+      entry(5, 4 * DAY + 3600, 'alice', 'DELETE', { ...turn, srcAddr: '0.0.0.0', srcPort: 3479 }),
+      entry(4, 6 * DAY, 'alice', 'UPDATE', l7, { ...l7, tls: { mode: 'passthrough' }, http: { ...l7Http, routes: l7Http.routes.slice(0, 1) } }),
+      entry(3, 8 * DAY, 'bob', 'ADD', submission),
+      entry(2, 9 * DAY, 'alice', 'ADD', sni),
+      entry(1, 9 * DAY + 600, 'alice', 'ADD', l7),
+    ];
+  } finally {
+    setLocale('ja');
+  }
+}

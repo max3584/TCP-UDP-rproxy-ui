@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { encode } from 'next-auth/jwt';
+import type { Locale } from '@/i18n/core';
 import { NEXTAUTH_SECRET, baseURL } from './playwright.config';
-import { CAPABILITIES, CONFIG_STATUS, DETAIL_RULE, HISTORY, INTERFACES, NOW, RULES } from './sample-data';
+import { CAPABILITIES, CONFIG_STATUS, DETAIL_RULE, INTERFACES, historyFor, NOW, RULES } from './sample-data';
 
 const OUT_DIR = path.join(__dirname, '..', '..', 'docs', 'images');
 const DESKTOP = { width: 1280, height: 860 };
@@ -24,7 +25,8 @@ async function signIn(context: BrowserContext, lang: string): Promise<void> {
 }
 
 // 画面が呼ぶ API（/api/forward/*）をサンプルのデータで返す。サーバには届かない
-async function mockApi(context: BrowserContext): Promise<void> {
+async function mockApi(context: BrowserContext, lang: Locale): Promise<void> {
+  const history = historyFor(lang);
   await context.route('**/api/forward/**', async (route) => {
     const url = new URL(route.request().url());
     const action = url.pathname.replace('/api/forward/', '');
@@ -41,7 +43,7 @@ async function mockApi(context: BrowserContext): Promise<void> {
       }
       case 'history': {
         const q = url.searchParams;
-        const entries = HISTORY.filter((e) => (!q.get('protocol') || e.protocol === q.get('protocol'))
+        const entries = history.filter((e) => (!q.get('protocol') || e.protocol === q.get('protocol'))
           && (!q.get('addr') || e.srcAddr === q.get('addr'))
           && (!q.get('port') || String(e.srcPort) === q.get('port')));
         const perPage = Number(q.get('per_page') ?? 20);
@@ -83,7 +85,7 @@ async function shoot(page: Page, name: string, lang: string, fullPage = false): 
 // 言語はプロジェクト（playwright.config.ts の ja / en）の名前
 test.beforeEach(async ({ context, page }, testInfo) => {
   await signIn(context, testInfo.project.name);
-  await mockApi(context);
+  await mockApi(context, testInfo.project.name as Locale);
   await page.clock.setFixedTime(NOW);
 });
 
