@@ -94,7 +94,7 @@ const HistoryList: React.FC<{
         <p className="text-gray-700 text-sm">履歴はありません。</p>
       ) : (
         <>
-          <div className="overflow-x-auto">
+          <div className="table-scroll">
             <table className="data-table w-full text-sm">
               <thead>
                 <tr>
@@ -144,7 +144,7 @@ const HistoryList: React.FC<{
             </table>
           </div>
           {pages > 1 && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-gray-900">
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-gray-900">
               <button type="button" className="btn-secondary" disabled={page <= 1} onClick={() => setPage(page - 1)}>前へ</button>
               <span>{page} / {pages}（{data.total} 件）</span>
               <button type="button" className="btn-secondary" disabled={page >= pages} onClick={() => setPage(page + 1)}>次へ</button>

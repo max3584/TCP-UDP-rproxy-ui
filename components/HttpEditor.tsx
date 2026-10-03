@@ -29,8 +29,8 @@ export interface HttpEditorProps {
 
 const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full bg-white text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
 const monoInput = `${inputClass} font-mono text-sm`;
-const smallButton = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
-const removeButton = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+const smallButton = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
+const removeButton = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 const labelClass = 'block text-xs font-medium text-gray-800 mb-1';
 const boxClass = 'border border-gray-300 rounded p-3 mb-3 bg-white';
 const headingClass = 'text-sm font-semibold text-gray-900 mb-2';
@@ -290,7 +290,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           const target = r.service !== undefined ? `service:${r.service}` : r.to !== undefined ? 'to' : 'none';
           return (
             <div key={i} className={boxClass} data-testid="http-route">
-              <div className="flex gap-2 items-end mb-2">
+              <div className="flex flex-wrap gap-2 items-end mb-2">
                 <div className="flex-1">
                   <label htmlFor={`${id}-name`} className={labelClass}>名前</label>
                   <input id={`${id}-name`} className={monoInput} value={r.name} onChange={(e) => updateRoute(i, { name: e.target.value.trim() })} />
@@ -347,7 +347,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                 <span className={labelClass}>ミドルウェア（上から順に働く）</span>
                 <ol className="space-y-1">
                   {(r.middlewares ?? []).map((m, k) => (
-                    <li key={`${m}-${k}`} className="flex items-center gap-2 text-sm">
+                    <li key={`${m}-${k}`} className="flex flex-wrap items-center gap-2 text-sm">
                       <span className="font-mono text-gray-900">{k + 1}. {m}</span>
                       <span className="text-xs text-gray-600">{MIDDLEWARE_KINDS[middlewareKind(mws[m] ?? {})] ?? '（ありません）'}</span>
                       <button type="button" className={smallButton} aria-label={`${m} を上へ`} onClick={() => updateRoute(i, { middlewares: move(r.middlewares ?? [], k, -1) })}>↑</button>
@@ -392,7 +392,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           const stickyAvailable = serviceOptions === null || serviceOptions.includes('sticky') || s.sticky !== undefined;
           return (
             <div key={i} className={boxClass} data-testid="http-service">
-              <div className="flex gap-2 items-end mb-2">
+              <div className="flex flex-wrap gap-2 items-end mb-2">
                 <div className="flex-1">
                   <label htmlFor={`${id}-name`} className={labelClass}>名前</label>
                   <input
@@ -409,7 +409,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
               </div>
               <span className={labelClass}>転送先（重みつきで順に振り分ける）</span>
               {s.servers.map((srv, k) => (
-                <div key={k} className="flex gap-2 mb-1">
+                <div key={k} className="flex items-center gap-2 mb-1">
                   <input
                     aria-label={`サービス ${name} の転送先 ${k + 1} の URL`}
                     className={monoInput}
@@ -421,7 +421,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     aria-label={`サービス ${name} の転送先 ${k + 1} の重み`}
                     type="number"
                     min="0"
-                    className={`${inputClass} w-20`}
+                    className={`${inputClass} max-w-[5rem] shrink-0`}
                     value={srv.weight ?? 1}
                     onChange={(e) => updateService(name, { servers: s.servers.map((x, j) => (j === k ? { ...x, weight: e.target.value === '' ? undefined : Number(e.target.value) } : x)) })}
                   />
@@ -502,7 +502,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           const unavailable = middlewares !== null && !middlewares.includes(kind);
           return (
             <div key={i} className={boxClass} data-testid="http-middleware">
-              <div className="flex gap-2 items-end mb-2">
+              <div className="flex flex-wrap gap-2 items-end mb-2">
                 <div className="flex-1">
                   <label htmlFor={`${id}-name`} className={labelClass}>名前</label>
                   <input

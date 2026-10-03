@@ -121,7 +121,7 @@ const ImportPage: React.FC = () => {
         <p>先に「確かめる」で 1 件ずつ検証し、結果を見てから実行します。1 件ずつ追加・置き換えるので、途中で失敗しても成功した分は残ります。</p>
         <label className="block">
           <span className="block mb-1">ファイル</span>
-          <input type="file" accept=".yaml,.yml,.json,application/json,application/yaml,text/yaml" onChange={(e) => void onFile(e)} />
+          <input type="file" className="block w-full max-w-full text-sm" accept=".yaml,.yml,.json,application/json,application/yaml,text/yaml" onChange={(e) => void onFile(e)} />
         </label>
         <label className="block">
           <span className="block mb-1">または貼り付け</span>
@@ -133,7 +133,7 @@ const ImportPage: React.FC = () => {
             aria-label="読み込む YAML / JSON"
           />
         </label>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button type="button" className="btn-secondary" disabled={busy || text.trim() === ''} onClick={() => void check()}>確かめる</button>
           <button type="button" className="btn-primary" disabled={busy || !runnable} onClick={() => void run()}>{busy ? '処理中…' : 'インポートする'}</button>
         </div>
@@ -149,6 +149,7 @@ const ImportPage: React.FC = () => {
               <code>global</code> は読み飛ばします（rproxy の設定ファイルの側で設定してください）。
             </p>
           )}
+          <div className="table-scroll">
           <table className="data-table w-full text-sm" data-testid="import-preview">
             <thead>
               <tr><th scope="col">#</th><th scope="col">ルール</th><th scope="col">結果</th><th scope="col">内容</th></tr>
@@ -171,12 +172,14 @@ const ImportPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       )}
 
       {results && (
         <section className="card p-4" aria-labelledby="import-results">
           <h2 id="import-results" className="card-title mb-3">インポートの結果</h2>
+          <div className="table-scroll">
           <table className="data-table w-full text-sm" data-testid="import-results">
             <thead>
               <tr><th scope="col">#</th><th scope="col">ルール</th><th scope="col">結果</th><th scope="col">内容</th></tr>
@@ -192,6 +195,7 @@ const ImportPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
           <p className="mt-3 text-sm"><Link href="/" className="link">ダッシュボードに戻る</Link></p>
         </section>
       )}

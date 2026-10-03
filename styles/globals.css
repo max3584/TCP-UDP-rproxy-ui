@@ -41,8 +41,19 @@
     @apply bg-gray-50 text-gray-700 font-semibold text-left px-3 py-2 border-b border-gray-200 whitespace-nowrap;
   }
 
+  /* 横に長い表を包む。狭い幅では表の中だけを横にスクロールする（ページ全体ははみ出さない）。
+     relative は、表の中の sr-only（position: absolute）が外側を基準にしてページの幅を広げないようにするため */
+  .table-scroll {
+    @apply relative overflow-x-auto;
+  }
+
   .data-table td {
     @apply text-gray-900 px-3 py-2 border-b border-gray-100 align-top;
+  }
+
+  /* 折り返す列（長いアドレス・パス）が狭い幅で 1 文字ずつの細い列にならないように、最小の幅を持たせる（足りなければ表の中でスクロール） */
+  .data-table td.break-all {
+    min-width: 10rem;
   }
 
   .btn-primary {

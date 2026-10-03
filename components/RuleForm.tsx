@@ -169,8 +169,8 @@ const EMPTY_ERRORS: FieldErrors = {
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
 
 const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
-const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
-const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
+const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 
 // UDP の sni（DTLS・QUIC のサーバ名での振り分け）の注意（rproxy-api の docs/API.md「UDP のサーバ名での振り分け」）
 export const UDP_SNI_NOTES = [
@@ -599,7 +599,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   };
 
   const tabClass = (tab: TabId): string => {
-    const base = 'px-3 py-2 text-sm border-b-2 -mb-px focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+    const base = 'shrink-0 whitespace-nowrap px-3 py-2 max-lg:min-h-11 text-sm border-b-2 focus:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-blue-500';
     if (tab === activeTab) return `${base} border-blue-600 text-blue-700 font-semibold bg-white`;
     if (tabDisabled(tab)) return `${base} border-transparent text-gray-400`;
     return `${base} border-transparent text-gray-700 hover:text-gray-900`;
@@ -628,7 +628,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       }}
       className="card p-4 md:p-6"
     >
-      <div role="tablist" aria-label="ルールの設定" className="flex flex-wrap border-b border-gray-300">
+      <div role="tablist" aria-label="ルールの設定" className="flex overflow-x-auto lg:flex-wrap shadow-[inset_0_-1px_0_#d1d5db]">
         {TAB_IDS.map((tab) => {
           const count = errorCount(errors, tab);
           return (
@@ -726,7 +726,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                     aria-invalid={errors.srcAddr !== '' || undefined}
                   />
                   {interfaces && (
-                    <button type="button" className="shrink-0 text-sm text-blue-700 underline" onClick={() => setAddrCustom(false)}>
+                    <button type="button" className="shrink-0 text-sm text-blue-700 underline max-lg:min-h-11" onClick={() => setAddrCustom(false)}>
                       一覧から選ぶ
                     </button>
                   )}
@@ -752,7 +752,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             {addrOptions.filter((o) => o.value !== srcAddr).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </datalist>
           {extraAddrs.map((a, i) => (
-            <div key={i} className="flex gap-1 mb-1" data-testid="extra-listen-row">
+            <div key={i} className="flex items-center gap-1 mb-1" data-testid="extra-listen-row">
               <input
                 type="text"
                 list="rule-listen-candidates"
@@ -985,7 +985,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
                   className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
                 <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
-                  className="border border-gray-300 rounded px-2 py-1 sm:w-28" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
+                  className="border border-gray-300 rounded px-2 py-1 sm:w-28 max-lg:min-h-11" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
                 {tlsMode === 'terminate' && (
                   <label className="flex items-center gap-1 text-sm text-gray-900 whitespace-nowrap">
                     <input type="checkbox" checked={l7 || r.passthrough} disabled={l7}
@@ -1269,7 +1269,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         </div>
       </div>
 
-      <div className="flex justify-end gap-2 mt-4 border-t border-gray-200 pt-4">
+      <div className="flex flex-wrap justify-end gap-2 mt-4 border-t border-gray-200 pt-4">
         <button type="button" onClick={onCancel} className="btn-secondary">
           キャンセル
         </button>

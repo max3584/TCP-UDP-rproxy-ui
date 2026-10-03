@@ -25,7 +25,7 @@ const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
     <div data-testid="http-summary">
       {rules.http3 && <p className="text-sm text-gray-900 mb-2">HTTP/3（QUIC）も受ける</p>}
       <h3 className="text-sm font-semibold text-gray-900 mb-1">ルート（試す順）</h3>
-      <div className="overflow-x-auto mb-3">
+      <div className="table-scroll mb-3">
         <table className="data-table">
           <thead>
             <tr>
@@ -40,10 +40,10 @@ const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
             {ordered.map(({ r, priority }) => (
               <tr key={r.name}>
                 <td className="text-right tabular-nums">{priority}{r.priority === undefined && <span className="text-xs text-gray-600">（既定）</span>}</td>
-                <td className="font-mono">{r.name}</td>
+                <td className="font-mono break-all">{r.name}</td>
                 <td className="font-mono text-xs break-all">{r.match}</td>
                 <td className="font-mono text-xs break-all">{r.service ? `サービス ${r.service}` : r.to ?? <span className="font-sans text-gray-700">ミドルウェアが応答</span>}</td>
-                <td className="font-mono text-xs">{(r.middlewares ?? []).join(' → ') || '-'}</td>
+                <td className="font-mono text-xs break-all">{(r.middlewares ?? []).join(' → ') || '-'}</td>
               </tr>
             ))}
           </tbody>
@@ -57,9 +57,9 @@ const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
           <h3 className="text-sm font-semibold text-gray-900 mb-1">サービス</h3>
           <ul className="text-sm mb-3 space-y-1">
             {Object.entries(services).map(([name, s]) => (
-              <li key={name}>
+              <li key={name} className="break-all">
                 <Mono>{name}</Mono>:{' '}
-                <span className="font-mono text-xs">{s.servers.map((srv) => `${srv.url}${srv.weight !== undefined && srv.weight !== 1 ? `（重み ${srv.weight}）` : ''}`).join(', ')}</span>
+                <span className="font-mono text-xs break-all">{s.servers.map((srv) => `${srv.url}${srv.weight !== undefined && srv.weight !== 1 ? `（重み ${srv.weight}）` : ''}`).join(', ')}</span>
                 {s.pass_host_header === false && <span className="text-xs text-gray-700">（Host は転送先の URL）</span>}
                 {s.health_check && <span className="text-xs text-gray-700">（ヘルスチェック {s.health_check.path}）</span>}
                 {s.sticky && <span className="text-xs text-gray-700">（スティッキー {s.sticky.cookie}）</span>}
