@@ -5,7 +5,7 @@ Next.js 16（Pages Router）、React 19、NextAuth v4 + Keycloak、MariaDB、Tai
 
 ## バージョン管理
 
-`docs/RELEASING.md` の決まりで、確認を取らずに進める。rproxy-api と同じ番号で一緒に出す（UI の vX.Y.Z は rproxy-api の vX.Y.Z と組み合わせる）。
+`docs/RELEASING.md` の決まりで、確認を取らずに進める。番号の並びは rproxy-api と共有する。両方の動くものが変わったら同じ番号で一緒に、片方だけなら片方だけ出す（UI だけの版は rproxy-api の `release.yml` を手動で実行して apt に載せる）。
 PR・issue を作るときにパッチ／マイナーのマイルストーンを付け、マージ後のタグ・リリースノート・マイルストーンの片付けまで行う。
 PR のブランチに追加で push する前に、その PR がまだ開いているか（`gh pr view <n> --json state`）を確かめる。
 
