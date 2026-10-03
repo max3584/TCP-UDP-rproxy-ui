@@ -1,5 +1,7 @@
 # データベース（MariaDB）
 
+English: [README.en.md](README.en.md)
+
 UI と rproxy-api が共有するテーブルの定義。
 
 | ファイル | 内容 |

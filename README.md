@@ -1,5 +1,7 @@
 # TCP-UDP-rproxy-ui
 
+English: [README.en.md](README.en.md)
+
 [rproxy-api](https://github.com/max3584/rproxy-api) の転送ルールを管理する Web UI（Next.js、Keycloak でサインイン、ルールは MariaDB に保存）。
 バージョンは rproxy-api と同じ番号で出す（UI の vX.Y.Z は rproxy-api の vX.Y.Z と組み合わせる。docs/RELEASING.md）。
 

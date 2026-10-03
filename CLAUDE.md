@@ -15,6 +15,12 @@ PR のブランチに追加で push する前に、その PR がまだ開いて�
 CPU ごとのネイティブなモジュール（`.node`）が入ると `all` にできないので、build-deb.sh が見つけたら止める。依存を足すときに気をつける。
 CI の `Debian package` ジョブ（`scripts/test-deb.sh`、NodeSource の nodejs で実際に入れる）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の apt リポジトリがそれを取る（docs/RELEASING.md）。
 
+## ドキュメント（日本語と英語）
+
+利用者向けのドキュメントは日本語と英語の両方がある：`README.md` ↔ `README.en.md`、`docs/<NAME>.md` ↔ `docs/en/<NAME>.md`、`db/README.md` ↔ `db/README.en.md`。
+片方を変えたら、同じ PR でもう片方も同じ内容に直す（構成・コードブロック・環境変数名・設定のキーをそろえる）。ドキュメントを足すときも両方を作り、先頭の `English:` / `日本語:` の相互リンクを付ける。英語版の相対リンクは英語版を指す。
+.deb には `README.md` と `README.en.md` を入れる（`scripts/build-deb.sh`。`db/` はまるごと入る）。
+
 ## コマンド
 
 ```bash

@@ -1,5 +1,7 @@
 # 本番環境の構築
 
+English: [en/PRODUCTION.md](en/PRODUCTION.md)
+
 rproxy-api と UI（rproxy-ui）を 1 台のホスト（Debian 13 / Ubuntu 24.04）に入れ、ダッシュボードを rproxy 経由の HTTPS で公開する手順。
 DB（MariaDB）と Keycloak は別のホストにある前提で書く。
 

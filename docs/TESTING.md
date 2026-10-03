@@ -1,5 +1,7 @@
 # テスト一覧（TCP-UDP-rproxy-ui）
 
+English: [en/TESTING.md](en/TESTING.md)
+
 | 実行方法 | 対象 | CI のジョブ |
 |---|---|---|
 | `npx tsc --noEmit` / `npm run lint` / `npm run build` | 型、lint、ビルド | `check` |

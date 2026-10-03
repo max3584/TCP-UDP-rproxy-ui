@@ -1,5 +1,7 @@
 # バージョン管理とリリース
 
+English: [en/RELEASING.md](en/RELEASING.md)
+
 rproxy-api（[max3584/rproxy-api](https://github.com/max3584/rproxy-api)）と UI（[max3584/TCP-UDP-rproxy-ui](https://github.com/max3584/TCP-UDP-rproxy-ui)）は、**同じバージョン番号で一緒に出す**。
 UI の vX.Y.Z は rproxy-api の vX.Y.Z と組み合わせて使う。片方だけに変更がある場合も、両方に同じ番号のタグとリリースを作る。
 
