@@ -2,9 +2,10 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
 import { getInterfaces } from '@/components/rproxy';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
+import { localizedApi } from '@/i18n/server';
 
 // rproxy のホストのインターフェース（待ち受けアドレスの候補）と、rproxy 自身が使うアドレス
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!(await requireRole(req, res))) return;
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', code: 'method_not_allowed' });
@@ -18,3 +19,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(502).json(rproxyFailure(err));
   }
 }
+
+// エラーのメッセージは Accept-Language か画面で選んだ言語（cookie）で返す（code は変えない）
+export default localizedApi(handler);

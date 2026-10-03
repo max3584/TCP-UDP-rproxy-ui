@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CertState, ForwardRule, ForwardRules, RuleState } from './lib';
 import { RuleKey, STATE_LABELS, ruleApiUrl, tlsLabel } from './dashboard';
 import { explainError } from './messages';
+import { localeTag } from '@/i18n/core';
 
 const STATE_BADGE: Record<RuleState, string> = {
   running: 'bg-green-100 text-green-800 border border-green-300',
@@ -152,7 +153,7 @@ export const AutoRefreshToggle: React.FC<{ enabled: boolean; onChange: (v: boole
     </label>
     {lastUpdated !== null && (
       <span className="text-xs text-gray-600 whitespace-nowrap">
-        最終更新 {new Date(lastUpdated).toLocaleTimeString('ja-JP')}
+        最終更新 {new Date(lastUpdated).toLocaleTimeString(localeTag())}
       </span>
     )}
   </div>

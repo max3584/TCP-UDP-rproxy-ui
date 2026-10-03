@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:ui": "playwright test"
+    "test:ui": "playwright test",
+    "i18n:check": "vitest run tests/i18n.test.ts"
   },
   "dependencies": {
     "mariadb": "^3.5.4",

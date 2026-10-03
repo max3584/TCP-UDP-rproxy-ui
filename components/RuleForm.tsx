@@ -1102,7 +1102,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             <div className="mb-4">
               <label className="inline-flex items-center text-sm font-medium text-gray-800">
                 <input type="checkbox" checked={upstreamTls} onChange={(e) => setUpstreamTls(e.target.checked)} className="mr-2" />
-                転送先へ{protocol === 'udp' ? ' DTLS' : ' TLS'} で再暗号化する
+                {protocol === 'udp' ? '転送先へ DTLS で再暗号化する' : '転送先へ TLS で再暗号化する'}
               </label>
               {upstreamTls && (
                 <div className="mt-2 space-y-2 border-l-2 border-gray-300 pl-3">

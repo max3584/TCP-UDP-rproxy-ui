@@ -15,6 +15,8 @@ export default defineConfig({
   globalSetup: './tests/ui/global-setup.ts',
   use: {
     baseURL,
+    // 画面の言語は日本語（ブラウザの言語から決まる。英語の画面は tests/ui/i18n.spec.ts で切り替えて確かめる）
+    locale: 'ja-JP',
     storageState: 'tests/ui/.auth/session.json',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
