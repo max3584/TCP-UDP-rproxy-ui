@@ -42,6 +42,7 @@ ln -s /var/cache/rproxy-ui "$lib/.next/cache"
 install -m 0644 packaging/debian/rproxy-ui.service "$stage/usr/lib/systemd/system/rproxy-ui.service"
 install -m 0600 packaging/debian/rproxy-ui.env "$stage/etc/rproxy-ui/rproxy-ui.env"
 install -m 0644 README.md "$stage/usr/share/doc/rproxy-ui/README.md"
+install -m 0644 README.en.md "$stage/usr/share/doc/rproxy-ui/README.en.md"
 install -m 0644 LICENSE "$stage/usr/share/doc/rproxy-ui/copyright"
 cp -a db "$stage/usr/share/rproxy-ui/db"
 for s in postinst prerm postrm; do install -m 0755 "packaging/debian/$s" "$stage/DEBIAN/$s"; done
