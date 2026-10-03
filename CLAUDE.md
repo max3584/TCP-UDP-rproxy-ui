@@ -57,6 +57,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 | `pages/api/auth/[...nextauth].ts` | Keycloak の設定。サインイン時にアクセストークンのロール（既定 `realm_access.roles`）を読んで JWT に保存し、セッションに `roles` と `access`（admin / user / none。画面の表示用）を入れる |
 | `pages/api/forward/[forward].ts` | `list` / `dashboard` / `rule` / `export` / `history`(GET)、`add` / `modify` / `delete` / `import` / `revert` / `pause` / `resume`(POST) のエンドポイント |
 | `pages/api/forward/capabilities.ts` | rproxy の `GET /capabilities` をそのまま返す |
+| `pages/api/forward/config.ts` | rproxy の設定ファイルの状態（`GET /config`）を、ダッシュボードの注意（誤り・再起動が要る変更）の形で返す（`configStatusView`）。読めない（403 / 404 / 届かない）ときは何も出さない |
 | `pages/api/forward/interfaces.ts` | rproxy の `GET /interfaces`（待ち受けアドレスの候補と、制御 API が使う予約済みのアドレス）を返す |
 | `components/sourceip.ts` | source_ip の欄に出す説明（transparent が使えない理由、IPv4 だけであること、選んだときのルーティングの前提）。`GET /capabilities` の `transparent` を使う |
 | `components/listen.ts` | 待ち受けアドレスの選択肢と、予約済みのアドレス・ポートとの重なりの判定 |
@@ -81,7 +82,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 1. 画面から `/api/forward/<action>` を呼ぶ。
 2. サーバ側で入力を検証・正規化する（`protocol` は小文字、ポートは 1〜65535、listen アドレスは IP のみで IPv6 は圧縮表記）。
    TLS の組み合わせは `components/tls.ts` の `checkTls` で rproxy と同じ規則を先に確かめ、日本語のメッセージを返す（コードも rproxy と同じ `tls_config` / `unsupported` / `invalid`）。
-   `tls.unmatched: "reject"` は tcp の sni / terminate で routes があるときだけ（それ以外は `tls_config`）。既定の `default` は省いた形に揃える。
+   `tls.unmatched: "reject"` は sni（tcp / udp）か tcp の terminate で routes があるときだけ（それ以外は `tls_config`）。udp の sni（rproxy v0.3.8。DTLS・QUIC のサーバ名で振り分ける）は作成・編集できる。`passthrough` の route は tcp の terminate だけ。フォームは udp の sni に注意（`UDP_SNI_NOTES`）と、同じアドレス・ポートの HTTP/3 の L7 のルールとの重なりの警告（`http3PortConflicts`）を出す。既定の `default` は省いた形に揃える。
    `allowFrom`（API の body。rproxy と DB では `allow_from`）は CIDR か単一の IP の配列で最大 64 件（`invalid`）。rproxy の応答と同じ形に正規化して保存する（`10.0.0.5` → `10.0.0.5/32`、`172.16.9.9/16` → `172.16.0.0/16`、IPv6 は圧縮表記、IPv4-mapped は IPv4）。
    証明書ファイルが読めるか、範囲の上限（`max_range_ports`）、範囲の重なりは rproxy が判定する。
 3. トランザクション内で `forward_rules` を更新し、履歴を `forward_rules_log` に書き込む（`update_action` 列は `ADD` / `UPDATE` / `DELETE`、`auth_id` は操作した利用者）。
@@ -97,7 +98,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
      `modify` の body に `allowFrom` がなければ DB の値を保つ（あれば置き換える）。追加の POST には `allow_from` が空でなければ付ける。
    - 固定ルール（rproxy の `--static-rules` のファイルのルール。`origin: "static"`）は DB にない。`modify` / `delete` で自分の行がなく、rproxy の `GET /rules/{key}` が `origin: "static"` を返したら 409 `static` を返す（rproxy も PATCH / DELETE を 409 `static` で拒否する。その場合もそのまま返す）。
 5. `list` は DB のルールに rproxy の `GET /rules` の稼働状態をつけて返す（`state` は `running` / `failed` / `missing`（rproxy にない）/ `unknown`（rproxy に問い合わせできない）/ `paused`（UI で一時停止中））。
-   稼働情報は `connections`、`stats`（rproxy の `{total_connections, rx_bytes, tx_bytes, tls_failures, denied, http}` をそのまま。`denied` は古い rproxy に、`http`（L7 のリクエスト数：`requests`・`by_status`・`routes`・`limited`・`blocked`）は v0.3.1 より前の rproxy と http のないルールにはない）、`startedAt`（rproxy の `started_at`、Unix 秒）、`resolved`。`missing` / `unknown` のときは null / 空配列。
+   稼働情報は `connections`、`stats`（rproxy の `{total_connections, rx_bytes, tx_bytes, tls_failures, denied, dropped, http}` をそのまま。`dropped`（UDP で rproxy が捨てたデータグラム）は v0.3.9 より前の rproxy にはない（そのときは画面に出さない）。`denied` は古い rproxy に、`http`（L7 のリクエスト数：`requests`・`by_status`・`routes`・`limited`・`blocked`）は v0.3.1 より前の rproxy と http のないルールにはない）、`startedAt`（rproxy の `started_at`、Unix 秒）、`resolved`。`missing` / `unknown` のときは null / 空配列。
    各行には `origin`（DB の行は常に `dynamic`）と `allowFrom` が付く。`list` は自分の DB のルールだけ（`rproxy-admin` はすべての利用者のルールで、`owner` が付く）。
    - `dashboard` は `{reachable, rproxyError, rules}`。`rules` は `list` の後ろに、rproxy の固定ルール（`origin: "static"`）を読み取り専用の行として足したもの（`mergeStaticRules`。id は負の数で、画面の key にだけ使う）。
      固定ルールはシステムのルールなので、ログインしていればだれにでも見せる（ほかの利用者の `dynamic` なルールは見せない）。rproxy に接続できなければ固定ルールは出ない。ルールが 0 件でも rproxy に接続できるかがわかる。

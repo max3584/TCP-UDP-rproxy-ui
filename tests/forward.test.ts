@@ -422,7 +422,8 @@ describe('/api/forward/[forward]: port ranges and TLS', () => {
     ['unknown key in tls', { tls: { mode: 'passthrough', extra: 1 } }, 'invalid'],
     ['unknown starttls', { tls: { mode: 'terminate', certificates: [cert] }, starttls: 'ftp' }, 'invalid'],
     ['certificate without key', { tls: { mode: 'terminate', certificates: [{ cert_file: '/a.pem', key_file: '' }] } }, 'invalid'],
-    ['sni with udp', { protocol: 'udp', tls: { mode: 'sni' } }, 'unsupported'],
+    ['passthrough route on a udp sni rule', { protocol: 'udp', starttls: null, tls: { mode: 'sni', routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.1', remote_port: 443, passthrough: true }] } }, 'tls_config'],
+    ['unmatched reject on udp terminate (DTLS does not route by name)', { protocol: 'udp', starttls: null, tls: { mode: 'terminate', certificates: [cert], routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.1', remote_port: 443 }], unmatched: 'reject' } }, 'tls_config'],
     ['terminate without certificates', { tls: { mode: 'terminate' } }, 'tls_config'],
     ['certificates with passthrough', { tls: { mode: 'passthrough', certificates: [cert] } }, 'tls_config'],
     ['routes with passthrough', { tls: { mode: 'passthrough', routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.1', remote_port: 443 }] } }, 'tls_config'],
@@ -445,6 +446,19 @@ describe('/api/forward/[forward]: port ranges and TLS', () => {
     expect(typeof body.error).toBe('string');
     expect(pool.getConnection).not.toHaveBeenCalled();
     expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('a udp rule can route by server name (DTLS / QUIC, rproxy v0.3.8)', async () => {
+    const tls = {
+      mode: 'sni',
+      routes: [{ server_names: ['a.example.com', '**.tenant.example.com'], remote_addr: '10.0.0.1', remote_port: 443 }],
+      unmatched: 'reject',
+    };
+    const { status, body } = await call('add', { ...tcpRule, protocol: 'udp', sourceIp: 'proxy', starttls: null, tls: tls });
+    expect([status, body]).toEqual([200, expect.anything()]);
+    const sent = mocks.addRule.mock.calls[0][0];
+    expect(sent.protocol).toBe('udp');
+    expect(sent.tls).toEqual(tls);
   });
 
   it('add stores the range and options JSON and passes them to rproxy', async () => {

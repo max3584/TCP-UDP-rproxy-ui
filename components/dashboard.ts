@@ -38,6 +38,9 @@ export interface ProtocolSummary {
   tlsFailures: number;
   // allow_from の範囲外、または unmatched: reject で切断した接続
   denied: number;
+  // UDP で rproxy が捨てたデータグラム（stats.dropped を返す rproxy のときだけ droppedReported が true）
+  dropped: number;
+  droppedReported: boolean;
   // http のルールの数とリクエスト（stats.http を返す rproxy だけ）
   httpRules: number;
   httpRequests: number;
@@ -82,6 +85,8 @@ export function summarizeProtocol(rules: ForwardRules[], protocol: Protocol): Pr
     txBytes: 0,
     tlsFailures: 0,
     denied: 0,
+    dropped: 0,
+    droppedReported: false,
     httpRules: 0,
     httpRequests: 0,
     http5xx: 0,
@@ -95,6 +100,10 @@ export function summarizeProtocol(rules: ForwardRules[], protocol: Protocol): Pr
     summary.txBytes += r.stats?.tx_bytes ?? 0;
     summary.tlsFailures += r.stats?.tls_failures ?? 0;
     summary.denied += r.stats?.denied ?? 0;
+    if (typeof r.stats?.dropped === 'number') {
+      summary.dropped += r.stats.dropped;
+      summary.droppedReported = true;
+    }
     if (r.http !== null) summary.httpRules += 1;
     const http = r.stats?.http;
     if (http) {
@@ -591,4 +600,52 @@ export function statusCountsLabel(counts: StatusCounts): string {
 export function serverErrorPercent(requests: number, errors5xx: number): number | null {
   if (requests <= 0) return null;
   return Math.round((errors5xx / requests) * 1000) / 10;
+}
+
+// rproxy の設定ファイルの状態のうち、ダッシュボードに出すもの（誤り・再起動が要る変更）。読めなければ出さない
+export interface ConfigStatusView {
+  show: boolean;
+  path: string | null;
+  error: string | null;
+  restartNeeded: string[];
+}
+
+export function configStatusView(status: { configured: boolean; path?: string; error?: string | null; restart_needed?: string[] } | null): ConfigStatusView {
+  if (!status || !status.configured) return { show: false, path: null, error: null, restartNeeded: [] };
+  const error = typeof status.error === 'string' && status.error !== '' ? status.error : null;
+  const restartNeeded = Array.isArray(status.restart_needed) ? status.restart_needed.filter((s) => typeof s === 'string') : [];
+  return { show: error !== null || restartNeeded.length > 0, path: status.path ?? null, error: error, restartNeeded: restartNeeded };
+}
+
+// 待ち受けのアドレスが重なるか（::・0.0.0.0 はそれぞれのファミリーのすべてのアドレスと重なる。:: は IPv4 とも重なりうるので重なる扱い）
+function addressesOverlap(a: string[], b: string[]): boolean {
+  const wild = (x: string) => x === '::' || x === '0.0.0.0';
+  const v6 = (x: string) => x.includes(':');
+  return a.some((x) => b.some((y) => x === y || x === '::' || y === '::'
+    || (wild(x) && v6(x) === v6(y)) || (wild(y) && v6(x) === v6(y))));
+}
+
+type ListenSide = Pick<ForwardRule, 'protocol' | 'srcAddr' | 'srcPort' | 'srcPortEnd'> & { extraListenAddrs?: string[]; http?: HttpSpec | null };
+
+function http3On(rule: { http?: HttpSpec | null }): boolean {
+  return typeof rule.http === 'object' && rule.http !== null && (rule.http as Record<string, unknown>).http3 === true;
+}
+
+// UDP の待ち受けと、HTTP/3（http.http3: true）の L7 のルールの UDP は、同じアドレス・ポートで併用できない。
+// target と重なる相手のルールを返す（target が UDP なら HTTP/3 の L7 のルール、target が HTTP/3 の L7 なら UDP のルール）。
+// self は編集中のルール自身（除く）
+export function http3PortConflicts(rules: ForwardRules[], target: ListenSide, self?: RuleKey | null): ForwardRules[] {
+  const wantHttp3 = target.protocol === 'udp';
+  if (!wantHttp3 && !(target.protocol === 'tcp' && http3On(target))) return [];
+  const addrs = (r: ListenSide) => [r.srcAddr, ...(r.extraListenAddrs ?? [])].filter((a) => a !== '');
+  const start = target.srcPort;
+  const end = target.srcPortEnd ?? target.srcPort;
+  return rules.filter((r) => {
+    if (self && r.protocol === self.protocol && r.srcAddr === self.addr && r.srcPort === self.port) return false;
+    const other = wantHttp3 ? r.protocol === 'tcp' && http3On(r) : r.protocol === 'udp';
+    if (!other) return false;
+    const rEnd = r.srcPortEnd ?? r.srcPort;
+    if (rEnd < start || r.srcPort > end) return false;
+    return addressesOverlap(addrs(target), addrs(r));
+  });
 }

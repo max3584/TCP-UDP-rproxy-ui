@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_RANGE_PORTS,
   DEFAULT_UDP_IDLE_SECS,
   ForwardRule,
+  ForwardRules,
   MAX_EXTRA_LISTEN_ADDRS,
   Protocol,
   SourceIp,
@@ -30,6 +31,7 @@ import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHtt
 import TargetsEditor from './TargetsEditor';
 import { EMPTY_ROW, HealthCheckRow, TargetRow, buildBalancing, toHealthCheckRow, toRows } from './targets';
 import { Balancing, NO_BALANCING } from './tls';
+import { hostPort, http3PortConflicts } from './dashboard';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -170,6 +172,14 @@ const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full focus:outlin
 const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
 const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
 
+// UDP の sni（DTLS・QUIC のサーバ名での振り分け）の注意（rproxy-api の docs/API.md「UDP のサーバ名での振り分け」）
+export const UDP_SNI_NOTES = [
+  'サーバ名で振り分けられるのは DTLS と QUIC（HTTP/3 など）だけです。IKE（IPsec）・WireGuard・RTP・ゲームなど、パケットにサーバ名が入っていない UDP は名前を読めないので、「一致しないとき」の扱い（基本の転送先へ送る／捨てる）になります。',
+  '終端しないので、rproxy に証明書は要りません（証明書は転送先が持ちます）。',
+  '同じアドレス・ポートで、HTTP/3（QUIC）を受ける L7 のルール（http3）とは併用できません。',
+  'QUIC の接続の移動（クライアントのアドレスやポートが変わる）は追いかけません。ECH を使う接続では本当のサーバ名は読めません（外側の名前で振り分けます）。',
+];
+
 const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
   const [profileId, setProfileId] = useState('');
@@ -274,6 +284,33 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     getInterfaces();
   }, [editMode]);
 
+  // HTTP/3（http.http3）の L7 のルールと同じアドレス・ポートの UDP は併用できないので、ほかのルールを読んで警告する
+  const [otherRules, setOtherRules] = useState<ForwardRules[]>([]);
+  useEffect(() => {
+    const getRules = async () => {
+      try {
+        const res = await fetch('/api/forward/dashboard');
+        if (!res.ok) return;
+        const data = await res.json();
+        setOtherRules(Array.isArray(data.rules) ? data.rules : []);
+      } catch {
+        // 読めなければ警告を出さないだけ
+      }
+    };
+    getRules();
+  }, []);
+  const http3Conflicts = useMemo(() => {
+    if (srcPort === '') return [];
+    return http3PortConflicts(otherRules, {
+      protocol: protocol,
+      srcAddr: srcAddr,
+      srcPort: Number(srcPort),
+      srcPortEnd: srcPortEnd === '' ? null : Number(srcPortEnd),
+      extraListenAddrs: extraAddrs.map((a) => a.trim()).filter((a) => a !== ''),
+      http: l7 ? { http3: httpRules.http3 === true } : null,
+    }, initialData ? { protocol: initialData.protocol, addr: initialData.srcAddr, port: initialData.srcPort } : null);
+  }, [otherRules, protocol, srcAddr, srcPort, srcPortEnd, extraAddrs, l7, httpRules.http3, initialData]);
+
   // プロファイルなどで一覧にないアドレスが入ったら手入力に切り替える（描画中に直す。エフェクトで直すと 1 回余分に描画される）
   if (!addrCustom && interfaces && srcAddr !== '' && !listenOptions(interfaces).some((o) => o.value === srcAddr)) {
     setAddrCustom(true);
@@ -296,10 +333,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     return true;
   }), [caps.sourceIps, caps.transparentIpv6, protocol, srcAddr]);
 
-  // sni は TCP のみ。UDP の terminate は DTLS（rproxy が対応しているときだけ）。編集中のルールのモードは常に選べる
+  // UDP の sni は DTLS・QUIC のサーバ名での振り分け（rproxy v0.3.8 から）。UDP の terminate は DTLS（rproxy が対応しているときだけ）。
+  // 編集中のルールのモードは常に選べる
   const availableTlsModes = useMemo(() => {
     const modes = caps.tlsModes.filter((m) => {
-      if (protocol === 'udp' && m === 'sni') return false;
       if (protocol === 'udp' && m === 'terminate' && !caps.dtls) return false;
       return true;
     });
@@ -330,7 +367,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate' && !l7;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
-  const showUnmatched = protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate') && routes.length > 0 && !l7;
+  const showUnmatched = ((protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate')) || (protocol === 'udp' && tlsMode === 'sni'))
+    && routes.length > 0 && !l7;
   const profile = PROFILES.find((p) => p.id === profileId);
 
   const applyProfile = (id: string) => {
@@ -780,6 +818,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             {errors.srcPortEnd && <p className={errorClass}>{errors.srcPortEnd}</p>}
           </div>
         </div>
+        {http3Conflicts.length > 0 && (
+          <p className="-mt-3 mb-4 text-xs rounded border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1" data-testid="http3-conflict">
+            {protocol === 'udp'
+              ? `同じアドレス・ポートで HTTP/3（QUIC）を受ける L7 のルールがあります（${http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`).join('、')}）。UDP の同じポートは併用できないので、rproxy に断られます。L7 のルールの HTTP/3 を外すか、別のポートを選んでください。`
+              : `同じアドレス・ポートの UDP のルールがあります（${http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`).join('、')}）。HTTP/3（QUIC）は同じポートの UDP を使うので、HTTP/3 を有効にすると rproxy に断られます。`}
+          </p>
+        )}
         {!editMode && srcPortEnd !== '' && (
           <p className="-mt-3 mb-4 text-xs text-gray-600">
             各ポートを、転送先ポートから順に同じ数だけずらして転送します（最大 {caps.maxRangePorts} ポート）。範囲は作成後に変更できません。
@@ -909,6 +954,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           {protocol === 'udp' && tlsMode === 'terminate' && (
             <p className="text-xs text-yellow-800 mt-1">WebRTC のメディアには使えません（DTLS-SRTP の鍵がブラウザとメディアサーバの間で結びついているため）。</p>
           )}
+          {protocol === 'udp' && tlsMode === 'sni' && (
+            <div className="mt-1 text-xs rounded border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1 space-y-1" data-testid="udp-sni-notes">
+              {UDP_SNI_NOTES.map((n) => <p key={n}>{n}</p>)}
+            </div>
+          )}
           {capabilitiesError && <p className="text-yellow-800 text-xs mt-1">{capabilitiesError}</p>}
         </div>
 
@@ -917,7 +967,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             <legend className={labelClass}>
               {l7
                 ? '終端せずにそのまま流すサーバ名（任意。ほかの名前は L7 のルートで振り分け）:'
-                : 'サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:'}
+                : protocol === 'udp' && tlsMode === 'sni'
+                  ? 'サーバ名ごとの転送先（DTLS・QUIC の名前。一致しない名前と名前を読めない UDP は「基本」の転送先へ）:'
+                  : 'サーバ名ごとの転送先（任意。一致しない名前は「基本」の転送先へ）:'}
             </legend>
             <p className={helpClass} id="rule-tls-routes-help">
               サーバ名はカンマ区切りで複数書けます。<span className="font-mono">*.example.com</span> は 1 階層（a.example.com）だけ、

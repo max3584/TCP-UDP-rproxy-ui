@@ -206,6 +206,21 @@ export function getCapabilities(): Promise<Capabilities> {
   return request<Capabilities>('GET', '/capabilities');
 }
 
+// rproxy の設定ファイル（RPROXY_CONFIG）の状態（GET /config。rules:read のスコープ）
+export interface RproxyConfigStatus {
+  configured: boolean;
+  path?: string;
+  rules?: number;
+  // 最新の版を反映できなかった理由（それまでの版が動いている）
+  error?: string | null;
+  // 再起動しないと効かない global の変更
+  restart_needed?: string[];
+}
+
+export function getConfigStatus(): Promise<RproxyConfigStatus> {
+  return request<RproxyConfigStatus>('GET', '/config');
+}
+
 export function listRules(): Promise<RproxyRuleStatus[]> {
   return request<RproxyRuleStatus[]>('GET', '/rules');
 }

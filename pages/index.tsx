@@ -30,8 +30,7 @@ import {
   summarize,
   targetLabel,
   tlsBreakdown,
-  uptimeSecs,
-} from '@/components/dashboard';
+  uptimeSecs, ConfigStatusView } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
 import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
 
@@ -106,6 +105,10 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
         <Metric label="tx（送信）" value={reachable ? formatBytes(summary.txBytes) : '-'} title="転送先 → クライアント" />
         <Metric label="拒否" value={reachable ? formatCount(summary.denied) : '-'}
           title="allow_from の範囲外、またはどのサーバ名にも一致しない（unmatched: reject）ため切断した接続" />
+        {summary.protocol === 'udp' && summary.droppedReported && (
+          <Metric label="捨てたデータグラム" value={reachable ? formatCount(summary.dropped) : '-'}
+            title="rproxy が転送できずに捨てた UDP のデータグラム（セッションの待ち行列があふれた・送信に失敗した など）" />
+        )}
       </dl>
       {summary.httpRules > 0 && (
         // L7（http）のルールのリクエスト。stats.http を返さない古い rproxy では 0 のまま
@@ -338,11 +341,25 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () =
   );
 };
 
+// rproxy の設定ファイル（RPROXY_CONFIG）に誤りがある・再起動が要る変更があるときの注意
+const ConfigStatusNotice: React.FC<{ status: ConfigStatusView }> = ({ status }) => (
+  <div role="status" data-testid="config-status" className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-4 py-3 text-sm space-y-1">
+    <p className="font-semibold">rproxy の設定ファイル{status.path ? <>（<span className="font-mono">{status.path}</span>）</> : ''}</p>
+    {status.error && (
+      <p>最新の内容を反映できませんでした（それまでの内容で動いています）：<span className="font-mono break-all">{status.error}</span></p>
+    )}
+    {status.restartNeeded.length > 0 && (
+      <p>再起動しないと効かない変更があります：<span className="font-mono">{status.restartNeeded.join(', ')}</span></p>
+    )}
+  </div>
+);
+
 const DashboardPage: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [configStatus, setConfigStatus] = useState<ConfigStatusView | null>(null);
   const inFlight = useRef(false);
 
   const load = useCallback(async (): Promise<void> => {
@@ -360,6 +377,13 @@ const DashboardPage: React.FC = () => {
       setData(await res.json() as DashboardData);
       setLastUpdated(Date.now());
       setError('');
+      // 設定ファイルの状態（読めなければ何も出さない。失敗してもダッシュボードは止めない）
+      try {
+        const c = await fetch('/api/forward/config');
+        setConfigStatus(c.ok ? await c.json() as ConfigStatusView : null);
+      } catch {
+        setConfigStatus(null);
+      }
     } catch (err) {
       setError(`ルールの一覧を取得できませんでした: ${err instanceof Error ? err.message : err}`);
     } finally {
@@ -397,6 +421,7 @@ const DashboardPage: React.FC = () => {
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
+      {configStatus?.show && <ConfigStatusNotice status={configStatus} />}
 
       {data === null ? (
         !error && <p className="text-gray-700">読み込み中…</p>

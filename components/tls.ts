@@ -1,6 +1,6 @@
 // TLS / STARTTLS / ポート範囲の入力の正規化と検証。画面（RuleForm）と API route の両方から使う。
 // 組み合わせの規則は rproxy-api の src/tlsconf.rs の validate と同じにしてある（最終的な判定は rproxy）。
-// エラーコードも rproxy に揃える（組み合わせの誤りは tls_config、UDP の sni は unsupported、形の誤りは invalid）。
+// エラーコードも rproxy に揃える（組み合わせの誤りは tls_config、形の誤りは invalid）。UDP の sni は rproxy v0.3.8 から（DTLS・QUIC のサーバ名で振り分ける）。
 
 import {
   BALANCES,
@@ -265,9 +265,6 @@ export function isDefaultTls(tls: TlsSpec): boolean {
 export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | null, portCount: number, http = false): void {
   const certificates = tls.certificates ?? [];
   const routes = tls.routes ?? [];
-  if (protocol === 'udp' && tls.mode === 'sni') {
-    throw new TlsError('SNI での振り分けは TCP でのみ使えます（UDP では「終端 (DTLS)」を使ってください）。', 'unsupported');
-  }
   if (tls.mode === 'terminate' && certificates.length === 0) {
     throw new TlsError('終端（terminate）には証明書と秘密鍵を 1 組以上指定してください。', 'tls_config');
   }
@@ -312,6 +309,9 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
     if (route.remote_port + portCount - 1 > 65535) {
       throw invalid(`${names.join(', ')} の転送先ポートにポート範囲の長さを足すと 65535 を超えます。`);
     }
+    if (route.passthrough && protocol === 'udp') {
+      throw new TlsError('「終端しない（passthrough）」は TCP のルールでだけ指定できます（UDP の sni ではすべての名前が終端されずに流れます）。', 'tls_config');
+    }
     if (route.passthrough && tls.mode !== 'terminate') {
       throw new TlsError('「終端しない（passthrough）」は終端（terminate）のルールでだけ指定できます（sni ではすべての名前が終端されずに流れます）。', 'tls_config');
     }
@@ -328,9 +328,10 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
   if (starttls !== null && (protocol !== 'tcp' || tls.mode !== 'terminate')) {
     throw new TlsError('STARTTLS は TCP で終端（terminate）のときだけ使えます。', 'tls_config');
   }
+  // UDP は sni だけが名前を読んでから転送先を選ぶ（DTLS の終端は名前で振り分けない）
   if (tls.unmatched !== undefined && tls.unmatched !== 'default'
-    && (protocol !== 'tcp' || tls.mode === 'passthrough' || routes.length === 0)) {
-    throw new TlsError('どのサーバ名にも一致しない接続を切断する（unmatched: reject）のは、TCP の sni / 終端（terminate）で、サーバ名ごとの転送先があるときだけ指定できます。', 'tls_config');
+    && ((protocol === 'udp' && tls.mode !== 'sni') || tls.mode === 'passthrough' || routes.length === 0)) {
+    throw new TlsError('どのサーバ名にも一致しない接続を切断する（unmatched: reject）のは、sni（TCP / UDP）か TCP の終端（terminate）で、サーバ名ごとの転送先があるときだけ指定できます。', 'tls_config');
   }
 }
 

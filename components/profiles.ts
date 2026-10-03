@@ -95,6 +95,14 @@ export const PROFILES: Profile[] = [
     description: 'rproxy で DTLS を終端し、coturn の平文の TURN（3478/udp）へ送ります。DTLS の秘密鍵は PKCS#8（BEGIN PRIVATE KEY）に限ります。WebRTC のメディアには使えません。',
   },
   {
+    id: 'quic-sni', label: 'HTTP/3（QUIC）をサーバ名で振り分ける（UDP 443）', protocol: 'udp', srcPort: 443, distPort: 443, tlsMode: 'sni',
+    description: 'QUIC の最初のパケットからサーバ名を読み、終端せずに転送先を選びます（証明書は転送先が持ちます）。TLS タブでサーバ名ごとの転送先を追加してください。同じアドレス・ポートで、HTTP/3 を受ける L7 のルール（http3）とは併用できません。QUIC の接続の移動（クライアントのアドレスの変化）は追いかけず、ECH の接続は本当の名前を読めません。名前を読めない UDP は下の転送先へ送るか、「一致しないとき」を切断にして捨てます。',
+  },
+  {
+    id: 'turns-dtls-sni', label: 'TURN の DTLS をサーバ名で振り分ける（UDP 5349）', protocol: 'udp', srcPort: 5349, distPort: 5349, tlsMode: 'sni',
+    description: 'DTLS の ClientHello からサーバ名を読み、終端せずに TURN サーバを選びます（証明書は TURN サーバが持ちます）。TLS タブでサーバ名ごとの転送先を追加してください。DTLS でない UDP（TURN の平文・WebRTC のメディアなど）は名前を読めないので、下の転送先へ送るか捨てます。',
+  },
+  {
     id: 'ftp', label: 'FTP（21）', protocol: 'tcp', srcPort: 21, distPort: 21, tlsMode: 'passthrough',
     description: '制御の接続をそのまま流します。パッシブモードのデータ用に「FTP パッシブ」の範囲ルールも追加し、vsftpd の pasv_address に rproxy の公開 IP を設定してください。',
   },
