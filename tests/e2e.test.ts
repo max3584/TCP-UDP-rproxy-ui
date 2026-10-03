@@ -414,17 +414,22 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     const port = listenPort + 13;
     const r = {
       ...rule, protocol: 'udp', srcPort: port,
-      tls: { mode: 'sni', routes: [{ server_names: ['a.test', '**.b.test'], remote_addr: '127.0.0.1', remote_port: backendPort + 3 }], unmatched: 'default' },
+      // reject（既定でない値）にして、一致しないときの扱いも保存されることを確かめる（default は省いた形で保存される）
+      tls: { mode: 'sni', routes: [{ server_names: ['a.test', '**.b.test'], remote_addr: '127.0.0.1', remote_port: backendPort + 3 }], unmatched: 'reject' },
     };
-    const add = await call('add', r);
-    expect(add.status, JSON.stringify(add.json)).toBe(200);
-    const got = await call('rule', undefined, 'GET', { protocol: 'udp', addr: '127.0.0.1', port: String(port) });
-    expect(got.json).toMatchObject({ state: 'running', tls: { mode: 'sni', unmatched: 'default' } });
-    expect(got.json.tls.routes[0]).toMatchObject({ server_names: ['a.test', '**.b.test'], remote_port: backendPort + 3 });
-    // passthrough の route は UDP では使えない（rproxy と同じく断る）
-    const bad = await call('add', { ...r, srcPort: port + 1, tls: { mode: 'sni', routes: [{ server_name: 'a.test', remote_addr: '127.0.0.1', remote_port: backendPort, passthrough: true }] } });
-    expect([bad.status, bad.json.code]).toEqual([400, 'tls_config']);
-    expect((await call('delete', r)).status).toBe(200);
+    try {
+      const add = await call('add', r);
+      expect(add.status, JSON.stringify(add.json)).toBe(200);
+      const got = await call('rule', undefined, 'GET', { protocol: 'udp', addr: '127.0.0.1', port: String(port) });
+      expect(got.json).toMatchObject({ state: 'running', tls: { mode: 'sni', unmatched: 'reject' } });
+      expect(got.json.tls.routes[0]).toMatchObject({ server_names: ['a.test', '**.b.test'], remote_port: backendPort + 3 });
+      // passthrough の route は UDP では使えない（rproxy と同じく断る）
+      const bad = await call('add', { ...r, srcPort: port + 1, tls: { mode: 'sni', routes: [{ server_name: 'a.test', remote_addr: '127.0.0.1', remote_port: backendPort, passthrough: true }] } });
+      expect([bad.status, bad.json.code]).toEqual([400, 'tls_config']);
+    } finally {
+      // 途中で失敗しても、あとのテスト（一覧が空になること）に残さない
+      await call('delete', r);
+    }
   });
 
   it('deletes the range rule', async () => {
