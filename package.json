@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:ui": "playwright test",
-    "i18n:check": "vitest run tests/i18n.test.ts"
+    "i18n:check": "vitest run tests/i18n.test.ts",
+    "screenshots": "playwright test -c scripts/screenshots/playwright.config.ts"
   },
   "dependencies": {
     "mariadb": "^3.5.4",

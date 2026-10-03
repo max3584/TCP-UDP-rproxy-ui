@@ -29,6 +29,7 @@ npm run build   # 環境変数がなくてもビルドは通る
 npm run lint    # eslint .（eslint.config.mjs。Next 16 で next lint がなくなったので ESLint の flat config で next/core-web-vitals を使う）
 npm test        # vitest（tests/ 配下）
 npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と rproxy-api（DB_* / RPROXY_API_*）が要る
+npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.png）を撮り直す。先に npm run build
 ```
 
 - 開発機 con0 では 3000 番（別サービス）と 8080 番（code-server）が使用中。UI は `./node_modules/.bin/next dev -p 3001`、rproxy は 8081 で動かす（`.env.local` の `NEXTAUTH_URL` と `RPROXY_API_URL` もこのポートに合わせてある）。
@@ -42,6 +43,7 @@ npm run test:ui # Playwright（tests/ui）。先に npm run build。MariaDB と 
 - import のパスエイリアスは `@/`（リポジトリのルート）。vitest でも `vitest.config.mts` で同じエイリアスを設定している。
 - テストは MariaDB・rproxy・NextAuth をすべてモックする（`tests/forward.test.ts`）。実際の DB や rproxy は不要。
 - 画面操作の E2E（`tests/ui`、Playwright）は CI の e2e ジョブで本物の MariaDB と rproxy-api を相手に動く。サインインは Keycloak を通さず、テスト用の `NEXTAUTH_SECRET` で作ったセッションのクッキー（`tests/ui/global-setup.ts`）。ライト・ダークで白地に白文字がないことも確かめる。画面の文言やボタン名を変えたら `tests/ui` も直す。
+- README のスクリーンショット（`scripts/screenshots/`、`npm run screenshots`）は通常の E2E とは別の Playwright の設定で、3197 番（`SCREENSHOTS_PORT`）で `next start` し、画面が呼ぶ `/api/forward/*` をブラウザの中で `sample-data.ts` のデータに差し替える（本番のコードにモックは入れない。DB・rproxy・Keycloak は不要）。データは文書用のアドレス（192.0.2.0/24・198.51.100.0/24・2001:db8::/32）と example.com だけ。PNG は next が入れる sharp があれば 256 色に減らす。画面を大きく変えたら撮り直し、画像を目で確かめる。
 
 ## 構成
 

@@ -11,6 +11,18 @@
 A web UI for managing the forwarding rules of [rproxy-api](https://github.com/max3584/rproxy-api) (Next.js, sign-in with Keycloak, rules stored in MariaDB).
 Versions are released with the same numbers as rproxy-api (UI vX.Y.Z is paired with rproxy-api vX.Y.Z; see [docs/en/RELEASING.md](docs/en/RELEASING.md)).
 
+## Screenshots
+
+![Dashboard (TCP / UDP counts and states, rules needing attention, the table of all rules)](docs/images/dashboard.en.png)
+
+| Rule details (L7 routes, statistics) | Adding a rule (the L7 (HTTP) tab) |
+|---|---|
+| ![Rule details](docs/images/rule-detail.en.png) | ![Adding a rule](docs/images/rule-new.en.png) |
+| **Change history** | **Phone width (375px) and the menu** |
+| ![Change history](docs/images/history.en.png) | <img src="docs/images/mobile-dashboard.en.png" width="48%" alt="Dashboard at phone width"> <img src="docs/images/mobile-menu.en.png" width="48%" alt="The open menu"> |
+
+The data is documentation sample data (192.0.2.0/24, 198.51.100.0/24, 2001:db8::/32, example.com). To retake them, run `npm run build && npm run screenshots` (`scripts/screenshots/`; the API is replaced with sample data, so MariaDB, rproxy-api and Keycloak are not needed).
+
 ## Installation (Debian / Ubuntu)
 
 It can be installed from the same apt repository as rproxy-api (`rproxy-ui`, a single package for any CPU).
