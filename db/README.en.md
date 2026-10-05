@@ -59,3 +59,7 @@ GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
 ```
 
 (The examples use `rproxy` as the database name. Adjust it to match `DB_DATABASE`.)
+
+## Backup
+
+Back up both tables with `mariadb-dump --single-transaction`. How to take backups, the restore order (including DB users and migrations) and checks after restoring are in [docs/en/BACKUP.md](https://github.com/max3584/rproxy-api/blob/master/docs/en/BACKUP.md) of rproxy-api.

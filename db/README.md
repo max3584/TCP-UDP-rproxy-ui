@@ -59,3 +59,7 @@ GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
 ```
 
 （例ではデータベース名を `rproxy` としている。`DB_DATABASE` に合わせて読み替えること。）
+
+## バックアップ
+
+両テーブルを `mariadb-dump --single-transaction` で取る。取り方・戻す順番（DB ユーザーと migration を含む）・戻した後の確認は rproxy-api の [docs/BACKUP.md](https://github.com/max3584/rproxy-api/blob/master/docs/BACKUP.md)。
