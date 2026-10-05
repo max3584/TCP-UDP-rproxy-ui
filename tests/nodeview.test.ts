@@ -19,7 +19,16 @@ describe('db/node-view.mjs', () => {
   it('exposes exactly the columns rproxy-api reads (src/config/db.rs)', () => {
     expect(RPROXY_COLUMNS).toEqual(['protocol', 'src_addr', 'src_port', 'src_port_end', 'dist_addr', 'dist_port', 'source_ip', 'udp_idle_secs', 'options']);
     const select = /SELECT (.*)\n/.exec(nodeViewSql({ node: 'a' }))![1];
-    expect(select.split(', ').map((c) => c.replace(/^r\.`|`$/g, ''))).toEqual(RPROXY_COLUMNS);
+    // 列の名前（上書きを重ねる列は AS で同じ名前にする）を順に取り出す
+    const names = [...select.matchAll(/(?:^|, )(?:r\.`(\w+)`|.*? AS `(\w+)`)(?=, |$)/g)].map((m) => m[1] ?? m[2]);
+    expect(names).toEqual(RPROXY_COLUMNS);
+  });
+
+  it('overlays the per-node overrides (columns replaced, options merged with JSON_MERGE_PATCH)', () => {
+    const sql = nodeViewSql({ node: 'n1' });
+    expect(sql).toContain("LEFT JOIN `rproxy`.`forward_rule_overrides` o ON o.`rule_id` = r.`id` AND o.`node` = 'n1'");
+    expect(sql).toContain('COALESCE(o.`src_addr`, r.`src_addr`) AS `src_addr`');
+    expect(sql).toContain("JSON_MERGE_PATCH(COALESCE(r.`options`, '{}'), o.`options`)");
   });
 
   it('takes the database, user and host; omits CREATE USER without a password', () => {

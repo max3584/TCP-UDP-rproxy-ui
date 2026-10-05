@@ -65,6 +65,29 @@ async function groupHa(): Promise<{ active: string[]; warning: string | null }> 
   return { active: g.active, warning: g.warning };
 }
 
+// ビューの行（rproxy と同じ SELECT）。上書きを重ねた結果を確かめる
+async function viewRows(database: string): Promise<any[]> {
+  const mariadb = (await import('mariadb')).default;
+  const conn = await mariadb.createConnection({
+    host: process.env.DB_HOST, port: Number(process.env.DB_PORT), database: database,
+    user: process.env.DB_USER, password: process.env.DB_PASSWORD,
+  });
+  try {
+    const rows = await conn.query('SELECT protocol, src_addr, CAST(src_port AS SIGNED) AS src_port, dist_addr, CAST(dist_port AS SIGNED) AS dist_port, CAST(options AS CHAR) AS options FROM forward_rules');
+    return rows.map((r: any) => ({ ...r, src_port: Number(r.src_port), dist_port: Number(r.dist_port) }));
+  } finally {
+    await conn.end();
+  }
+}
+
+// ノードの GET /rules の 1 件（待ち受けアドレスも見る）
+async function liveOn(node: string, port: number): Promise<any | undefined> {
+  const { loadNodes, targetNodes, toRproxyNode } = await import('@/components/nodes');
+  const { listRules, withNode } = await import('@/components/rproxy');
+  const n = targetNodes(loadNodes(), node)![0];
+  return (await withNode(toRproxyNode(n), () => listRules())).find((r) => r.listen_port === port);
+}
+
 function container(node: string): string {
   const pairs = (process.env.E2E_NODE_CONTAINERS ?? '').split(',').map((p) => p.split('='));
   const hit = pairs.find(([n]) => n === node);
@@ -128,8 +151,8 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect(json.reachable).toBe(true);
     expect(json.rproxyError).toBeNull();
     expect(json.nodes).toEqual([
-      { name: 'n1', reachable: true, error: null, rules: 2, failed: 0, drifted: 0 },
-      { name: 'n2', reachable: true, error: null, rules: 2, failed: 0, drifted: 0 },
+      { name: 'n1', reachable: true, error: null, rules: 2, failed: 0, drifted: 0, lastSync: expect.any(String) },
+      { name: 'n2', reachable: true, error: null, rules: 2, failed: 0, drifted: 0, lastSync: expect.any(String) },
     ]);
     const group = json.rules.find((r: any) => r.srcPort === GROUP_PORT);
     expect(group.target).toBe('ha');
@@ -252,5 +275,68 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect(await rulesOn('n1')).toEqual([GROUP_PORT]);
 
     expect((await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: GROUP_PORT, target: 'ha' })).status).toBe(200);
+  });
+
+  const OV_PORT = 19410;
+
+  it('a per-node override changes that node only, is not drift, and survives a restart through the view', async () => {
+    expect((await call('add', { ...rule(OV_PORT), target: 'ha' })).status).toBe(200);
+    const set = await call('override', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: OV_PORT, target: 'ha', node: 'n2', override: { srcAddr: '127.0.0.2', distAddr: '127.0.0.1', distPort: 10 } });
+    expect(set.status, JSON.stringify(set.json)).toBe(200);
+    expect(await liveOn('n1', OV_PORT)).toMatchObject({ listen_addr: '127.0.0.1', remote_port: 9 });
+    expect(await liveOn('n2', OV_PORT)).toMatchObject({ listen_addr: '127.0.0.2', remote_port: 10 });
+
+    const { json } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(OV_PORT), target: 'ha' });
+    expect(json.overrides).toEqual({ n2: { srcAddr: '127.0.0.2', distAddr: '127.0.0.1', distPort: 10 } });
+    expect(json.nodes.map((n: any) => [n.node, n.state, n.drift])).toEqual([['n1', 'running', []], ['n2', 'running', []]]);
+
+    // ビューが上書きを重ねる（rproxy と同じ SELECT）
+    const v2 = (await viewRows('rproxy_node_n2')).find((r) => Number(r.src_port) === OV_PORT);
+    expect(v2).toMatchObject({ src_addr: '127.0.0.2', dist_port: 10 });
+    const v1 = (await viewRows('rproxy_node_n1')).find((r) => Number(r.src_port) === OV_PORT);
+    expect(v1).toMatchObject({ src_addr: '127.0.0.1', dist_port: 9 });
+
+    execFileSync('docker', ['restart', container('n2')], { stdio: 'inherit' });
+    await waitFor(async () => {
+      expect(await liveOn('n2', OV_PORT)).toMatchObject({ listen_addr: '127.0.0.2', remote_port: 10 });
+    });
+
+    // エクスポートに上書きが入る
+    const { default: handler } = await import('@/pages/api/forward/[forward]');
+    let sent = '';
+    const res: any = { setHeader: () => undefined, status: () => res, send: (b: string) => { sent = b; return res; }, json: () => res };
+    await handler({ method: 'GET', query: { forward: 'export', target: 'ha' } } as unknown as NextApiRequest, res);
+    const doc = JSON.parse(sent);
+    expect(doc.rules.find((r: any) => r.listen_port === OV_PORT).overrides).toEqual({ n2: { listen_addr: '127.0.0.2', remote_addr: '127.0.0.1', remote_port: 10 } });
+  });
+
+  it('pausing a node pauses group rules on that node only, also across a restart', async () => {
+    const paused = await call('pause-node', { node: 'n1', action: 'pause' });
+    expect(paused.status, JSON.stringify(paused.json)).toBe(200);
+    expect(paused.json.results.find((r: any) => r.key === `tcp|127.0.0.1|${OV_PORT}`).result).toBe('paused');
+    expect(await liveOn('n1', OV_PORT)).toBeUndefined();
+    expect(await liveOn('n2', OV_PORT)).toBeDefined();
+    execFileSync('docker', ['restart', container('n1')], { stdio: 'inherit' });
+    await waitFor(async () => { await rulesOn('n1'); });
+    expect(await liveOn('n1', OV_PORT)).toBeUndefined();
+
+    expect((await call('pause-node', { node: 'n1', action: 'resume' })).status).toBe(200);
+    expect(await liveOn('n1', OV_PORT)).toMatchObject({ listen_addr: '127.0.0.1' });
+  });
+
+  it('copying to an overlapping node is refused; moving to a node keeps that node\'s override', async () => {
+    const copy = await call('copy', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: OV_PORT, target: 'ha', to: 'n1' });
+    expect(copy.status).toBe(409);
+    expect(copy.json.code).toBe('target_conflict');
+
+    const move = await call('copy', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: OV_PORT, target: 'ha', to: 'n2', move: true });
+    expect(move.status, JSON.stringify(move.json)).toBe(200);
+    expect(await liveOn('n1', OV_PORT)).toBeUndefined();
+    expect(await liveOn('n2', OV_PORT)).toMatchObject({ listen_addr: '127.0.0.2', remote_port: 10 });
+    const history = await call('history', undefined, 'GET', { protocol: 'tcp', port: String(OV_PORT) });
+    expect(history.json.entries.slice(0, 2).map((e: any) => [e.action, e.target])).toEqual([['ADD', 'n2'], ['DELETE', 'ha']]);
+
+    expect((await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.2', srcPort: OV_PORT, target: 'n2' })).status).toBe(200);
+    expect(await liveOn('n2', OV_PORT)).toBeUndefined();
   });
 });

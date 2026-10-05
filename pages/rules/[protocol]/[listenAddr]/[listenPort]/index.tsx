@@ -30,7 +30,10 @@ import {
   uptimeSecs,
   multiNode,
   projectRule,
+  ruleHref,
+  targetChoices,
 } from '@/components/dashboard';
+import OverrideEditor from '@/components/OverrideEditor';
 import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
 import Tabs, { tabPanelProps } from '@/components/Tabs';
 import { DRIFT_LABELS } from '@/components/drift';
@@ -389,7 +392,14 @@ const RuleDetailPage: React.FC = () => {
   const key = useMemo(() => (router.isReady ? parseRuleKey(router.query) : null), [router.isReady, router.query]);
   const { rule, error, setError, notFound, lastUpdated, load } = useRule(key);
   // ノードが 2 つ以上なら、ノード／グループとノードごとの状態を出す（#98）
-  const manyNodes = multiNode(useNodes());
+  const nodesInfo = useNodes();
+  const manyNodes = multiNode(nodesInfo);
+  // コピー・移動（#98）
+  const [copying, setCopying] = useState(false);
+  const [copyTo, setCopyTo] = useState('');
+  const [copyMove, setCopyMove] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [notice, setNotice] = useState('');
   // ノードが 2 つ以上なら「全体 / ノードごと」のタブ（1 つなら今と同じ見た目）
   const [tab, setTab] = useState('all');
   const [resending, setResending] = useState(false);
@@ -426,6 +436,30 @@ const RuleDetailPage: React.FC = () => {
       setConfirmingPause(false);
     } finally {
       setSwitching(false);
+    }
+  };
+
+  // ほかのノード／グループへのコピー・移動（#98）
+  const handleCopy = async () => {
+    if (!rule || copyTo === '') return;
+    setCopyBusy(true);
+    try {
+      const res = await fetch('/api/forward/copy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: rule.protocol, srcAddr: rule.srcAddr, srcPort: rule.srcPort, target: rule.target, to: copyTo, move: copyMove }),
+      });
+      if (!res.ok) throw new Error(await errorDetail(res));
+      setCopying(false);
+      // ノードに置いたときは、そのノードの上書きの待ち受けアドレスになる
+      const toGroup = nodesInfo?.groups.some((g) => g.name === copyTo) ?? false;
+      const addr = !toGroup ? rule.overrides?.[copyTo]?.srcAddr ?? rule.srcAddr : rule.srcAddr;
+      await router.push(ruleHref({ protocol: rule.protocol, addr: addr, port: rule.srcPort, target: copyTo }));
+    } catch (err) {
+      setError(`${copyMove ? '移動' : 'コピー'}に失敗しました: ${err instanceof Error ? err.message : err}`);
+      setCopying(false);
+    } finally {
+      setCopyBusy(false);
     }
   };
 
@@ -493,6 +527,7 @@ const RuleDetailPage: React.FC = () => {
         {rule && key && rule.origin !== 'static' && (
           <div className="flex flex-wrap gap-2">
             <Link href={ruleEditHref(key)} className="btn-primary">編集</Link>
+            {manyNodes && rule.target !== undefined && <button type="button" className="btn-secondary" onClick={() => { setCopyTo(''); setCopyMove(false); setCopying(true); }}>コピー・移動</button>}
             {rule.state === 'paused'
               ? <button type="button" className="btn-secondary" disabled={switching} onClick={() => void handlePauseResume('resume')}>{switching ? '再開中…' : '再開'}</button>
               : <button type="button" className="btn-secondary" onClick={() => setConfirmingPause(true)}>一時停止</button>}
@@ -502,6 +537,7 @@ const RuleDetailPage: React.FC = () => {
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
+      {notice && <p role="status" className="rounded border border-green-300 bg-green-50 px-4 py-2 text-sm text-green-900">{notice}</p>}
       {notFound && (
         <div className="card p-4 text-gray-900">
           <p>このルールは見つかりません（削除されたか、ほかの利用者のルールです）。</p>
@@ -517,6 +553,10 @@ const RuleDetailPage: React.FC = () => {
           {nodeTabs && tab === 'all' && <NodeCompare rule={rule} />}
           {nodeTabs && tab !== 'all' && view.nodes?.[0] && (
             <DriftSection rule={rule} node={view.nodes[0]} busy={resending} onResend={() => void handleResend(tab)} notice={resendNotice} />
+          )}
+          {nodeTabs && tab !== 'all' && rule.origin !== 'static' && nodesInfo?.groups.some((g) => g.name === rule.target) && (
+            <OverrideEditor key={`${tab}|${JSON.stringify(rule.overrides?.[tab] ?? null)}`} rule={rule} node={tab}
+              onSaved={(m) => { setNotice(m); void load(); }} onError={setError} />
           )}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <Section id="section-overview" title="概要">
@@ -658,6 +698,27 @@ const RuleDetailPage: React.FC = () => {
         </Section>
       )}
 
+      <ConfirmDialog
+        open={copying}
+        title="ほかのノード／グループへコピー・移動"
+        confirmLabel={copyMove ? '移動する' : 'コピーする'}
+        busy={copyBusy}
+        onConfirm={() => void handleCopy()}
+        onCancel={() => setCopying(false)}
+      >
+        <label className="block text-sm text-gray-900">
+          <span className="block mb-1">先のノード／グループ</span>
+          <select className="border border-gray-300 rounded px-2 py-1 w-full bg-white text-gray-900" value={copyTo} onChange={(e) => setCopyTo(e.target.value)} data-testid="copy-to">
+            <option value="">選んでください</option>
+            {nodesInfo && targetChoices(nodesInfo).filter((c) => c.value !== rule?.target).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+        </label>
+        <label className="mt-2 inline-flex items-center gap-2 text-sm text-gray-900">
+          <input type="checkbox" checked={copyMove} onChange={(e) => setCopyMove(e.target.checked)} />
+          移動する（元のルールを消す）
+        </label>
+        <p className="mt-2 text-xs text-gray-700">ノードごとの上書きは、先にもあるノードの分だけ引き継ぎます。ノードが重なるときの移動は、元を消してから作るので既存の接続が切れます。</p>
+      </ConfirmDialog>
       <ConfirmDialog
         open={confirmingPause}
         title="ルールを一時停止しますか？"

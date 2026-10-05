@@ -4,15 +4,16 @@ import type { ForwardRule } from './lib';
 import { hostPort, portsLabel } from './dashboard';
 import { tc, translate } from '@/i18n/core';
 
-// RESEND は 1 つのノードへの送り直し（#98。内容は変えない）
-export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND';
-export const HISTORY_ACTIONS: HistoryAction[] = ['ADD', 'UPDATE', 'DELETE', 'RESEND'];
+// RESEND は 1 つのノードへの送り直し（#98。内容は変えない）、OVERRIDE はノードごとの上書きの変更（内容はそのノードで動かす内容）
+export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND' | 'OVERRIDE';
+export const HISTORY_ACTIONS: HistoryAction[] = ['ADD', 'UPDATE', 'DELETE', 'RESEND', 'OVERRIDE'];
 
 export const ACTION_LABELS: Record<HistoryAction, string> = {
   ADD: '追加',
   UPDATE: '変更',
   DELETE: '削除',
   RESEND: '送り直し',
+  OVERRIDE: 'ノードの上書き',
 };
 
 // 1 件の履歴。rule はその操作のあとの内容（DELETE は削除する前の内容）。
