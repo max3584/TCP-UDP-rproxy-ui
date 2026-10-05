@@ -14,6 +14,7 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrations/005_ranges_and_tls.sql` | 両テーブルにポート範囲の終わり（`src_port_end`）と TLS / STARTTLS の設定（`options`）の列を追加 |
 | `migrations/006_nodes.sql` | 複数の rproxy（#98）：両テーブルに `target` 列、キーを `(target, protocol, src_addr, src_port)` に、`forward_rule_targets` 表を追加。`RPROXY_UI_NODES` を使わない 1 台の環境では適用しなくても動く |
 | `migrations/007_log_node.sql` | 複数の rproxy（#98）：`forward_rules_log` に送り直したノード（`node`）の列を追加。`RPROXY_UI_NODES` を使うときに必要 |
+| `migrations/008_overrides.sql` | 複数の rproxy（#98）：グループのルールのノードごとの上書き（`forward_rule_overrides`）。適用したらノードごとのビューを `node-view.mjs` で作り直す |
 | `node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけの DB ユーザーの SQL を出す（下の「複数の rproxy（ノードごとのビュー）」） |
 
 既存の環境では `002` から順に適用する。`schema.sql` を変えたときは、同じ変更をする migration も追加すること。
@@ -44,7 +45,8 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
   各行はその操作のあとのルールの内容（`DELETE` は削除する前の内容）を持つので、UI の「変更の履歴」はこの行から前の版との違いを出し、「この版に戻す」でその内容に戻す（インポート・巻き戻しの操作も同じく記録する）。
 
 - `forward_rule_targets`：ノード → そのノードが読む `target`（ノード自身と、そのノードを含むグループ）。UI が `RPROXY_UI_NODES` の内容に合わせて書き直す（`RPROXY_UI_NODES` があるときだけ）。ノードごとのビューがこれで絞り込む。
-  `forward_rules_log` にも `target` 列がある。1 つのノードへの送り直しは `update_action` が `RESEND` で、`node`（007）にそのノードを残す（内容は送ったルール）。
+- `forward_rule_overrides`：グループのルールの、ノードごとの上書き（`rule_id`・`node` で一意。ルールを消すと一緒に消える）。`src_addr`・`dist_addr`・`dist_port` は上書きするときだけ値を持ち（複数の宛先にするときの `dist_addr` は `''`）、`options` は `forward_rules.options` に `JSON_MERGE_PATCH` で重ねる差分（`allow_from`・`extra_listen_addrs`・`targets`・`balance`・`health_check`・`enabled`。null はキーを消す）。
+  `forward_rules_log` にも `target` 列がある。上書きの変更は `update_action` が `OVERRIDE` で、`node` にそのノード、内容はそのノードで動かす内容（巻き戻しはできない）。1 つのノードへの送り直しは `update_action` が `RESEND` で、`node`（007）にそのノードを残す（内容は送ったルール）。
 
 ## DB ユーザー
 
@@ -56,6 +58,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rules     TO 'rproxy_ui'@
 GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@'10.0.0.%';
 -- RPROXY_UI_NODES を使うとき
 GRANT SELECT, INSERT, DELETE         ON rproxy.forward_rule_targets TO 'rproxy_ui'@'10.0.0.%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overrides TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api は起動時に `forward_rules` を読むだけなので、読み取り専用のユーザーを使う。
@@ -72,7 +75,7 @@ GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
 ## 複数の rproxy（ノードごとのビュー）
 
 `RPROXY_UI_NODES` で複数のノードを使うときは、rproxy ごとにデータベースを分け、その中に `forward_rules` という名前のビューを作る。
-ビューは UI のテーブルのうち、そのノードの行と、そのノードを含むグループの行だけを、rproxy が読む列だけで出す（rproxy の `SELECT ... CAST(src_port AS SIGNED) ... FROM forward_rules` はビューにもそのまま通る）。
+ビューは UI のテーブルのうち、そのノードの行と、そのノードを含むグループの行だけを、そのノードの上書き（`forward_rule_overrides`）を重ねて、rproxy が読む列だけで出す（rproxy の `SELECT ... CAST(src_port AS SIGNED) ... FROM forward_rules` はビューにもそのまま通る）。
 rproxy の DB ユーザーにはビューの読み取りだけを渡す（ビューは作った人の権限で元のテーブルを読む `SQL SECURITY DEFINER`。作った人のアカウントを消さないこと）。
 
 ```bash
@@ -84,8 +87,9 @@ node db/node-view.mjs node1 --database rproxy --host 10.0.0.11 --password '<pass
 ```sql
 CREATE DATABASE IF NOT EXISTS `rproxy_node_node1` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`forward_rules` AS
-  SELECT r.`protocol`, r.`src_addr`, r.`src_port`, r.`src_port_end`, r.`dist_addr`, r.`dist_port`, r.`source_ip`, r.`udp_idle_secs`, r.`options`
+  SELECT r.`protocol`, COALESCE(o.`src_addr`, r.`src_addr`) AS `src_addr`, r.`src_port`, r.`src_port_end`, COALESCE(o.`dist_addr`, r.`dist_addr`) AS `dist_addr`, COALESCE(o.`dist_port`, r.`dist_port`) AS `dist_port`, r.`source_ip`, r.`udp_idle_secs`, CASE WHEN o.`options` IS NULL THEN r.`options` ELSE JSON_MERGE_PATCH(COALESCE(r.`options`, '{}'), o.`options`) END AS `options`
     FROM `rproxy`.`forward_rules` r
+    LEFT JOIN `rproxy`.`forward_rule_overrides` o ON o.`rule_id` = r.`id` AND o.`node` = 'node1'
    WHERE r.`target` IN (SELECT t.`target` FROM `rproxy`.`forward_rule_targets` t WHERE t.`node` = 'node1');
 CREATE USER IF NOT EXISTS 'rproxy_node1'@'10.0.0.11' IDENTIFIED BY '<password>';
 GRANT SELECT ON `rproxy_node_node1`.`forward_rules` TO 'rproxy_node1'@'10.0.0.11';

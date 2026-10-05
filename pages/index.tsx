@@ -31,10 +31,15 @@ import {
   summarize,
   targetLabel,
   tlsBreakdown,
-  uptimeSecs, ConfigStatusView, driftedNodes, nodeTotals, projectToNode } from '@/components/dashboard';
+  uptimeSecs, ConfigStatusView, driftedNodes, nodeTotals, projectToNode, targetChoices } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
-import { joinList, t, translate } from '@/i18n/core';
-import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
+import { joinList, localeTag, t, translate } from '@/i18n/core';
+import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
+
+function formatAt(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(localeTag());
+}
 
 // 要確認のルールの説明（複数のノード：ずれ・act の判定の警告）
 function nodeIssueText(r: ForwardRules): string {
@@ -168,6 +173,7 @@ const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: Forw
             <th scope="col" className="text-right">tx（送信）</th>
             <th scope="col" className="text-right">拒否</th>
             <th scope="col" className="text-right">HTTP リクエスト</th>
+            <th scope="col">最後の反映</th>
           </tr>
         </thead>
         <tbody>
@@ -195,6 +201,7 @@ const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: Forw
                 <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatBytes(t.txBytes) : '-'}</td>
                 <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatCount(t.denied) : '-'}</td>
                 <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatCount(t.httpRequests) : '-'}</td>
+                <td className="whitespace-nowrap text-gray-900">{n.lastSync ? formatAt(n.lastSync) : '-'}</td>
               </tr>
             );
           })}
@@ -490,6 +497,10 @@ const DashboardPage: React.FC = () => {
   const nodes = useMemo(() => data?.nodes ?? [], [data]);
   const manyNodes = nodes.length > 1;
   const [tab, setTab] = useState('all');
+  const [exportTarget, setExportTarget] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState('');
+  const nodesInfo = useNodes();
   if (tab !== 'all' && !nodes.some((n) => n.name === tab) && data !== null) setTab('all');
   const allRules = useMemo(() => data?.rules ?? [], [data]);
   // ノードのタブでは、そのノードに置くルールだけを、そのノードの状態で出す
@@ -500,6 +511,31 @@ const DashboardPage: React.FC = () => {
   const nodeView = manyNodes && tab !== 'all' ? nodes.find((n) => n.name === tab) ?? null : null;
   const reachable = nodeView ? nodeView.reachable : data?.reachable ?? false;
   const nodesUp = nodes.filter((n) => n.reachable).length;
+  const bulk = async (node: string, action: 'pause' | 'resume') => {
+    if (action === 'pause' && !window.confirm(t('{node} のルールをすべて一時停止しますか？（グループのルールはこのノードだけ止めます。既存の接続は切断されます）', { node: node }))) return;
+    setBulkBusy(true);
+    setBulkNotice('');
+    try {
+      const res = await fetch('/api/forward/pause-node', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node: node, action: action }),
+      });
+      if (!res.ok) throw new Error(await errorDetail(res));
+      const out = await res.json() as { results: { result: string; key: string; message?: string }[] };
+      const count = (r: string) => out.results.filter((x) => x.result === r).length;
+      const failed = out.results.filter((x) => x.result === 'error');
+      setBulkNotice(t('{done} 件を{what}、{skipped} 件はそのまま、{failed} 件は失敗しました。', {
+        done: count(action === 'pause' ? 'paused' : 'resumed'), what: translate(action === 'pause' ? '停止' : '再開'), skipped: count('skipped'), failed: failed.length,
+      }));
+      if (failed.length > 0) setError(failed.map((f) => `${f.key}: ${f.message ?? ''}`).join(' / '));
+      await load();
+    } catch (err) {
+      setError(`まとめての${action === 'pause' ? '停止' : '再開'}に失敗しました: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
   const nodeTabs = manyNodes ? [{ id: 'all', label: '全体' }, ...nodes.map((n) => ({
     id: n.name,
     label: <span className="font-mono">{n.name}</span>,
@@ -515,7 +551,15 @@ const DashboardPage: React.FC = () => {
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn-secondary" onClick={() => void load()}>今すぐ更新</button>
           {/* 自分のルール（rproxy-admin はすべての利用者のルール）を rproxy の設定ファイルと同じ形で書き出す */}
-          <a href="/api/forward/export" className="btn-secondary" download data-testid="export">エクスポート（JSON）</a>
+          {manyNodes && (
+            // ノード単位のエクスポート（#98。そのノード／グループに置いたルールだけ）
+            <select aria-label="エクスポートする範囲" className="border border-gray-300 rounded px-2 py-1 text-sm bg-white text-gray-900 max-lg:min-h-11"
+              value={exportTarget} onChange={(e) => setExportTarget(e.target.value)} data-testid="export-target">
+              <option value="">すべて</option>
+              {nodesInfo && targetChoices(nodesInfo).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          )}
+          <a href={`/api/forward/export${exportTarget ? `?target=${encodeURIComponent(exportTarget)}` : ''}`} className="btn-secondary" download data-testid="export">エクスポート（JSON）</a>
           <Link href="/rules/import" className="btn-secondary">インポート</Link>
           <Link href="/history" className="btn-secondary">履歴</Link>
           <Link href="/rules/new" className="btn-primary">新規ルール</Link>
@@ -541,7 +585,12 @@ const DashboardPage: React.FC = () => {
                     {nodeView.reachable ? '接続できます' : '接続できません'}
                   </span>
                 }
-                sub={nodeView.error ? <span className="break-all">{nodeView.error}</span> : `ずれ ${nodeView.drifted ?? 0} 件`}
+                sub={nodeView.error ? <span className="break-all">{nodeView.error}</span> : (
+                  <>
+                    {`ずれ ${nodeView.drifted ?? 0} 件`}
+                    {nodeView.lastSync && <div>{`最後の反映 ${formatAt(nodeView.lastSync)}`}</div>}
+                  </>
+                )}
               />
             ) : manyNodes ? (
               <StatTile
@@ -578,6 +627,16 @@ const DashboardPage: React.FC = () => {
             <ProtocolCard summary={summary.udp} reachable={reachable} />
             <TlsCard rules={rules} />
           </div>
+
+          {nodeView && (
+            // ノード単位のまとめての停止・再開（#98。グループのルールはこのノードだけ止める）
+            <div className="card p-4 flex flex-wrap items-center gap-2 text-sm text-gray-900" data-testid="node-bulk">
+              <span className="mr-auto">このノードのルールをまとめて：</span>
+              <button type="button" className="btn-secondary" disabled={bulkBusy} onClick={() => void bulk(nodeView.name, 'pause')}>すべて一時停止</button>
+              <button type="button" className="btn-secondary" disabled={bulkBusy} onClick={() => void bulk(nodeView.name, 'resume')}>すべて再開</button>
+              {bulkNotice && <p role="status" className="w-full text-green-800">{bulkNotice}</p>}
+            </div>
+          )}
 
           {manyNodes && tab === 'all' && <NodesCard nodes={nodes} groups={data.groups ?? []} rules={allRules} />}
 

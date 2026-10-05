@@ -12,6 +12,9 @@ export interface RoleConfig {
   userRole: string;
   // user（admin 以外）が待ち受けに使えるポートの範囲。null なら制限なし
   userPorts: [number, number] | null;
+  // user（admin 以外）が触れるノード（RPROXY_UI_USER_NODES。#98）。null なら制限なし。
+  // グループは、そのノードがすべてここにあるときだけ使える。RPROXY_UI_NODES がないとき（1 台）は使わない
+  userNodes: string[] | null;
 }
 
 export class RoleConfigError extends Error {}
@@ -26,6 +29,14 @@ function parsePorts(value: string): [number, number] {
   return [lo, hi];
 }
 
+function parseNodes(value: string | undefined): string[] | null {
+  const list = (value ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
+  if (list.length === 0) return null;
+  const bad = list.find((n) => !/^[a-z0-9][a-z0-9_]{0,31}$/.test(n));
+  if (bad !== undefined) throw new RoleConfigError(`RPROXY_UI_USER_NODES はノードの名前をカンマで区切って書いてください: ${bad}`);
+  return list;
+}
+
 // 環境変数から読む。未設定なら既定（realm_access.roles、rproxy-admin、user のロールは問わない、ポートの制限なし）
 export function roleConfig(env: Record<string, string | undefined> = process.env): RoleConfig {
   const ports = env.RPROXY_UI_USER_PORTS?.trim();
@@ -34,6 +45,7 @@ export function roleConfig(env: Record<string, string | undefined> = process.env
     adminRole: env.RPROXY_UI_ADMIN_ROLE?.trim() || 'rproxy-admin',
     userRole: env.RPROXY_UI_USER_ROLE?.trim() ?? '',
     userPorts: ports ? parsePorts(ports) : null,
+    userNodes: parseNodes(env.RPROXY_UI_USER_NODES),
   };
 }
 
@@ -61,4 +73,10 @@ export function accessOf(roles: readonly string[], cfg: RoleConfig): Access {
 export function portsAllowed(access: Access, cfg: RoleConfig, first: number, last: number): boolean {
   if (access === 'admin' || cfg.userPorts === null) return true;
   return cfg.userPorts[0] <= first && last <= cfg.userPorts[1];
+}
+
+// user がこのノードの集まり（ノード、またはグループのノード）を触れるか（admin は常に触れる）
+export function nodesAllowed(access: Access, cfg: RoleConfig, nodes: readonly string[]): boolean {
+  if (access === 'admin' || cfg.userNodes === null) return true;
+  return nodes.length > 0 && nodes.every((n) => cfg.userNodes!.includes(n));
 }

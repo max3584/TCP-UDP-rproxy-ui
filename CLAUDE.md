@@ -63,6 +63,8 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/cidr.ts` | allow_from の CIDR / 単一 IP の検証と正規化（rproxy の `src/cidr.rs` と同じ規則。Node の `net` を使わないので画面でも使える） |
 | `components/lib.ts` | 共通の型（`ForwardRule`、`TlsSpec`、`ForwardRules`、`RuleStats`、`DashboardData`、`sessionUser` など）と pino ロガー |
 | `components/nodes.ts` | 複数の rproxy（#98）の設定。`RPROXY_UI_NODES`（YAML / JSON）の `nodes`（name・url・token_file）と `groups`（name・nodes・mode: single / active_standby）、`default_target` を読んで確かめる（`parseNodesConfig`、誤りは `NodesConfigError`）。なければ `RPROXY_API_URL` / `RPROXY_API_TOKEN` の 1 台（`implicitConfig`、名前 `default`、`configured: false`）。グループのノード（`targetNodes`）、重なり（`targetsOverlap`）、`forward_rule_targets` の行（`membership`）、1 台に聞く問い合わせの相手（`probeNode`） |
+| `components/overrides.ts` | グループのルールのノードごとの上書き（`NodeOverride`：待ち受けアドレス・追加の待ち受けアドレス・転送先（1 つか複数）・allow_from・このノードだけの停止）。検証 `normalizeOverride`、そのノードで動かす内容 `effectiveRule`、DB の行 `overrideRow` / `overrideFromRow`（options は JSON_MERGE_PATCH の差分。ビューと同じ重ね方）、エクスポートの形 `toSettingsOverride` / `settingsOverridesToBody`。React と Node に依存しない |
+| `components/OverrideEditor.tsx` | ルールの詳細のノードのタブの「このノードだけの設定（上書き）」 |
 | `components/drift.ts` | UI の定義と各ノードの実際のルールの「ずれ」（`ruleDrift`：`ruleFromStatus` で画面の形に揃え、`canon` で既定値・空の値を省いて項目ごとに比べる。結果は項目のコード `DriftField`、名前は `DRIFT_LABELS`）と、送り直しで作り直しが要るか（`needsRecreateOnNode`） |
 | `components/ha.ts` | active_standby の act の判定（`vipAddrs`：グループの `vip`、なければルールの特定の待ち受けアドレス。`haStatus`：各ノードの `GET /interfaces` に VIP があれば act、だれも・複数が持てば警告 none / split） |
 | `components/Tabs.tsx` | WAI-ARIA のタブの並び（矢印キー / Home / End）と `tabPanelProps`。ダッシュボードとルールの詳細の「全体 / ノードごと」 |
@@ -78,7 +80,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/sourceip.ts` | source_ip の欄に出す説明（transparent が使えない理由、IPv4 だけであること、選んだときのルーティングの前提）。`GET /capabilities` の `transparent` を使う |
 | `components/listen.ts` | 待ち受けアドレスの選択肢と、予約済みのアドレス・ポートとの重なりの判定 |
 | `components/messages.ts` | API のエラーコードを利用者向けの説明に直す（`resolve_failed`、`static`、`no_role`、`rproxy_unauthorized` など） |
-| `components/roles.ts` | ロール（`rproxy-admin` / `rproxy-user`）の判定。クレームの位置・ロールの名前・利用者が使えるポートは環境変数（`RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_USER_PORTS`） |
+| `components/roles.ts` | ロール（`rproxy-admin` / `rproxy-user`）の判定。クレームの位置・ロールの名前・利用者が使えるポート・ノードは環境変数（`RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_USER_PORTS` / `RPROXY_UI_USER_NODES`。`nodesAllowed`） |
 | `components/apiguard.ts` | API route の共通の確認（サインインとロール、`requireRole`）と、rproxy の失敗の返し方（`rproxyFailure`。rproxy の 401 は `rproxy_unauthorized`） |
 | `components/httpspec.ts` | L7（ルールの `http`）の型、`match` の式の検査（rproxy の `src/http/matcher.rs` と同じ書き方）と組み立て、`validateHttp`・`cleanHttp`。画面と API route の両方で使う |
 | `components/HttpEditor.tsx` | RuleForm の「L7 (HTTP)」タブ（ルート・サービス・ミドルウェア・一致しないとき）。ミドルウェアの種類は `features.middlewares`、サービスのヘルスチェック・スティッキーは `features.services` にあるものだけ出す |
@@ -130,7 +132,13 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
      画面はノードが 2 つ以上なら「全体 / ノードごと」のタブ（`projectRule` / `projectToNode` でそのノードの値に置き換えて同じ部品で出す）。「全体」はノードごとの比較の表。ルールの詳細のノードのタブに「UI の定義との違い」と「このノードに送り直す」。
    - `resend`（POST `{protocol, srcAddr, srcPort, target, node}`）：DB の内容を 1 つのノードにだけ送る（未登録なら POST、PATCH で直せる違いは PATCH、直せない違いは削除して作り直し、停止中なのに動いていれば削除、同じなら何もしない）。自分のルール（admin はだれのでも）だけ。履歴は `RESEND` で `node` 列（migration 007）にノード。DB の内容に揃えるだけなので COMMIT の失敗では戻さない。
    - 設定ファイルの注意（`config`）は全ノードに聞いてまとめる（`mergeConfigStatusViews`）。
-     ノードごとの上書き・コピー／移動・ノード単位の停止とエクスポートの画面・ノードに限ったロールは後の段階（#98）。
+   - ノードごとの上書き（migration 008、`forward_rule_overrides`）：ノードへの送信・状態の取得・ずれ・送り直しは、すべてそのノードの `effectiveRule`（キーも上書きの待ち受けアドレス）で行う（`onNodes` の step がノードを受け取り、`lockedExtras` で上書きを読む）。1 台のとき・上書きがないときは今までと同じ。
+     `override`（POST `{protocol, srcAddr, srcPort, target, node, override | null}`）はグループのルールだけ。そのノードにだけ反映（待ち受けアドレスが変われば作り直し）し、履歴は `OVERRIDE`（`node` に ノード。巻き戻し不可。差分の計算では前の版から外す）。ノードごとのビューは同じ差分を `JSON_MERGE_PATCH` で重ねる（`db/node-view.mjs`）。
+     エクスポートは `overrides`（UI のエクスポートだけ）を書き、インポートはグループに読み込むときだけ受け付ける。置き換えで上書きが変わるときは作り直す。
+   - `pause-node`（POST `{node, action}`）：そのノードのルールをまとめて止める・再開する（そのノードに置いたルールはルールの停止、グループのルールは上書きの `enabled: false`）。1 件ずつ別のトランザクション。
+   - `copy`（POST `{protocol, srcAddr, srcPort, target, to, move?}`）：ほかのノード／グループへコピー・移動（重なる先へのコピーは 409 `target_conflict`、重なる先への移動は元を消してから作り、だめなら戻す）。上書きは先にもあるノードの分だけ。ノードに置くときはそのノードの上書きを重ねた内容。
+   - `RPROXY_UI_USER_NODES`：`rproxy-user` が触れるノード（`checkNodes`。外は 403 `node_not_allowed`。`nodes` の応答の `allowedTargets` で画面の選択肢も絞る）。admin とノードを設定していないときは関係ない。
+   - `dashboard` の `nodes[].lastSync`：そのノードを含むノード／グループの履歴の最後（送り直し・上書きはそのノードの分だけ）。
 
 HTTP の取り決めは `../rproxy-api/docs/API.md` が正。変更するときは両方のリポジトリを揃えること。
 rproxy は起動時に `forward_rules` を読んでルールを復元する（読む列は `db/README.md` を参照）。複数のノードでは、各 rproxy はノードごとのデータベースの `forward_rules` ビュー（`db/node-view.mjs`。`forward_rule_targets` で自分とグループの行に絞る）を読む。rproxy-api は変えない。

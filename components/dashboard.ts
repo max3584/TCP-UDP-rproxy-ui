@@ -5,6 +5,7 @@ import type { Balance, CertRole, CertState, CertStatus, ForwardRule, ForwardRule
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 import { hostsOfMatch } from './httpspec';
+import { effectiveRule } from './overrides';
 import { joinList, joinSentences, t, translate } from '@/i18n/core';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
@@ -638,10 +639,12 @@ export function aggregateNodeStates(nodes: NodeLiveState[]): AggregatedState {
 
 // 画面に出すノード／グループの名前の一覧（追加の画面の選択肢）。グループは「名前（ノード a, b）」
 export function targetChoices(info: NodesInfo): { value: string; label: string; group: boolean }[] {
+  // RPROXY_UI_USER_NODES で絞った利用者には、使えるものだけを出す
+  const allowed = (v: { value: string }) => info.allowedTargets === undefined || info.allowedTargets.includes(v.value);
   return [
     ...info.groups.map((g) => ({ value: g.name, label: `${g.name}（${g.mode === 'active_standby' ? 'act/stb' : 'グループ'}: ${g.nodes.join(', ')}）`, group: true })),
     ...info.nodes.map((n) => ({ value: n.name, label: n.name, group: false })),
-  ];
+  ].filter(allowed);
 }
 
 // ノードが 2 つ以上あるか（ノードの選択・表示を出すか。1 つなら今と同じ見た目）
@@ -767,7 +770,8 @@ export function http3PortConflicts(rules: ForwardRules[], target: ListenSide, se
 export function projectRule(rule: ForwardRules, node: string): ForwardRules | null {
   const n = rule.nodes?.find((x) => x.node === node);
   if (!n) return null;
-  const { certStatus: _omit, ...rest } = rule;
+  // そのノードの上書き（待ち受けアドレス・転送先・allow_from）を重ねた内容で出す
+  const { certStatus: _omit, ...rest } = effectiveRule(rule, rule.overrides?.[node]);
   void _omit;
   return {
     ...rest,

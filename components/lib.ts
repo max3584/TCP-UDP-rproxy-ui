@@ -153,6 +153,8 @@ export interface ForwardRule {
   enabled?: boolean;
   // ルールを置くノードかグループの名前（#98）。RPROXY_UI_NODES でノードを設定したときだけ付く
   target?: string;
+  // グループのルールの、ノードごとの上書き（components/overrides.ts。上書きがあるときだけ）
+  overrides?: Record<string, import('./overrides').NodeOverride>;
 }
 
 export const MAX_EXTRA_LISTEN_ADDRS = 16;
@@ -294,6 +296,8 @@ export interface NodeSummary {
   failed: number;
   // そのうち、UI の定義とずれているもの
   drifted: number;
+  // このノードに最後に反映した時刻（ISO 8601。このノードを含むノード／グループの履歴の最後。なければ null）
+  lastSync?: string | null;
 }
 
 // ダッシュボードの active_standby のグループ（vip を設定したものだけ）
@@ -313,6 +317,8 @@ export interface NodesInfo {
   groups: { name: string; mode: GroupMode; nodes: string[]; vips?: string[] }[];
   // 追加の画面で最初に選ぶノード／グループ。null なら選んでもらう
   defaultTarget: string | null;
+  // 利用者が使えるノード／グループ（RPROXY_UI_USER_NODES で絞ったときだけ。admin には付かない）
+  allowedTargets?: string[];
 }
 
 // GET /api/forward/dashboard の応答

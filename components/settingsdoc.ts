@@ -6,6 +6,7 @@ import { DEFAULT_UDP_IDLE_SECS } from './lib';
 import type { ForwardRule } from './lib';
 import type { RproxyRule } from './rproxy';
 import { TlsError, isDefaultTls } from './tls';
+import { settingsOverridesToBody, toSettingsOverride } from './overrides';
 
 // starttls / starttls_required は STARTTLS を使うときだけ付ける
 export function starttlsFields(rule: ForwardRule) {
@@ -58,6 +59,10 @@ export function toSettingsRule(rule: ForwardRule): Record<string, unknown> {
   if (rule.balance === 'round_robin') delete out.balance;
   // 一時停止中のルール（UI だけの印。エクスポートの形の中だけで使う）
   if (rule.enabled === false) out.enabled = false;
+  // ノードごとの上書き（#98。UI のエクスポートだけの項目。{ノード名: {listen_addr, remote_addr, …}}）
+  if (rule.overrides && Object.keys(rule.overrides).length > 0) {
+    out.overrides = Object.fromEntries(Object.keys(rule.overrides).sort().map((n) => [n, toSettingsOverride(rule.overrides![n])]));
+  }
   return out;
 }
 
@@ -108,6 +113,8 @@ const FIELD_MAP: Record<string, string> = {
   extra_listen_addrs: 'extraListenAddrs',
   // UI での一時停止（エクスポートした停止中のルール）。rproxy の設定ファイルにはない項目
   enabled: 'enabled',
+  // ノードごとの上書き（UI のエクスポートだけ）
+  overrides: 'overrides',
 };
 
 export function settingsRuleToBody(value: unknown): Record<string, unknown> {
@@ -116,7 +123,7 @@ export function settingsRuleToBody(value: unknown): Record<string, unknown> {
   for (const [key, v] of Object.entries(value)) {
     const to = FIELD_MAP[key];
     if (to === undefined) throw invalid(`知らない項目があります: ${key}`);
-    body[to] = v;
+    body[to] = key === 'overrides' ? settingsOverridesToBody(v) : v;
   }
   return body;
 }
@@ -154,6 +161,9 @@ export function parseDoc(text: string): ParsedDoc {
   // 停止中（enabled）は UI のエクスポートだけの項目。rproxy の設定ファイルにはない
   if (!uiExport && rules.some((r) => typeof r === 'object' && r !== null && 'enabled' in r)) {
     throw invalid('enabled（停止中）は UI のエクスポート（format: rproxy-ui-export）の中でだけ使えます。');
+  }
+  if (!uiExport && rules.some((r) => typeof r === 'object' && r !== null && 'overrides' in r)) {
+    throw invalid('overrides（ノードごとの上書き）は UI のエクスポート（format: rproxy-ui-export）の中でだけ使えます。');
   }
   return { rules: rules, ignoredGlobal: doc.global !== undefined, uiExport: uiExport };
 }

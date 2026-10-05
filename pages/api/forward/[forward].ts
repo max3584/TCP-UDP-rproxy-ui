@@ -58,13 +58,14 @@ import {
 import { aggregateNodeStates, mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
 import { NodesConfig, NodesConfigError, groupOf, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode } from '@/components/nodes';
 import { needsRecreateOnNode, ruleDrift } from '@/components/drift';
+import { NodeOverride, Overrides, effectiveRule, normalizeOverride, overrideFromRow, overrideRow, sameOverrides, settingsOverridesToBody } from '@/components/overrides';
 import { haStatus, interfaceAddrs, vipAddrs } from '@/components/ha';
 import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout';
 import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
 import { localizedApi } from '@/i18n/server';
 import { translate } from '@/i18n/core';
-import { Access, RoleConfig, accessOf, portsAllowed, roleConfig } from '@/components/roles';
+import { Access, RoleConfig, accessOf, nodesAllowed, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
 import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
 import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
@@ -89,7 +90,8 @@ const pool = process.env.NODE_ENV === 'development'
   : createPool();
 
 // RESEND：1 つのノードに DB の内容を送り直した（#98。node 列にそのノード）
-type Action = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND';
+// OVERRIDE：ノードごとの上書きを変えた（node 列にそのノード、内容はそのノードで動かす内容）
+type Action = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND' | 'OVERRIDE';
 type AppLogger = ReturnType<typeof Logger>;
 
 class HttpError extends Error {
@@ -168,6 +170,15 @@ async function placeForKey(actor: Actor, key: { protocol: string; srcAddr: strin
 // SELECT / UPDATE / DELETE の WHERE に付ける所有者の条件
 function ownerClause(actor: Actor): { sql: string; params: string[] } {
   return actor.access === 'admin' ? { sql: '', params: [] } : { sql: 'auth_id = ? AND ', params: [actor.id] };
+}
+
+// user（admin 以外）が RPROXY_UI_USER_NODES の外のノードを触ろうとしたら 403（ノードを設定したときだけ）
+function checkNodes(actor: Actor, place: Place | RproxyNode[]): void {
+  const nodes = Array.isArray(place) ? place : place.target === null ? null : place.nodes;
+  if (nodes === null) return;
+  if (!nodesAllowed(actor.access, actor.roles, nodes.map((n) => n.name))) {
+    throw new HttpError(403, `ノード ${nodes.map((n) => n.name).join(', ')} は管理者だけが触れます（利用者が触れるのは ${(actor.roles.userNodes ?? []).join(', ')}）。`, 'node_not_allowed');
+  }
 }
 
 // user（admin 以外）が RPROXY_UI_USER_PORTS の外の待ち受けポートを使おうとしたら 403
@@ -370,8 +381,45 @@ interface Applied {
 const DB_ONLY: Applied = { undo: async () => undefined, results: [] };
 
 // 置き場所のノード（グループなら全員）で step を実行する。1 台でも失敗したら、成功したノードを戻して投げる（fanout.ts）
-function onNodes(place: Place, logger: AppLogger, step: () => Promise<Undo>): Promise<Applied> {
-  return applyToNodes(place.nodes, () => step(), logger);
+// step はノードを受け取る（ノードごとの上書きを重ねた内容を送るため）
+function onNodes(place: Place, logger: AppLogger, step: (node: RproxyNode) => Promise<Undo>): Promise<Applied> {
+  return applyToNodes(place.nodes, step, logger);
+}
+
+// ロックしたルールの id とノードごとの上書き（ノードを設定していなければ id は null、上書きはなし）
+async function lockedExtras(conn: PoolConnection, place: Place, key: { protocol: string; srcAddr: string; srcPort: number }): Promise<{ id: number | null; overrides: Overrides }> {
+  if (place.target === null) return { id: null, overrides: {} };
+  const where = keyWhere(place, key);
+  const rows = await conn.query(`SELECT id FROM forward_rules WHERE ${where.sql}`, where.params);
+  if (!Array.isArray(rows) || rows.length === 0) return { id: null, overrides: {} };
+  const id = Number(rows[0].id);
+  return { id: id, overrides: (await loadOverrides(conn, [id])).get(id) ?? {} };
+}
+
+// ルールの id → ノード → 上書き
+async function loadOverrides(db: Pick<PoolConnection, 'query'>, ids: number[] | null): Promise<Map<number, Overrides>> {
+  const out = new Map<number, Overrides>();
+  if (ids !== null && ids.length === 0) return out;
+  const rows = ids === null
+    ? await db.query('SELECT rule_id, node, src_addr, dist_addr, dist_port, options FROM forward_rule_overrides')
+    : await db.query(`SELECT rule_id, node, src_addr, dist_addr, dist_port, options FROM forward_rule_overrides WHERE rule_id IN (${ids.map(() => '?').join(', ')})`, ids);
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const id = Number(r.rule_id);
+    const map = out.get(id) ?? {};
+    map[String(r.node)] = overrideFromRow(r);
+    out.set(id, map);
+  }
+  return out;
+}
+
+async function writeOverrides(conn: PoolConnection, id: number, overrides: Overrides): Promise<void> {
+  for (const [node, ov] of Object.entries(overrides)) {
+    const row = overrideRow(ov);
+    await conn.query(
+      'INSERT INTO forward_rule_overrides (rule_id, node, src_addr, dist_addr, dist_port, options) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE src_addr = VALUES(src_addr), dist_addr = VALUES(dist_addr), dist_port = VALUES(dist_port), options = VALUES(options)',
+      [id, node, row.src_addr, row.dist_addr, row.dist_port, row.options]
+    );
+  }
 }
 
 // DB の変更 → rproxy への反映 → COMMIT の順に行う。rproxy が失敗したら ROLLBACK する。
@@ -667,13 +715,19 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
   // ノードごとに、DB のルールが使っているキー（固定ルールと重なるものは DB のルールを出す）
   const usedKeys = new Map<string, Set<string>>(nodes.map((n) => [n.name, new Set<string>()]));
 
+  const allOverrides = await loadOverrides(pool, null);
+  const lastSync = await lastSyncByNode(cfg);
+  for (const [name, at] of lastSync) summaries.get(name)!.lastSync = at;
   const rules = rows.map((row: any): ForwardRules => {
-    const rule = fromRow(row);
-    const key = ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort);
+    const ovs = allOverrides.get(Number(row.id)) ?? {};
+    const rule: ForwardRule = { ...fromRow(row), ...(Object.keys(ovs).length > 0 ? { overrides: ovs } : {}) };
     const members = targetNodes(cfg, String(row.target)) ?? [];
     const states = members.map((m) => {
       const l = byName.get(m.name)!;
-      const st = nodeLiveState(m.name, rule, l.live !== null, l.live?.get(key));
+      // そのノードで動かす内容（上書きを重ねたもの）と、その待ち受けのキーで比べる
+      const eff = effectiveRule(rule, ovs[m.name]);
+      const key = ruleKeyString(eff.protocol, eff.srcAddr, eff.srcPort);
+      const st = nodeLiveState(m.name, eff, l.live !== null, l.live?.get(key));
       const sum = summaries.get(m.name)!;
       sum.rules += 1;
       if (st.state === 'failed' || st.state === 'missing') sum.failed += 1;
@@ -791,16 +845,18 @@ async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | str
     if (unreachable !== null) throw unreachable;
     throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
   }
-  const rule = fromRow(rows[0]);
+  const ovs = (await loadOverrides(pool, [Number(rows[0].id)])).get(Number(rows[0].id)) ?? {};
+  const rule: ForwardRule = { ...fromRow(rows[0]), ...(Object.keys(ovs).length > 0 ? { overrides: ovs } : {}) };
   const held = place.target !== null && groupOf(actor.cfg, place.target)?.mode === 'active_standby'
     ? await fetchHeld(actor.cfg, place.nodes, logger) : new Map<string, Set<string> | null>();
   const states = await Promise.all(place.nodes.map(async (node) => {
+    const eff = effectiveRule(rule, ovs[node.name]);
     try {
-      return nodeLiveState(node.name, rule, true, await withNode(node, () => getRule(key)));
+      return nodeLiveState(node.name, eff, true, await withNode(node, () => getRule(toKey(eff))));
     } catch (err) {
-      if (isNotFound(err)) return nodeLiveState(node.name, rule, true, undefined);
+      if (isNotFound(err)) return nodeLiveState(node.name, eff, true, undefined);
       logger.warn(`rproxy（${node.name}）からルールの状態を取得できません: ${err}`);
-      return nodeLiveState(node.name, rule, false, undefined);
+      return nodeLiveState(node.name, eff, false, undefined);
     }
   }));
   const ha = applyHa(actor.cfg, place.target ?? undefined, rule, states, held);
@@ -821,16 +877,19 @@ async function checkOverlap(actor: Actor, place: Place, rule: ForwardRule): Prom
 }
 
 // owner：ルールの所有者（既定は操作した利用者。admin が巻き戻し・置き換えで作り直すときは元の所有者）
-async function addForwardingRule(actor: Actor, place: Place, rule: ForwardRule, logger: AppLogger, owner: string = actor.id): Promise<NodeResult[]> {
+// overrides：ノードごとの上書き（インポート・コピー・移動。置き場所のノードのものだけ）
+async function addForwardingRule(actor: Actor, place: Place, rule: ForwardRule, logger: AppLogger, owner: string = actor.id, overrides: Overrides = {}): Promise<NodeResult[]> {
   checkPorts(actor, rule);
+  checkNodes(actor, place);
   await checkOverlap(actor, place, rule);
   const authId = actor.id;
   return withTransaction(logger, async (conn) => {
     if (place.target !== null) {
-      await conn.query(
+      const inserted = await conn.query(
         'INSERT INTO forward_rules (auth_id, target, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [owner, place.target, rule.protocol, rule.srcAddr, rule.srcPort, rule.srcPortEnd, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, options(rule)]
       );
+      if (Object.keys(overrides).length > 0) await writeOverrides(conn, Number(inserted?.insertId), overrides);
     } else {
       await conn.query(
         'INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -840,9 +899,12 @@ async function addForwardingRule(actor: Actor, place: Place, rule: ForwardRule, 
     await insertLog(conn, authId, place, rule, 'ADD');
     // 停止中のまま作る（インポートの停止中のルール）なら DB だけ
     if (isPaused(rule)) return DB_ONLY;
-    return onNodes(place, logger, async () => {
-      await addRule(toRproxyRule(rule));
-      return () => deleteRule(toKey(rule));
+    return onNodes(place, logger, async (node) => {
+      const eff = effectiveRule(rule, overrides[node.name]);
+      // このノードだけ停止中なら作らない
+      if (isPaused(eff)) return async () => undefined;
+      await addRule(toRproxyRule(eff));
+      return () => deleteRule(toKey(eff));
     });
   });
 }
@@ -870,8 +932,10 @@ interface Given {
 async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule, given: Given, logger: AppLogger): Promise<NodeResult[]> {
   const { range: rangeGiven, allowFrom: allowFromGiven, http: httpGiven, crowdsec: crowdsecGiven } = given;
   const owner = ownerClause(actor);
+  checkNodes(actor, place);
   return withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, actor, place, rule, logger);
+    const { overrides: ovs } = await lockedExtras(conn, place, rule);
     checkPorts(actor, current);
     // ポート範囲は変更できない（API の制約）。指定があれば DB の値と同じでなければならない
     if (rangeGiven && rule.srcPortEnd !== current.srcPortEnd) {
@@ -924,27 +988,34 @@ async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule,
     await insertLog(conn, actor.id, place, updated, 'UPDATE');
     // 停止中のルールは DB だけを変える（再開のときにこの内容で作る）
     if (isPaused(current)) return DB_ONLY;
-    return onNodes(place, logger, async () => {
+    return onNodes(place, logger, async (node) => {
+      // ノードの上書きを重ねた内容で送る（上書きした項目はグループの変更では変わらない）
+      const before = effectiveRule(current, ovs[node.name]);
+      const after = effectiveRule(updated, ovs[node.name]);
+      if (isPaused(after)) return async () => undefined;
       try {
-        await modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec, current.targets.length > 0, extraAddrs(current).length > 0));
+        await modifyRule(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0));
       } catch (err) {
         if (!isNotFound(err)) throw err;
         // rproxy にないルール（missing）は作り直す
         logger.warn('rproxy にルールがないため、変更後の内容で作り直します');
-        await addRule(toRproxyRule(updated));
-        return () => deleteRule(toKey(updated));
+        await addRule(toRproxyRule(after));
+        return () => deleteRule(toKey(after));
       }
       // 元の転送先・TLS の設定・allow_from に戻す
-      return () => modifyRule(toKey(current), toRproxyPatch(current, updated.crowdsec, updated.targets.length > 0, extraAddrs(updated).length > 0));
+      return () => modifyRule(toKey(before), toRproxyPatch(before, after.crowdsec, after.targets.length > 0, extraAddrs(after).length > 0));
     });
   });
 }
 
 async function deleteForwardingRule(actor: Actor, place: Place, key: ForwardRule, logger: AppLogger): Promise<NodeResult[]> {
   const owner = ownerClause(actor);
+  checkNodes(actor, place);
   return withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, actor, place, key, logger);
+    const { overrides: ovs } = await lockedExtras(conn, place, key);
     const where = keyWhere(place, key);
+    // ノードごとの上書きは forward_rule_overrides の外部キー（ON DELETE CASCADE）で一緒に消える
     await conn.query(
       `DELETE FROM forward_rules WHERE ${owner.sql}${where.sql}`,
       [...owner.params, ...where.params]
@@ -952,9 +1023,11 @@ async function deleteForwardingRule(actor: Actor, place: Place, key: ForwardRule
     await insertLog(conn, actor.id, place, current, 'DELETE');
     // 停止中のルールは rproxy にないので DB だけ
     if (isPaused(current)) return DB_ONLY;
-    return onNodes(place, logger, async () => {
+    return onNodes(place, logger, async (node) => {
+      const eff = effectiveRule(current, ovs[node.name]);
+      if (isPaused(eff)) return async () => undefined;
       try {
-        await deleteRule(toKey(key));
+        await deleteRule(toKey(eff));
       } catch (err) {
         // rproxy 側に既にないなら削除済みとして扱う
         if (isNotFound(err)) return async () => undefined;
@@ -965,7 +1038,7 @@ async function deleteForwardingRule(actor: Actor, place: Place, key: ForwardRule
         }
         throw err;
       }
-      return () => addRule(toRproxyRule(current));
+      return () => addRule(toRproxyRule(eff));
     });
   });
 }
@@ -975,8 +1048,10 @@ async function deleteForwardingRule(actor: Actor, place: Place, key: ForwardRule
 // 一時停止：DB に残したまま options に enabled: false を付け、rproxy から削除する（rproxy は起動時にもその行を作らない）
 async function pauseForwardingRule(actor: Actor, place: Place, key: ForwardRule, logger: AppLogger): Promise<NodeResult[]> {
   const owner = ownerClause(actor);
+  checkNodes(actor, place);
   return withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, actor, place, key, logger);
+    const { overrides: ovs } = await lockedExtras(conn, place, key);
     checkPorts(actor, current);
     if (isPaused(current)) throw new HttpError(409, 'このルールは既に停止中です。', 'already_paused');
     const paused: ForwardRule = { ...current, enabled: false };
@@ -986,15 +1061,17 @@ async function pauseForwardingRule(actor: Actor, place: Place, key: ForwardRule,
       [options(paused), ...owner.params, ...where.params]
     );
     await insertLog(conn, actor.id, place, paused, 'UPDATE');
-    return onNodes(place, logger, async () => {
+    return onNodes(place, logger, async (node) => {
+      const eff = effectiveRule(current, ovs[node.name]);
+      if (isPaused(eff)) return async () => undefined;
       try {
-        await deleteRule(toKey(current));
+        await deleteRule(toKey(eff));
       } catch (err) {
         // rproxy に既にない（missing）なら止まっているのと同じ
         if (isNotFound(err)) return async () => undefined;
         throw err;
       }
-      return () => addRule(toRproxyRule(current));
+      return () => addRule(toRproxyRule(eff));
     });
   });
 }
@@ -1002,8 +1079,10 @@ async function pauseForwardingRule(actor: Actor, place: Place, key: ForwardRule,
 // 再開：enabled の印を外し、DB の内容で rproxy に作る
 async function resumeForwardingRule(actor: Actor, place: Place, key: ForwardRule, logger: AppLogger): Promise<NodeResult[]> {
   const owner = ownerClause(actor);
+  checkNodes(actor, place);
   return withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, actor, place, key, logger);
+    const { overrides: ovs } = await lockedExtras(conn, place, key);
     checkPorts(actor, current);
     if (!isPaused(current)) throw new HttpError(409, 'このルールは停止中ではありません。', 'not_paused');
     const resumed: ForwardRule = { ...current, enabled: true };
@@ -1013,9 +1092,11 @@ async function resumeForwardingRule(actor: Actor, place: Place, key: ForwardRule
       [options(resumed), ...owner.params, ...where.params]
     );
     await insertLog(conn, actor.id, place, resumed, 'UPDATE');
-    return onNodes(place, logger, async () => {
-      await addRule(toRproxyRule(resumed));
-      return () => deleteRule(toKey(resumed));
+    return onNodes(place, logger, async (node) => {
+      const eff = effectiveRule(resumed, ovs[node.name]);
+      if (isPaused(eff)) return async () => undefined;
+      await addRule(toRproxyRule(eff));
+      return () => deleteRule(toKey(eff));
     });
   });
 }
@@ -1032,17 +1113,20 @@ function needsRecreate(current: ForwardRule, next: ForwardRule): boolean {
 const ALL_GIVEN: Given = { range: true, allowFrom: true, http: true, crowdsec: true, targets: true, extraListenAddrs: true };
 
 // 同じキーのルール（自分の。admin ならだれのでも）を rule の内容で丸ごと置き換える。所有者は変えない
-async function replaceForwardingRule(actor: Actor, place: Place, rule: ForwardRule, logger: AppLogger): Promise<'modified' | 'recreated'> {
+// overrides：インポートの上書き（undefined なら今の上書きを保つ）。上書きが変わるときは作り直す
+async function replaceForwardingRule(actor: Actor, place: Place, rule: ForwardRule, logger: AppLogger, overrides?: Overrides): Promise<'modified' | 'recreated'> {
   const owner = ownerClause(actor);
   const where = keyWhere(place, rule);
   const rows = await pool.query(
-    `SELECT auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE ${owner.sql}${where.sql}`,
+    `SELECT ${place.target !== null ? 'id, ' : ''}auth_id, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE ${owner.sql}${where.sql}`,
     [...owner.params, ...where.params]
   );
   if (rows.length === 0) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
   const current = fromRow(rows[0]);
   const ownerId = String(rows[0].auth_id);
-  if (!needsRecreate(current, rule)) {
+  const currentOverrides = place.target !== null ? (await loadOverrides(pool, [Number(rows[0].id)])).get(Number(rows[0].id)) ?? {} : {};
+  const nextOverrides = overrides ?? currentOverrides;
+  if (!needsRecreate(current, rule) && sameOverrides(currentOverrides, nextOverrides)) {
     await editForwardingRule(actor, place, rule, ALL_GIVEN, logger);
     return 'modified';
   }
@@ -1050,10 +1134,10 @@ async function replaceForwardingRule(actor: Actor, place: Place, rule: ForwardRu
   rule = { ...rule, enabled: current.enabled !== false };
   await deleteForwardingRule(actor, place, rule, logger);
   try {
-    await addForwardingRule(actor, place, rule, logger, ownerId);
+    await addForwardingRule(actor, place, rule, logger, ownerId, nextOverrides);
   } catch (err) {
     // 作れなかったら元のルールを戻す
-    await addForwardingRule(actor, place, current, logger, ownerId)
+    await addForwardingRule(actor, place, current, logger, ownerId, currentOverrides)
       .catch((e) => logger.error(`置き換えに失敗し、元のルールも戻せませんでした（DB と rproxy から消えています）: ${e}`));
     throw err;
   }
@@ -1084,10 +1168,15 @@ async function exportRules(actor: Actor, query: NextApiRequest['query']): Promis
     params.push(target);
   }
   const rows = await pool.query(
-    `SELECT protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules${where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY protocol, src_addr, src_port`,
+    `SELECT ${actor.cfg.configured ? 'id, ' : ''}protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules${where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY protocol, src_addr, src_port`,
     params
   );
-  const rules: ForwardRule[] = rows.map(fromRow);
+  // ノードを設定していれば、ノードごとの上書きも書き出す（UI のエクスポートだけの項目 overrides）
+  const ovs = actor.cfg.configured ? await loadOverrides(pool, rows.map((r: any) => Number(r.id))) : new Map<number, Overrides>();
+  const rules: ForwardRule[] = rows.map((r: any) => {
+    const o = ovs.get(Number(r.id));
+    return { ...fromRow(r), ...(o && Object.keys(o).length > 0 ? { overrides: o } : {}) };
+  });
   return { body: formatDoc(exportDoc(rules, new Date().toISOString())), count: rules.length };
 }
 
@@ -1100,6 +1189,8 @@ interface ImportItem {
   status: ImportStatus;
   message?: string;
   rule?: ForwardRule;
+  // ノードごとの上書き（UI のエクスポートの overrides。読み込む先がグループのときだけ）
+  overrides?: Overrides;
 }
 
 const MAX_IMPORT_RULES = 1000;
@@ -1133,9 +1224,12 @@ async function inspectImport(actor: Actor, place: Place, text: unknown, logger: 
   const seen = new Set<string>();
   const items = doc.rules.map((value, index): ImportItem => {
     let rule: ForwardRule;
+    let overrides: Overrides | undefined;
     try {
-      rule = parseRule(settingsRuleToBody(value), false);
+      const body = settingsRuleToBody(value);
+      rule = parseRule(body, false);
       checkPorts(actor, rule);
+      if (body.overrides !== undefined) overrides = importOverrides(actor.cfg, place, rule, body.overrides as Record<string, unknown>);
     } catch (err) {
       const v = value as Record<string, unknown> | null;
       const key = v && typeof v === 'object' && typeof v.protocol === 'string' && typeof v.listen_addr === 'string' && typeof v.listen_port === 'number'
@@ -1147,13 +1241,27 @@ async function inspectImport(actor: Actor, place: Place, text: unknown, logger: 
     seen.add(key);
     if (statics?.has(key)) return { index: index, key: key, status: 'error', message: '同じキーの rproxy の固定ルールがあります（固定ルールは rproxy の設定ファイルで管理します）。' };
     const owner = owners.get(key);
-    if (owner === undefined) return { index: index, key: key, status: 'new', rule: rule };
+    if (owner === undefined) return { index: index, key: key, status: 'new', rule: rule, ...(overrides ? { overrides: overrides } : {}) };
     if (actor.access !== 'admin' && owner !== actor.id) {
       return { index: index, key: key, status: 'error', message: '同じキーのルールをほかの利用者が使っています。' };
     }
-    return { index: index, key: key, status: 'exists', rule: rule };
+    return { index: index, key: key, status: 'exists', rule: rule, ...(overrides ? { overrides: overrides } : {}) };
   });
   return { items: items, ignoredGlobal: doc.ignoredGlobal };
+}
+
+// インポートの overrides を確かめる（読み込む先がグループで、そのノードの上書きであること）
+function importOverrides(cfg: NodesConfig, place: Place, rule: ForwardRule, raw: Record<string, unknown>): Overrides {
+  if (place.target === null || !cfg.groups.some((g) => g.name === place.target)) {
+    throw invalid('ノードごとの上書き（overrides）は、グループに読み込むときだけ使えます。');
+  }
+  const out: Overrides = {};
+  for (const [node, value] of Object.entries(raw)) {
+    if (!place.nodes.some((n) => n.name === node)) throw invalid(`overrides のノード ${node} は ${place.target} にありません。`);
+    const ov = normalizeOverride(value, rule);
+    if (ov) out[node] = ov;
+  }
+  return out;
 }
 
 type ImportResult = 'added' | 'replaced' | 'skipped' | 'error';
@@ -1180,10 +1288,10 @@ async function importRules(actor: Actor, body: any, logger: AppLogger) {
     }
     try {
       if (item.status === 'new') {
-        await addForwardingRule(actor, place, item.rule, logger);
+        await addForwardingRule(actor, place, item.rule, logger, actor.id, item.overrides ?? {});
         results.push({ index: item.index, key: item.key, result: 'added' });
       } else {
-        await replaceForwardingRule(actor, place, item.rule, logger);
+        await replaceForwardingRule(actor, place, item.rule, logger, item.overrides);
         results.push({ index: item.index, key: item.key, result: 'replaced' });
       }
     } catch (err) {
@@ -1267,7 +1375,7 @@ async function listHistory(actor: Actor, query: NextApiRequest['query']): Promis
   }
   const action = queryString(query.action).toUpperCase();
   if (action) {
-    if (!HISTORY_ACTIONS.includes(action as HistoryAction)) throw invalid('action は ADD / UPDATE / DELETE / RESEND のどれかです。');
+    if (!HISTORY_ACTIONS.includes(action as HistoryAction)) throw invalid('action は ADD / UPDATE / DELETE / RESEND / OVERRIDE のどれかです。');
     where.push('l.update_action = ?');
     params.push(action);
   }
@@ -1303,7 +1411,7 @@ async function listHistory(actor: Actor, query: NextApiRequest['query']): Promis
       // 同じルールの 1 つ前の版（差分を作るためだけに読む）
       const prev = actor.cfg.configured
         ? await pool.query(
-          `SELECT ${logSelect(actor.cfg)} FROM forward_rules_log l WHERE l.target = ? AND l.protocol = ? AND l.src_addr = ? AND l.src_port = ? AND l.id < ? ORDER BY l.id DESC LIMIT 1`,
+          `SELECT ${logSelect(actor.cfg)} FROM forward_rules_log l WHERE l.target = ? AND l.protocol = ? AND l.src_addr = ? AND l.src_port = ? AND l.id < ? AND l.update_action <> 'OVERRIDE' ORDER BY l.id DESC LIMIT 1`,
           [row.target, row.protocol, row.src_addr, row.src_port, row.id]
         )
         : await pool.query(
@@ -1324,7 +1432,7 @@ async function listHistory(actor: Actor, query: NextApiRequest['query']): Promis
       ...(row.node !== null && row.node !== undefined ? { node: String(row.node) } : {}),
       rule: rule,
       changes: changes,
-      revertible: rule !== null,
+      revertible: rule !== null && act !== 'OVERRIDE',
     });
   }
   return { entries: entries, total: total, page: page, perPage: perPage };
@@ -1373,15 +1481,254 @@ async function resendToNode(actor: Actor, body: any, logger: AppLogger): Promise
   const place = await placeForKey(actor, key, body?.target);
   const node = place.nodes.find((n) => n.name === body?.node);
   if (!node) throw new HttpError(400, `ノード ${String(body?.node ?? '')} はこのルールの置き場所にありません。`, 'unknown_node');
+  checkNodes(actor, [node]);
   let result: ResendResult = 'unchanged';
   await withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, actor, place, key, logger);
+    const { overrides: ovs } = await lockedExtras(conn, place, key);
     checkPorts(actor, current);
-    await insertLog(conn, actor.id, place, current, 'RESEND', node.name);
-    result = await withNode(node, () => resendOne(current));
+    const eff = effectiveRule(current, ovs[node.name]);
+    await insertLog(conn, actor.id, place, eff, 'RESEND', node.name);
+    result = await withNode(node, () => resendOne(eff));
     return { undo: async () => undefined, results: [{ node: node.name, ok: true }] };
   });
   return { node: node.name, result: result };
+}
+
+// ---- ノードごとの上書き（#98） ----
+
+type OverrideResult = 'set' | 'cleared' | 'unchanged';
+
+// 1 つのノードの上書きを change で変え、そのノードにだけ反映する（OVERRIDE の履歴）。change は今の上書きから新しい上書きを作る
+async function changeOverride(actor: Actor, place: Place, key: ForwardRule, node: RproxyNode, change: (current: ForwardRule, old: NodeOverride | null) => NodeOverride | null, logger: AppLogger): Promise<OverrideResult> {
+  let result: OverrideResult = 'unchanged';
+  await withTransaction(logger, async (conn) => {
+    const current = await lockOwnRule(conn, actor, place, key, logger);
+    const { id, overrides: ovs } = await lockedExtras(conn, place, key);
+    if (id === null) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
+    checkPorts(actor, current);
+    const old = ovs[node.name] ?? null;
+    const next = change(current, old);
+    if (sameOverrides(old ? { n: old } : {}, next ? { n: next } : {})) return DB_ONLY;
+    if (next === null) {
+      await conn.query('DELETE FROM forward_rule_overrides WHERE rule_id = ? AND node = ?', [id, node.name]);
+    } else {
+      await writeOverrides(conn, id, { [node.name]: next });
+    }
+    result = next === null ? 'cleared' : 'set';
+    const before = effectiveRule(current, old ?? undefined);
+    const after = effectiveRule(current, next ?? undefined);
+    await insertLog(conn, actor.id, place, after, 'OVERRIDE', node.name);
+    if (isPaused(current)) return DB_ONLY;
+    return onNodes({ target: place.target, nodes: [node] }, logger, async () => applyNodeChange(before, after, logger));
+  });
+  return result;
+}
+
+// 1 つのノードの内容を before から after に変える（withNode の中）。戻す undo を返す
+async function applyNodeChange(before: ForwardRule, after: ForwardRule, logger: AppLogger): Promise<Undo> {
+  const quietDelete = async (r: ForwardRule) => {
+    try {
+      await deleteRule(toKey(r));
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+  };
+  if (isPaused(before) && isPaused(after)) return async () => undefined;
+  if (isPaused(after)) {
+    await quietDelete(before);
+    return () => addRule(toRproxyRule(before));
+  }
+  if (isPaused(before)) {
+    await addRule(toRproxyRule(after));
+    return () => deleteRule(toKey(after));
+  }
+  // 待ち受けアドレス・送信元 IP の扱い・ポート範囲・L4 / L7 が違えば作り直す（PATCH では変えられない）
+  if (before.srcAddr !== after.srcAddr || needsRecreate(before, after)) {
+    await quietDelete(before);
+    try {
+      await addRule(toRproxyRule(after));
+    } catch (err) {
+      await addRule(toRproxyRule(before)).catch((e) => logger.error(`元の内容に戻せませんでした: ${e}`));
+      throw err;
+    }
+    return async () => {
+      await quietDelete(after);
+      await addRule(toRproxyRule(before));
+    };
+  }
+  try {
+    await modifyRule(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0));
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    await addRule(toRproxyRule(after));
+    return () => deleteRule(toKey(after));
+  }
+  return () => modifyRule(toKey(before), toRproxyPatch(before, after.crowdsec, after.targets.length > 0, extraAddrs(after).length > 0));
+}
+
+// グループのルールのノードを決める（ノードを設定し、グループに置いたルールだけ）
+async function groupNode(actor: Actor, key: ForwardRule, target: unknown, nodeName: unknown): Promise<{ place: Place; node: RproxyNode }> {
+  if (!actor.cfg.configured) throw new HttpError(400, 'ノードごとの設定は、ノードを設定（RPROXY_UI_NODES）したときだけ使えます。', 'unsupported');
+  const place = await placeForKey(actor, key, target);
+  if (place.target === null || !actor.cfg.groups.some((g) => g.name === place.target)) {
+    throw new HttpError(400, 'ノードごとの上書きは、グループに置いたルールだけに使えます。', 'unsupported');
+  }
+  const node = place.nodes.find((n) => n.name === nodeName);
+  if (!node) throw new HttpError(400, `ノード ${String(nodeName ?? '')} はこのルールの置き場所にありません。`, 'unknown_node');
+  checkNodes(actor, [node]);
+  return { place: place, node: node };
+}
+
+// POST /api/forward/override {protocol, srcAddr, srcPort, target?, node, override: {...} | null}
+async function setOverride(actor: Actor, body: any, logger: AppLogger): Promise<{ node: string; result: OverrideResult }> {
+  const key = parseRule(body, true);
+  const { place, node } = await groupNode(actor, key, body?.target, body?.node);
+  const result = await changeOverride(actor, place, key, node, (current) => {
+    try {
+      return normalizeOverride(body?.override, current);
+    } catch (err) {
+      throw fromTlsError(err);
+    }
+  }, logger);
+  return { node: node.name, result: result };
+}
+
+// POST /api/forward/pause-node {node, action: 'pause' | 'resume'}：そのノードのルールをまとめて止める・再開する。
+// そのノードに置いたルールはルールごと、グループのルールはそのノードだけ（上書きの enabled: false）。1 件ずつ別のトランザクション
+async function pauseNode(actor: Actor, body: any, logger: AppLogger) {
+  if (!actor.cfg.configured) throw new HttpError(400, 'ノードごとの停止は、ノードを設定（RPROXY_UI_NODES）したときだけ使えます。', 'unsupported');
+  const cfgNode = actor.cfg.nodes.find((n) => n.name === body?.node);
+  if (!cfgNode) throw new HttpError(400, `ノード ${String(body?.node ?? '')} は設定にありません。`, 'unknown_node');
+  const action = body?.action;
+  if (action !== 'pause' && action !== 'resume') throw invalid('action は pause か resume です。');
+  const node = toRproxyNode(cfgNode);
+  checkNodes(actor, [node]);
+  const owner = ownerClause(actor);
+  const targets = actor.cfg.groups.filter((g) => g.nodes.includes(node.name)).map((g) => g.name).concat(node.name);
+  const rows = await pool.query(
+    `SELECT id, target, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE ${owner.sql}target IN (${targets.map(() => '?').join(', ')}) ORDER BY id`,
+    [...owner.params, ...targets]
+  );
+  const overrides = await loadOverrides(pool, rows.map((r: any) => Number(r.id)));
+  const results: { key: string; target: string; result: 'paused' | 'resumed' | 'skipped' | 'error'; message?: string }[] = [];
+  for (const row of rows) {
+    const rule = fromRow(row);
+    const target = String(row.target);
+    const label = ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort);
+    const place = placeOf(actor.cfg, target);
+    const ov = overrides.get(Number(row.id))?.[node.name];
+    try {
+      if (target === node.name) {
+        // このノードだけに置いたルールは、ルールごと止める
+        if ((action === 'pause') === isPaused(rule)) {
+          results.push({ key: label, target: target, result: 'skipped' });
+          continue;
+        }
+        if (action === 'pause') await pauseForwardingRule(actor, place, rule, logger);
+        else await resumeForwardingRule(actor, place, rule, logger);
+      } else {
+        const pausedHere = ov?.enabled === false;
+        if ((action === 'pause') === pausedHere) {
+          results.push({ key: label, target: target, result: 'skipped' });
+          continue;
+        }
+        await changeOverride(actor, place, rule, node, (_current, old) => {
+          const next: NodeOverride = { ...(old ?? {}) };
+          if (action === 'pause') next.enabled = false;
+          else delete next.enabled;
+          return Object.keys(next).length === 0 ? null : next;
+        }, logger);
+      }
+      results.push({ key: label, target: target, result: action === 'pause' ? 'paused' : 'resumed' });
+    } catch (err) {
+      logger.warn(`ノード ${node.name} の ${label}（${target}）を${action === 'pause' ? '停止' : '再開'}できませんでした: ${errorText(err)}`);
+      results.push({ key: label, target: target, result: 'error', message: errorText(err) });
+    }
+  }
+  return { node: node.name, action: action, results: results };
+}
+
+// ---- 別のノード／グループへのコピー・移動（#98） ----
+
+// POST /api/forward/copy {protocol, srcAddr, srcPort, target?, to, move?}：コピーは to に同じルールを作る。
+// 移動は to に作ってから元を消す（ノードが重なるときは、先に元を消してから作り、作れなければ元を戻す）。
+// 上書きは、to にもあるノードの分だけ引き継ぐ。所有者は変えない。履歴は to の ADD（移動なら元の DELETE も）
+async function copyRule(actor: Actor, body: any, logger: AppLogger): Promise<{ result: 'copied' | 'moved'; target: string }> {
+  if (!actor.cfg.configured) throw new HttpError(400, 'コピー・移動は、ノードを設定（RPROXY_UI_NODES）したときだけ使えます。', 'unsupported');
+  const key = parseRule(body, true);
+  const from = await placeForKey(actor, key, body?.target);
+  const toName = requestedTarget(actor.cfg, body?.to);
+  if (toName === undefined) throw new HttpError(400, 'コピー・移動の先のノードかグループ（to）を指定してください。', 'target_required');
+  if (toName === from.target) throw invalid('コピー・移動の先が元と同じです。');
+  const to = placeOf(actor.cfg, toName);
+  checkNodes(actor, from);
+  checkNodes(actor, to);
+  const owner = ownerClause(actor);
+  const where = keyWhere(from, key);
+  const rows = await pool.query(
+    `SELECT id, auth_id, target, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules WHERE ${owner.sql}${where.sql}`,
+    [...owner.params, ...where.params]
+  );
+  if (rows.length === 0) {
+    if (await findStaticRule(toKey(key), from, logger)) throw staticRuleError();
+    throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
+  }
+  const rule = fromRow(rows[0]);
+  const ownerId = String(rows[0].auth_id);
+  const allOvs = (await loadOverrides(pool, [Number(rows[0].id)])).get(Number(rows[0].id)) ?? {};
+  const toGroup = actor.cfg.groups.some((g) => g.name === toName);
+  const keep: Overrides = toGroup
+    ? Object.fromEntries(Object.entries(allOvs).filter(([n]) => to.nodes.some((x) => x.name === n)))
+    : {};
+  // ノードに置くときは、そのノードの上書きをルールの内容にする（ノードのルールは上書きを持たない）
+  const placed = !toGroup && allOvs[toName] ? effectiveRule(rule, allOvs[toName]) : rule;
+  if (body?.move !== true) {
+    await addForwardingRule(actor, to, placed, logger, ownerId, keep);
+    return { result: 'copied', target: toName };
+  }
+  if (targetsOverlap(actor.cfg, from.target!, toName)) {
+    await deleteForwardingRule(actor, from, rule, logger);
+    try {
+      await addForwardingRule(actor, to, placed, logger, ownerId, keep);
+    } catch (err) {
+      await addForwardingRule(actor, from, rule, logger, ownerId, allOvs)
+        .catch((e) => logger.error(`移動に失敗し、元のルールも戻せませんでした: ${e}`));
+      throw err;
+    }
+  } else {
+    await addForwardingRule(actor, to, placed, logger, ownerId, keep);
+    try {
+      await deleteForwardingRule(actor, from, rule, logger);
+    } catch (err) {
+      await deleteForwardingRule(actor, to, placed, logger).catch((e) => logger.error(`移動に失敗し、移動先のルールを消せませんでした: ${e}`));
+      throw err;
+    }
+  }
+  return { result: 'moved', target: toName };
+}
+
+// ノードごとの最後の反映（このノードを含むノード／グループの履歴の最後。送り直し・上書きはそのノードの分だけ）
+async function lastSyncByNode(cfg: NodesConfig): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let rows: any[];
+  try {
+    rows = await pool.query('SELECT target, node, MAX(updated_at) AS at FROM forward_rules_log GROUP BY target, node');
+  } catch {
+    return out;
+  }
+  for (const n of cfg.nodes) {
+    const mine = new Set(membership(cfg).filter((m) => m.node === n.name).map((m) => m.target));
+    let best: string | null = null;
+    for (const r of Array.isArray(rows) ? rows : []) {
+      const applies = r.node === null || r.node === undefined ? mine.has(String(r.target)) : String(r.node) === n.name;
+      if (!applies || r.at === null || r.at === undefined) continue;
+      const at = toIso(r.at);
+      if (best === null || at > best) best = at;
+    }
+    if (best !== null) out.set(n.name, best);
+  }
+  return out;
 }
 
 // POST /api/forward/revert {id}：履歴の版の内容に戻す（あれば置き換え、削除されていれば作り直す）。巻き戻しも履歴に残る
@@ -1396,6 +1743,7 @@ async function revertToVersion(actor: Actor, body: any, logger: AppLogger): Prom
   if (rows.length === 0) throw new HttpError(404, '履歴が見つかりません。', 'not_found');
   const rule = logRule(rows[0]);
   if (rule === null) throw invalid('この履歴の内容は読めないため、巻き戻せません。');
+  if (String(rows[0].update_action) === 'OVERRIDE') throw invalid('ノードごとの上書きの履歴は巻き戻せません（ルールの詳細のノードのタブで上書きを直してください）。');
   // 履歴の行の置き場所に戻す（設定から消えたノード／グループなら 400 unknown_target）
   const place = placeOf(actor.cfg, actor.cfg.configured ? String(rows[0].target) : null);
   if (await findStaticRule(toKey(rule), place, logger)) throw staticRuleError();
@@ -1530,7 +1878,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     await syncMembership(cfg, logger);
 
     if (req.method === 'GET' && query === 'nodes') {
-      return res.status(200).json(nodesInfo(cfg));
+      const info = nodesInfo(cfg);
+      // RPROXY_UI_USER_NODES で絞った利用者には、使えるノード／グループを添える（画面の選択肢を絞る）
+      if (cfg.configured && access !== 'admin' && roles.userNodes !== null) {
+        info.allowedTargets = [...cfg.groups.map((g) => g.name), ...cfg.nodes.map((n) => n.name)]
+          .filter((t) => nodesAllowed(access, roles, (targetNodes(cfg, t) ?? []).map((n) => n.name)));
+      }
+      return res.status(200).json(info);
     }
     if (req.method === 'GET' && query === 'list') {
       const data = await listForwardingRules(actor, logger, false);
@@ -1578,6 +1932,17 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         return res.status(200).json(done(actor, 'Forwarding rule modified successfully', results));
       } else if (query === 'import') {
         const out = await importRules(actor, req.body, logger);
+        return res.status(200).json(out);
+      } else if (query === 'override') {
+        const out = await setOverride(actor, req.body, logger);
+        logger.info(`Override on node ${out.node} (${out.result})`);
+        return res.status(200).json(out);
+      } else if (query === 'pause-node') {
+        const out = await pauseNode(actor, req.body, logger);
+        return res.status(200).json(out);
+      } else if (query === 'copy') {
+        const out = await copyRule(actor, req.body, logger);
+        logger.info(`Rule ${out.result} to ${out.target}`);
         return res.status(200).json(out);
       } else if (query === 'resend') {
         const out = await resendToNode(actor, req.body, logger);
