@@ -9,6 +9,9 @@ English: [en/TESTING.md](en/TESTING.md)
 | `RUN_E2E=1 npx vitest run tests/e2e.test.ts` | 本物の MariaDB と rproxy-api につないだ E2E。変数がなければスキップ | `e2e`（rproxy-api の同じ名前のブランチ、なければ master をビルドして使う） |
 | `RUN_E2E_NODES=1 npx vitest run tests/e2e-nodes.test.ts` | 複数のノード（#98）の E2E。rproxy-api を 2 台（別々のコンテナ、Unix ソケット）動かし、ノードごとのビューで戻す。変数がなければスキップ | `e2e-nodes` |
 
+CI のジョブは Alpine のコンテナ（`node:24-alpine`）で動く。MariaDB は Alpine の mariadb パッケージを同じコンテナで動かし（`scripts/ci-mariadb.sh`）、rproxy-api は rustup の stable（musl）でビルドし、Playwright は apk の chromium を使う（`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`。playwright.config.ts）。`e2e-nodes` の 2 台の rproxy-api も Alpine のコンテナ（iproute2 を足し、VIP は `docker exec` の `ip` で付け外しする）。
+.deb を作って入れて確かめる `deb`（Debian package）だけは、対象が Debian そのものなので systemd を init にした `debian:trixie-slim` のコンテナで、NodeSource の nodejs 24（`scripts/install-nodejs.sh`）を入れて動かす。
+
 ## 単体テスト：rproxy クライアント（`tests/rproxy.test.ts`）
 
 | テスト | 確かめること |

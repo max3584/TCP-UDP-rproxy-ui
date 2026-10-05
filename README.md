@@ -9,7 +9,7 @@
 English: [README.en.md](README.en.md)
 
 [rproxy-api](https://github.com/max3584/rproxy-api) の転送ルールを管理する Web UI（Next.js、Keycloak でサインイン、ルールは MariaDB に保存）。
-バージョンは rproxy-api と同じ番号で出す（UI の vX.Y.Z は rproxy-api の vX.Y.Z と組み合わせる。docs/RELEASING.md）。
+バージョンは rproxy-api と別々に進める（UI が動くのに必要な rproxy-api の最小の版はリリースノートに書く。docs/RELEASING.md）。
 
 ## 画面
 
@@ -26,7 +26,26 @@ English: [README.en.md](README.en.md)
 ## インストール（Debian / Ubuntu）
 
 rproxy-api と同じ apt リポジトリから入れられる（`rproxy-ui`、CPU を問わない 1 つのパッケージ）。
-Node.js 22.19.0 以上が要る（Next.js 16 は 20.9、Unix ソケットに使う undici 8 は 22.19.0 から）。Debian 13 の標準の nodejs は 20、Ubuntu 24.04 は 18 なので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 か 24）を入れる。
+Node.js 22.19.0 以上が要る（Next.js 16 は 20.9、Unix ソケットに使う undici 8 は 22.19.0 から）。Debian 13 の標準の nodejs は 20、Ubuntu 24.04 は 18 で足りないので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs をメジャー版を指定して入れる（下は 24）。apt の pin で、ディストリの nodejs は選ばれないようにする。
+
+```shell
+NODE_MAJOR=24
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/nodesource.asc https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+  | sudo tee /etc/apt/sources.list.d/nodesource.list
+printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' \
+  | sudo tee /etc/apt/preferences.d/nodejs
+sudo apt update && sudo apt install nodejs
+node --version      # v24.x.x
+apt policy nodejs   # 候補（Candidate）が deb.nodesource.com のものになっていること
+```
+
+- Debian 13・Ubuntu 24.04 とも同じ手順（NodeSource の `nodistro` は配布物を問わない）。22 にするなら `NODE_MAJOR=22`（22.19.0 以上）
+- `/etc/apt/preferences.d/nodejs` の pin（優先度 600）で、ディストリの nodejs をすでに入れていても `apt install nodejs` が NodeSource のものに置き換え、`apt upgrade` でもディストリの nodejs には戻らない。NodeSource の nodejs は npm を含む（ディストリの `npm` パッケージは要らない）
+- `apt upgrade` で上がるのは同じメジャー版の中だけ。メジャー版を変えるときは `NODE_MAJOR` を変えて `nodesource.list` を書き直し、`sudo apt update && sudo apt install nodejs`
+
+そのあと rproxy-ui を入れる。
 
 ```shell
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg

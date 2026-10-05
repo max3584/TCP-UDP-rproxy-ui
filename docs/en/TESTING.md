@@ -9,6 +9,9 @@
 | `RUN_E2E=1 npx vitest run tests/e2e.test.ts` | E2E connected to a real MariaDB and rproxy-api. Skipped without the variable | `e2e` (builds and uses the rproxy-api branch with the same name, or master if there is none) |
 | `RUN_E2E_NODES=1 npx vitest run tests/e2e-nodes.test.ts` | E2E for several nodes (#98). Runs two rproxy-api instances (separate containers, Unix sockets) restoring through per-node views. Skipped without the variable | `e2e-nodes` |
 
+The CI jobs run in Alpine containers (`node:24-alpine`). MariaDB is Alpine's mariadb package running in the same container (`scripts/ci-mariadb.sh`), rproxy-api is built with rustup's stable (musl), and Playwright uses Alpine's chromium from apk (`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`; playwright.config.ts). The two rproxy-api instances of `e2e-nodes` also run in Alpine containers (with iproute2 added; the VIP is added and removed with `ip` through `docker exec`).
+Only `deb` (Debian package), which builds, installs and checks the .deb, runs in a `debian:trixie-slim` container with systemd as init, because Debian is what it tests; it installs nodejs 24 from NodeSource (`scripts/install-nodejs.sh`).
+
 ## Unit tests: rproxy client (`tests/rproxy.test.ts`)
 
 | Test | What it checks |

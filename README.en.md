@@ -9,7 +9,7 @@
 日本語: [README.md](README.md)
 
 A web UI for managing the forwarding rules of [rproxy-api](https://github.com/max3584/rproxy-api) (Next.js, sign-in with Keycloak, rules stored in MariaDB).
-Versions are released with the same numbers as rproxy-api (UI vX.Y.Z is paired with rproxy-api vX.Y.Z; see [docs/en/RELEASING.md](docs/en/RELEASING.md)).
+Versions are numbered independently of rproxy-api (the release notes state the minimum rproxy-api version the UI needs; see [docs/en/RELEASING.md](docs/en/RELEASING.md)).
 
 ## Screenshots
 
@@ -26,7 +26,26 @@ The data is documentation sample data (192.0.2.0/24, 198.51.100.0/24, 2001:db8::
 ## Installation (Debian / Ubuntu)
 
 It can be installed from the same apt repository as rproxy-api (`rproxy-ui`, a single package for any CPU).
-Node.js 22.19.0 or later is required (Next.js 16 needs 20.9, and undici 8, used for Unix sockets, needs 22.19.0). Debian 13's standard nodejs is 20 and Ubuntu 24.04's is 18, so install nodejs (22 or 24) from [NodeSource](https://github.com/nodesource/distributions) first.
+Node.js 22.19.0 or later is required (Next.js 16 needs 20.9, and undici 8, used for Unix sockets, needs 22.19.0). Debian 13's standard nodejs is 20 and Ubuntu 24.04's is 18, which is not enough, so first install nodejs from [NodeSource](https://github.com/nodesource/distributions) with a fixed major version (24 below). An apt pin keeps the distribution's nodejs from being chosen.
+
+```shell
+NODE_MAJOR=24
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/nodesource.asc https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+  | sudo tee /etc/apt/sources.list.d/nodesource.list
+printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' \
+  | sudo tee /etc/apt/preferences.d/nodejs
+sudo apt update && sudo apt install nodejs
+node --version      # v24.x.x
+apt policy nodejs   # the Candidate must come from deb.nodesource.com
+```
+
+- The steps are the same on Debian 13 and Ubuntu 24.04 (NodeSource's `nodistro` does not depend on the distribution). For 22, use `NODE_MAJOR=22` (22.19.0 or later)
+- With the pin in `/etc/apt/preferences.d/nodejs` (priority 600), `apt install nodejs` replaces an already installed distribution nodejs with NodeSource's, and `apt upgrade` never goes back to the distribution's. NodeSource's nodejs includes npm (the distribution's `npm` package is not needed)
+- `apt upgrade` only moves within the same major version. To change the major version, change `NODE_MAJOR`, rewrite `nodesource.list`, and run `sudo apt update && sudo apt install nodejs`
+
+Then install rproxy-ui.
 
 ```shell
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg

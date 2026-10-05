@@ -17,6 +17,27 @@ rproxy-api ──起動時にルールを復元──▶ MariaDB（読み取り�
 
 ## 1. インストール
 
+rproxy-ui は Node.js 22.19.0 以上が要る。Debian 13（標準は 20）と Ubuntu 24.04（標準は 18）では足りないので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs をメジャー版を指定して入れる（下は 24）。apt の pin で、ディストリの nodejs は選ばれないようにする。
+
+```shell
+NODE_MAJOR=24
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/nodesource.asc https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+  | sudo tee /etc/apt/sources.list.d/nodesource.list
+printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' \
+  | sudo tee /etc/apt/preferences.d/nodejs
+sudo apt update && sudo apt install nodejs
+node --version      # v24.x.x
+apt policy nodejs   # 候補（Candidate）が deb.nodesource.com のものになっていること
+```
+
+- Debian 13・Ubuntu 24.04 とも同じ手順（NodeSource の `nodistro` は配布物を問わない）。22 にするなら `NODE_MAJOR=22`（22.19.0 以上）
+- `/etc/apt/preferences.d/nodejs` の pin（優先度 600）で、ディストリの nodejs をすでに入れていても `apt install nodejs` が NodeSource のものに置き換え、`apt upgrade` でもディストリの nodejs には戻らない。NodeSource の nodejs は npm を含む（ディストリの `npm` パッケージは要らない）
+- `apt upgrade` で上がるのは同じメジャー版の中だけ。メジャー版を変えるときは `NODE_MAJOR` を変えて `nodesource.list` を書き直し、`sudo apt update && sudo apt install nodejs`
+
+そのあと rproxy-api と rproxy-ui を入れる。
+
 ```shell
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/rproxy-archive-keyring.gpg] https://max3584.github.io/rproxy-api stable main" \
@@ -25,7 +46,6 @@ sudo apt update
 sudo apt install rproxy-api rproxy-ui
 ```
 
-- rproxy-ui は Node.js 22.19.0 以上が要る。Debian 13（標準は 20）と Ubuntu 24.04（標準は 18）では先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 か 24）を入れる。
 - rproxy-api を先に入れると、rproxy-ui のインストール時に rproxy-api のトークンと制御 API の URL が `/etc/rproxy-ui/rproxy-ui.env` に入る。
 - どちらもインストールしただけでは起動しない。
 - 権限（capability、ファイルの所有者）は rproxy-api の [docs/PERMISSIONS.md](https://github.com/max3584/rproxy-api/blob/master/docs/PERMISSIONS.md)。
@@ -190,7 +210,7 @@ tail -f /var/log/rproxy/rproxy.*.log      # rproxy-api（JSON Lines。"event":"d
 ## 7. 更新
 
 ```shell
-sudo apt update && sudo apt upgrade   # rproxy-api と rproxy-ui は同じ番号で出る
+sudo apt update && sudo apt upgrade   # rproxy-api と rproxy-ui の番号は別々に進む（UI のリリースノートに要る rproxy-api の最小の版がある）
 ```
 
 - 設定ファイル（`rproxy.env`・`rproxy-ui.env`）とトークンは更新しても保たれる。
