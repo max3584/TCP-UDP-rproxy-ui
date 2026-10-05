@@ -40,6 +40,7 @@ sudo apt update && sudo apt install rproxy-ui
 - 既定の待ち受けは `127.0.0.1:3000`（`HOSTNAME` / `PORT`）。外から見せるときは rproxy の固定ルール（TLS の終端とサーバ名での振り分け、`allow_from`）を前に置く（rproxy-api の README「固定ルールと、ダッシュボードの公開」）
 - DB のテーブルは `/usr/share/rproxy-ui/db/schema.sql`（`db/README.md`）で作る
 - `/usr/lib/rproxy-ui` の `server.js`（Next.js の standalone 出力）を `rproxy-ui` ユーザーで動かす。ログは `journalctl -u rproxy-ui`
+- UI と rproxy-api の版は別々に進む（リリースのタグはずれる）。UI には rproxy-api v0.3.5 以降が要る。UI の版と各ノードの rproxy-api の版はサイドバー（狭い幅ではメニュー）の下とダッシュボードの「バージョン」に出る。rproxy-api が古い・版が分からない（v0.3.18 より前は版を返さない）ときはダッシュボードに注意が出る（UI が知らない新しいマイナーのときは知らせるだけ）。起動時にも各ノードの版をログに出す
 
 ## 開発
 

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { AccountControls } from './Header';
+import { SidebarVersions } from './VersionInfo';
 
 // ルールの詳細・変更の画面はダッシュボードの下にあるものとして扱う
 const NAV: { href: string; label: string; active: (pathname: string) => boolean }[] = [
@@ -41,6 +42,7 @@ const Sidebar: React.FC<{ open: boolean; onNavigate: () => void }> = ({ open, on
         })}
       </ul>
       <AccountControls className="lg:hidden mt-4 pt-4 border-t border-gray-700 text-white" />
+      <SidebarVersions />
     </nav>
   );
 };

@@ -40,6 +40,7 @@ sudo apt update && sudo apt install rproxy-ui
 - It listens on `127.0.0.1:3000` by default (`HOSTNAME` / `PORT`). To expose it, put an rproxy static rule in front of it (TLS termination, routing by server name, `allow_from`; see "Static rules and exposing the dashboard" in the rproxy-api README)
 - Create the DB tables with `/usr/share/rproxy-ui/db/schema.sql` (see [db/README.en.md](db/README.en.md))
 - `server.js` in `/usr/lib/rproxy-ui` (the Next.js standalone output) runs as the `rproxy-ui` user. Logs are in `journalctl -u rproxy-ui`
+- The UI and rproxy-api have independent version numbers (their release tags differ). The UI needs rproxy-api v0.3.5 or later. The UI version and each node's rproxy-api version are shown at the bottom of the sidebar (the menu on narrow screens) and in "Versions" on the dashboard. When rproxy-api is too old or its version is unknown (releases before v0.3.18 do not report it), the dashboard shows a notice (a newer minor than the UI knows is only reported for information). The versions are also logged for each node at startup
 
 ## Development
 
