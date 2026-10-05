@@ -13,6 +13,7 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrations/004_log_auth_id.sql` | `forward_rules_log` に操作した利用者（`auth_id`）の列を追加 |
 | `migrations/005_ranges_and_tls.sql` | 両テーブルにポート範囲の終わり（`src_port_end`）と TLS / STARTTLS の設定（`options`）の列を追加 |
 | `migrations/006_nodes.sql` | 複数の rproxy（#98）：両テーブルに `target` 列、キーを `(target, protocol, src_addr, src_port)` に、`forward_rule_targets` 表を追加。`RPROXY_UI_NODES` を使わない 1 台の環境では適用しなくても動く |
+| `migrations/007_log_node.sql` | 複数の rproxy（#98）：`forward_rules_log` に送り直したノード（`node`）の列を追加。`RPROXY_UI_NODES` を使うときに必要 |
 | `node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけの DB ユーザーの SQL を出す（下の「複数の rproxy（ノードごとのビュー）」） |
 
 既存の環境では `002` から順に適用する。`schema.sql` を変えたときは、同じ変更をする migration も追加すること。
@@ -43,7 +44,7 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
   各行はその操作のあとのルールの内容（`DELETE` は削除する前の内容）を持つので、UI の「変更の履歴」はこの行から前の版との違いを出し、「この版に戻す」でその内容に戻す（インポート・巻き戻しの操作も同じく記録する）。
 
 - `forward_rule_targets`：ノード → そのノードが読む `target`（ノード自身と、そのノードを含むグループ）。UI が `RPROXY_UI_NODES` の内容に合わせて書き直す（`RPROXY_UI_NODES` があるときだけ）。ノードごとのビューがこれで絞り込む。
-  `forward_rules_log` にも `target` 列がある。
+  `forward_rules_log` にも `target` 列がある。1 つのノードへの送り直しは `update_action` が `RESEND` で、`node`（007）にそのノードを残す（内容は送ったルール）。
 
 ## DB ユーザー
 

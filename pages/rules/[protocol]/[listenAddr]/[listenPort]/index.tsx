@@ -29,11 +29,16 @@ import {
   toRule,
   uptimeSecs,
   multiNode,
+  projectRule,
 } from '@/components/dashboard';
-import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, NodeStates, StateBadge, StaticBadge, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
+import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
+import Tabs, { tabPanelProps } from '@/components/Tabs';
+import { DRIFT_LABELS } from '@/components/drift';
+import type { NodeLiveState } from '@/components/lib';
 import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
 import HttpSummary from '@/components/HttpSummary';
 import HistoryList from '@/components/HistoryList';
+import { translate } from '@/i18n/core';
 
 // 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
 const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
@@ -288,12 +293,118 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
   );
 };
 
+// 「全体」のタブ：ノードごとの値を並べる（act と stb の通信量を比べる）
+const NodeCompare: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
+  <Section id="section-node-compare" title="ノードごとの比較">
+    <div className="table-scroll">
+      <table className="data-table" data-testid="node-compare">
+        <caption className="sr-only">ノードごとの状態と通信量</caption>
+        <thead>
+          <tr>
+            <th scope="col">ノード</th>
+            <th scope="col">状態</th>
+            <th scope="col" className="text-right">{rule.protocol === 'udp' ? 'セッション' : '接続中'}</th>
+            <th scope="col" className="text-right">累計の接続</th>
+            <th scope="col" className="text-right">rx（受信）</th>
+            <th scope="col" className="text-right">tx（送信）</th>
+            <th scope="col" className="text-right">拒否</th>
+            {rule.http !== null && <th scope="col" className="text-right">HTTP リクエスト</th>}
+            {rule.http !== null && <th scope="col" className="text-right">5xx</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {(rule.nodes ?? []).map((n) => (
+            <tr key={n.node}>
+              <td className="whitespace-nowrap text-gray-900"><span className="font-mono mr-1">{n.node}</span><RoleBadge role={n.role} /></td>
+              <td className="whitespace-nowrap"><StateBadge state={n.state} /> <DriftBadge drift={n.drift} /></td>
+              <td className="text-right tabular-nums text-gray-900">{formatCount(n.connections)}</td>
+              <td className="text-right tabular-nums text-gray-900">{n.stats ? formatCount(n.stats.total_connections) : '-'}</td>
+              <td className="text-right tabular-nums text-gray-900">{n.stats ? formatBytes(n.stats.rx_bytes) : '-'}</td>
+              <td className="text-right tabular-nums text-gray-900">{n.stats ? formatBytes(n.stats.tx_bytes) : '-'}</td>
+              <td className="text-right tabular-nums text-gray-900">{n.stats ? formatCount(n.stats.denied ?? 0) : '-'}</td>
+              {rule.http !== null && <td className="text-right tabular-nums text-gray-900">{n.stats?.http ? formatCount(n.stats.http.requests) : '-'}</td>}
+              {rule.http !== null && <td className="text-right tabular-nums text-gray-900">{n.stats?.http ? formatCount(n.stats.http.by_status['5xx'] ?? 0) : '-'}</td>}
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr>
+            <th scope="row" className="text-left text-gray-900">合計</th>
+            <td><StateBadge state={rule.state} /></td>
+            <td className="text-right tabular-nums text-gray-900">{formatCount(rule.connections)}</td>
+            <td className="text-right tabular-nums text-gray-900">{rule.stats ? formatCount(rule.stats.total_connections) : '-'}</td>
+            <td className="text-right tabular-nums text-gray-900">{rule.stats ? formatBytes(rule.stats.rx_bytes) : '-'}</td>
+            <td className="text-right tabular-nums text-gray-900">{rule.stats ? formatBytes(rule.stats.tx_bytes) : '-'}</td>
+            <td className="text-right tabular-nums text-gray-900">{rule.stats ? formatCount(rule.stats.denied ?? 0) : '-'}</td>
+            {rule.http !== null && <td className="text-right tabular-nums text-gray-900">{rule.stats?.http ? formatCount(rule.stats.http.requests) : '-'}</td>}
+            {rule.http !== null && <td className="text-right tabular-nums text-gray-900">{rule.stats?.http ? formatCount(rule.stats.http.by_status['5xx'] ?? 0) : '-'}</td>}
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    {rule.ha && <p className="mt-2 text-xs text-gray-700">act は VIP（<span className="font-mono">{rule.ha.addrs.join(', ')}</span>）を持っているノードです（各ノードの GET /interfaces）。<HaWarning ha={rule.ha} /></p>}
+  </Section>
+);
+
+// ノードのタブ：UI の定義とこのノードの実際のルールの違いと、送り直し
+const DriftSection: React.FC<{ rule: ForwardRules; node: NodeLiveState; busy: boolean; onResend: () => void; notice: string }> = ({ rule, node, busy, onResend, notice }) => {
+  const drift = node.drift ?? [];
+  const canResend = rule.origin !== 'static' && (node.state === 'missing' || drift.length > 0);
+  return (
+    <Section id="section-drift" title="UI の定義との違い">
+      <div data-testid="drift-section" className="space-y-2 text-sm text-gray-900">
+        {node.state === 'unknown' ? <p className="text-gray-700">このノードに問い合わせできないため、わかりません。</p>
+          : node.state === 'missing' ? <p className="text-amber-900">このノードではルールが動いていません（未登録）。</p>
+          : drift.length === 0 ? <p>UI の定義と同じです。</p>
+          : (
+            <>
+              <p className="text-amber-900">このノードで動いているルールが、UI の定義と違います：</p>
+              <ul className="list-disc pl-5" data-testid="drift-fields">
+                {drift.map((f) => <li key={f}>{DRIFT_LABELS[f]}</li>)}
+              </ul>
+            </>
+          )}
+        {canResend && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className="btn-primary" disabled={busy} onClick={onResend}>{busy ? '送り直し中…' : 'このノードに送り直す'}</button>
+            <span className="text-xs text-gray-600">このノードだけに UI の定義を送ります（ほかのノードは変えません。履歴に残ります）。</span>
+          </div>
+        )}
+        {notice && <p role="status" className="text-green-800">{notice}</p>}
+      </div>
+    </Section>
+  );
+};
+
+const RESEND_RESULTS: Record<string, string> = {
+  added: '作り直しました',
+  modified: '変更しました',
+  recreated: '削除して作り直しました',
+  removed: '停止中なので削除しました',
+  unchanged: 'ずれはありませんでした',
+};
+
 const RuleDetailPage: React.FC = () => {
   const router = useRouter();
   const key = useMemo(() => (router.isReady ? parseRuleKey(router.query) : null), [router.isReady, router.query]);
   const { rule, error, setError, notFound, lastUpdated, load } = useRule(key);
   // ノードが 2 つ以上なら、ノード／グループとノードごとの状態を出す（#98）
   const manyNodes = multiNode(useNodes());
+  // ノードが 2 つ以上なら「全体 / ノードごと」のタブ（1 つなら今と同じ見た目）
+  const [tab, setTab] = useState('all');
+  const [resending, setResending] = useState(false);
+  const [resendNotice, setResendNotice] = useState('');
+  const nodeTabs = manyNodes && rule !== null && (rule.nodes?.length ?? 0) > 0
+    ? [{ id: 'all', label: '全体' }, ...(rule.nodes ?? []).map((n) => ({
+      id: n.node,
+      label: <span className="font-mono">{n.node}</span>,
+      badge: (n.drift ?? []).length > 0 || n.state === 'failed' || n.state === 'missing'
+        ? <span className="ml-1 inline-block h-2 w-2 rounded-full bg-amber-600" aria-label="要確認" /> : undefined,
+    }))]
+    : null;
+  // 選んでいたノードがなくなったら「全体」に戻す（描画中に直す）
+  if (tab !== 'all' && nodeTabs && !nodeTabs.some((t) => t.id === tab)) setTab('all');
+  const view = rule && nodeTabs && tab !== 'all' ? projectRule(rule, tab) ?? rule : rule;
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -318,6 +429,28 @@ const RuleDetailPage: React.FC = () => {
     }
   };
 
+  // このノードだけに UI の定義を送り直す（#98）
+  const handleResend = async (node: string) => {
+    if (!rule) return;
+    setResending(true);
+    setResendNotice('');
+    try {
+      const res = await fetch('/api/forward/resend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: rule.protocol, srcAddr: rule.srcAddr, srcPort: rule.srcPort, target: rule.target, node: node }),
+      });
+      if (!res.ok) throw new Error(await errorDetail(res));
+      const out = await res.json() as { result: string };
+      setResendNotice(`${node}: ${translate(RESEND_RESULTS[out.result] ?? out.result)}`);
+      await load();
+    } catch (err) {
+      setError(`送り直しに失敗しました: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setResending(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!rule) return;
     setDeleting(true);
@@ -338,7 +471,7 @@ const RuleDetailPage: React.FC = () => {
 
   const title = key ? `${key.protocol.toUpperCase()} ${hostPort(key.addr, rule ? portsLabel(rule.srcPort, rule.srcPortEnd) : key.port)}` : 'ルール';
   const now = lastUpdated ?? 0;
-  const live = rule !== null && rule.state !== 'unknown' && rule.state !== 'missing';
+  const live = view !== null && view.state !== 'unknown' && view.state !== 'missing';
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -377,135 +510,145 @@ const RuleDetailPage: React.FC = () => {
       )}
       {!rule && !notFound && !error && <p className="text-gray-700">読み込み中…</p>}
 
-      {rule && (
-        <>
+      {nodeTabs && <Tabs id="rule-nodes" label="ノード" tabs={nodeTabs} active={tab} onChange={(t) => { setTab(t); setResendNotice(''); }} />}
+
+      {view && rule && (
+        <div {...(nodeTabs ? tabPanelProps('rule-nodes', tab) : { className: 'space-y-4' })}>
+          {nodeTabs && tab === 'all' && <NodeCompare rule={rule} />}
+          {nodeTabs && tab !== 'all' && view.nodes?.[0] && (
+            <DriftSection rule={rule} node={view.nodes[0]} busy={resending} onResend={() => void handleResend(tab)} notice={resendNotice} />
+          )}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <Section id="section-overview" title="概要">
               <Fields items={[
-                ['状態', <StateBadge key="s" state={rule.state} />],
-                ...(manyNodes && rule.target !== undefined ? [
-                  ['ノード／グループ', <Mono key="t">{rule.target}</Mono>] as [string, React.ReactNode],
-                  ['ノードごとの状態', <NodeStates key="n" nodes={rule.nodes} />] as [string, React.ReactNode],
+                ['状態', <StateBadge key="s" state={view.state} />],
+                ...(manyNodes && view.target !== undefined ? [
+                  ['ノード／グループ', <Mono key="t">{view.target}</Mono>] as [string, React.ReactNode],
+                  ...(tab === 'all'
+                    ? [['ノードごとの状態', <NodeStates key="n" nodes={view.nodes} />] as [string, React.ReactNode]]
+                    : [['役割', view.nodes?.[0]?.role ? <RoleBadge key="r" role={view.nodes[0].role} /> : null] as [string, React.ReactNode]]),
+                  ...(rule.ha ? [['act', <span key="ha" className="inline-flex flex-wrap items-center gap-2">
+                    <Mono>{rule.ha.active.join(', ') || '-'}</Mono><HaWarning ha={rule.ha} /></span>] as [string, React.ReactNode]] : []),
                 ] : []),
-                ['エラー', rule.error ? <span className="text-red-800">{ruleErrorText(rule.error)}</span> : rule.state === 'missing'
+                ['エラー', view.error ? <span className="text-red-800">{ruleErrorText(view.error)}</span> : view.state === 'missing'
                   ? <span className="text-amber-900">rproxy でこのルールが動いていません（編集して保存すると作り直します）。</span>
-                  : rule.state === 'unknown' ? <span className="text-gray-700">rproxy に接続できないため、稼働状態がわかりません。</span>
-                  : rule.state === 'paused' ? <span className="text-gray-700">一時停止中です（設定は残したまま、rproxy では動かしていません。「再開」でこの内容のまま動かします）。</span> : null],
-                ['開始時刻', formatTimestamp(rule.startedAt)],
-                ['稼働時間', formatDuration(uptimeSecs(rule.startedAt, now))],
+                  : view.state === 'unknown' ? <span className="text-gray-700">rproxy に接続できないため、稼働状態がわかりません。</span>
+                  : view.state === 'paused' ? <span className="text-gray-700">一時停止中です（設定は残したまま、rproxy では動かしていません。「再開」でこの内容のまま動かします）。</span> : null],
+                ['開始時刻', formatTimestamp(view.startedAt)],
+                ['稼働時間', formatDuration(uptimeSecs(view.startedAt, now))],
                 // 管理者（rproxy-admin）が見るときだけ付く
-                ...(rule.owner !== undefined ? [['所有者（Keycloak の ID）', <Mono key="o">{rule.owner}</Mono>] as [string, React.ReactNode]] : []),
+                ...(view.owner !== undefined ? [['所有者（Keycloak の ID）', <Mono key="o">{view.owner}</Mono>] as [string, React.ReactNode]] : []),
               ]} />
             </Section>
 
             <Section id="section-stats" title="統計（開始してからの累計）">
               <Fields items={[
-                [rule.protocol === 'udp' ? '現在のセッション' : '現在の接続', live ? formatCount(rule.connections) : null],
-                ['累計の接続', rule.stats ? formatCount(rule.stats.total_connections) : null],
-                ['rx（受信）', rule.stats ? formatBytes(rule.stats.rx_bytes) : null],
-                ['tx（送信）', rule.stats ? formatBytes(rule.stats.tx_bytes) : null],
-                ['TLS 失敗', rule.stats ? formatCount(rule.stats.tls_failures) : null],
-                ['拒否した接続', rule.stats ? formatCount(rule.stats.denied ?? 0) : null],
+                [view.protocol === 'udp' ? '現在のセッション' : '現在の接続', live ? formatCount(view.connections) : null],
+                ['累計の接続', view.stats ? formatCount(view.stats.total_connections) : null],
+                ['rx（受信）', view.stats ? formatBytes(view.stats.rx_bytes) : null],
+                ['tx（送信）', view.stats ? formatBytes(view.stats.tx_bytes) : null],
+                ['TLS 失敗', view.stats ? formatCount(view.stats.tls_failures) : null],
+                ['拒否した接続', view.stats ? formatCount(view.stats.denied ?? 0) : null],
                 // 古い rproxy は dropped を返さないので、そのときは出さない
-                ...(rule.protocol === 'udp' && typeof rule.stats?.dropped === 'number'
-                  ? [['捨てたデータグラム', formatCount(rule.stats.dropped)] as [string, React.ReactNode]]
+                ...(view.protocol === 'udp' && typeof view.stats?.dropped === 'number'
+                  ? [['捨てたデータグラム', formatCount(view.stats.dropped)] as [string, React.ReactNode]]
                   : []),
               ]} />
               <p className="mt-2 text-xs text-gray-600">
                 rx はクライアント → 転送先、tx は転送先 → クライアントのバイト数です。
                 拒否した接続は、許可する送信元（allow_from）の範囲外か、どのサーバ名にも一致しない（unmatched: reject）ため切断した接続です。
-                {rule.protocol === 'udp' && '捨てたデータグラムは、rproxy が転送できずに捨てた数です（セッションの待ち行列があふれた・送信に失敗した など。カーネルの受信バッファで捨てられたものは含まない）。'}
+                {view.protocol === 'udp' && '捨てたデータグラムは、rproxy が転送できずに捨てた数です（セッションの待ち行列があふれた・送信に失敗した など。カーネルの受信バッファで捨てられたものは含まない）。'}
               </p>
             </Section>
 
             <Section id="section-listen" title="待ち受け">
               <Fields items={[
-                ['プロトコル', rule.protocol.toUpperCase()],
-                ['アドレス', <Mono key="a">{rule.srcAddr}</Mono>],
-                ...((rule.extraListenAddrs ?? []).length > 0 ? [['追加の待ち受けアドレス', (
+                ['プロトコル', view.protocol.toUpperCase()],
+                ['アドレス', <Mono key="a">{view.srcAddr}</Mono>],
+                ...((view.extraListenAddrs ?? []).length > 0 ? [['追加の待ち受けアドレス', (
                   <span key="x" data-testid="extra-listen-addrs">
-                    {(rule.extraListenAddrs ?? []).map((x) => <Mono key={x}>{x} </Mono>)}
+                    {(view.extraListenAddrs ?? []).map((x) => <Mono key={x}>{x} </Mono>)}
                   </span>
                 )] as [string, React.ReactNode]] : []),
-                [rule.srcPortEnd === null ? 'ポート' : 'ポート範囲', <Mono key="p">{portsLabel(rule.srcPort, rule.srcPortEnd)}</Mono>],
-                ...(rule.srcPortEnd !== null ? [['ポート数', `${rule.srcPortEnd - rule.srcPort + 1}`] as [string, React.ReactNode]] : []),
+                [view.srcPortEnd === null ? 'ポート' : 'ポート範囲', <Mono key="p">{portsLabel(view.srcPort, view.srcPortEnd)}</Mono>],
+                ...(view.srcPortEnd !== null ? [['ポート数', `${view.srcPortEnd - view.srcPort + 1}`] as [string, React.ReactNode]] : []),
               ]} />
             </Section>
 
             <Section id="section-target" title="転送先">
-              {rule.http !== null ? (
+              {view.http !== null ? (
                 // L7 のルールは転送先を持たない（http.services に書く）。中身は下の「L7 (HTTP)」
                 <>
                   <Fields items={[
-                    ['転送先', targetLabel(rule)],
-                    ['ルート', `${httpRouteCount(rule.http)} 件`],
+                    ['転送先', targetLabel(view)],
+                    ['ルート', `${httpRouteCount(view.http)} 件`],
                   ]} />
                   <p className="mt-2 text-xs text-gray-600" data-testid="http-note">
-                    HTTP のリクエストごとに、下の「L7 (HTTP)」のルートとサービスで振り分けます。{rule.origin === 'static' ? '固定ルールなので、rproxy の設定ファイルで変更してください。' : '変更は「編集」の「L7 (HTTP)」タブで行います。'}
+                    HTTP のリクエストごとに、下の「L7 (HTTP)」のルートとサービスで振り分けます。{view.origin === 'static' ? '固定ルールなので、rproxy の設定ファイルで変更してください。' : '変更は「編集」の「L7 (HTTP)」タブで行います。'}
                   </p>
                 </>
-              ) : rule.targets.length > 0 ? (
+              ) : view.targets.length > 0 ? (
                 <>
                   <Fields items={[
-                    ['振り分け方', BALANCE_LABELS[rule.balance]],
-                    ['宛先の数', `${rule.targets.length} 件`],
-                    ['ヘルスチェック', healthCheckLabel(rule.healthCheck)],
-                    ['解決したアドレス', rule.resolved.length > 0
-                      ? <ul key="r" className="font-mono">{rule.resolved.map((a) => <li key={a}>{a}</li>)}</ul>
+                    ['振り分け方', BALANCE_LABELS[view.balance]],
+                    ['宛先の数', `${view.targets.length} 件`],
+                    ['ヘルスチェック', healthCheckLabel(view.healthCheck)],
+                    ['解決したアドレス', view.resolved.length > 0
+                      ? <ul key="r" className="font-mono">{view.resolved.map((a) => <li key={a}>{a}</li>)}</ul>
                       : live ? 'まだ名前解決できていません' : null],
                   ]} />
-                  <TargetsTable rule={rule} />
+                  <TargetsTable rule={view} />
                 </>
               ) : (
                 <Fields items={[
-                  ['転送先', <Mono key="t">{targetLabel(rule)}</Mono>],
-                  ['解決したアドレス', rule.resolved.length > 0
-                    ? <ul key="r" className="font-mono">{rule.resolved.map((a) => <li key={a}>{a}</li>)}</ul>
+                  ['転送先', <Mono key="t">{targetLabel(view)}</Mono>],
+                  ['解決したアドレス', view.resolved.length > 0
+                    ? <ul key="r" className="font-mono">{view.resolved.map((a) => <li key={a}>{a}</li>)}</ul>
                     : live ? 'まだ名前解決できていません' : null],
                 ]} />
               )}
             </Section>
           </div>
 
-          {rule.http !== null && (
+          {view.http !== null && (
             <Section id="section-http" title="L7 (HTTP)">
-              <HttpSummary http={rule.http} />
+              <HttpSummary http={view.http} />
             </Section>
           )}
 
-          {rule.stats?.http && <HttpStatsSection http={rule.stats.http} />}
+          {view.stats?.http && <HttpStatsSection http={view.stats.http} />}
 
-          <TlsSection rule={rule} />
+          <TlsSection rule={view} />
 
-          {rule.certStatus && rule.certStatus.length > 0 && <CertStatusSection certs={rule.certStatus} />}
+          {view.certStatus && view.certStatus.length > 0 && <CertStatusSection certs={view.certStatus} />}
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <Section id="section-starttls" title="STARTTLS">
-              {rule.starttls ? (
+              {view.starttls ? (
                 <Fields items={[
-                  ['プロトコル', rule.starttls],
-                  ['必須', rule.starttlsRequired ? 'はい' : 'いいえ（STARTTLS をしないクライアントも平文のまま通す）'],
+                  ['プロトコル', view.starttls],
+                  ['必須', view.starttlsRequired ? 'はい' : 'いいえ（STARTTLS をしないクライアントも平文のまま通す）'],
                 ]} />
               ) : <p className="text-sm text-gray-700">使わない</p>}
             </Section>
 
             <Section id="section-advanced" title="詳細">
               <Fields items={[
-                ['送信元 IP の扱い', <Mono key="s">{rule.sourceIp}</Mono>],
-                ...(rule.protocol === 'udp' ? [['UDP のアイドルタイムアウト', `${rule.udpIdleSecs} 秒`] as [string, React.ReactNode]] : []),
-                ['接続を許可する送信元', rule.allowFrom.length > 0
+                ['送信元 IP の扱い', <Mono key="s">{view.sourceIp}</Mono>],
+                ...(view.protocol === 'udp' ? [['UDP のアイドルタイムアウト', `${view.udpIdleSecs} 秒`] as [string, React.ReactNode]] : []),
+                ['接続を許可する送信元', view.allowFrom.length > 0
                   ? (
                     <div key="af" data-testid="allow-from">
-                      <AllowFromBadge allowFrom={rule.allowFrom} />
-                      <ul className="font-mono mt-1">{rule.allowFrom.map((c) => <li key={c}>{c}</li>)}</ul>
+                      <AllowFromBadge allowFrom={view.allowFrom} />
+                      <ul className="font-mono mt-1">{view.allowFrom.map((c) => <li key={c}>{c}</li>)}</ul>
                     </div>
                   )
                   : 'すべて許可'],
-                ['CrowdSec（L4）', rule.crowdsec ? '判定に入っている接続元を切る' : '使わない'],
+                ['CrowdSec（L4）', view.crowdsec ? '判定に入っている接続元を切る' : '使わない'],
               ]} />
             </Section>
           </div>
-        </>
+        </div>
       )}
 
       {/* 変更の履歴（#61）。固定ルールは DB にないので履歴もない */}

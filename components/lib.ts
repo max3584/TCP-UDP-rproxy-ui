@@ -248,6 +248,8 @@ export interface ForwardRules extends ForwardRule {
   // ノードごとの稼働情報（RPROXY_UI_NODES でノードを設定したときだけ。グループのルールでは全員分）。
   // 上の state などはその集計（state は悪いほう、接続数と stats は合計）
   nodes?: NodeLiveState[];
+  // active_standby のグループのルールの act の判定（判定に使うアドレスがないときは付かない）
+  ha?: HaStatus;
 }
 
 // ルールの 1 ノードでの稼働情報
@@ -260,6 +262,24 @@ export interface NodeLiveState {
   startedAt: number | null;
   resolved: string[];
   certStatus?: CertStatus[];
+  // UI の定義とこのノードの実際のルール（GET /rules）の違い（項目のコード。components/drift.ts）。空なら同じ。
+  // rproxy にない（missing）・問い合わせできない（unknown）ときは付かない
+  drift?: DriftField[];
+  // active_standby のグループで、VIP を持っているか（GET /interfaces）。判定できなければ付かない
+  role?: NodeRole;
+}
+
+// UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
+export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled';
+
+export type NodeRole = 'active' | 'standby';
+
+// active_standby のグループ（またはそのルール）の act の判定。warning: none は VIP をだれも持っていない、split は複数が持っている
+export interface HaStatus {
+  // 判定に使ったアドレス
+  addrs: string[];
+  active: string[];
+  warning: 'none' | 'split' | null;
 }
 
 // ダッシュボードのノードの一覧の 1 行
@@ -272,6 +292,14 @@ export interface NodeSummary {
   rules: number;
   // そのうち、このノードで failed / missing のもの
   failed: number;
+  // そのうち、UI の定義とずれているもの
+  drifted: number;
+}
+
+// ダッシュボードの active_standby のグループ（vip を設定したものだけ）
+export interface GroupHa extends HaStatus {
+  name: string;
+  nodes: string[];
 }
 
 // single: 全員に同じルールを送る / active_standby: 同じルールを送り、どれが動いているかを表示する（表示は後の版）
@@ -282,7 +310,7 @@ export interface NodesInfo {
   // RPROXY_UI_NODES を使っているか
   configured: boolean;
   nodes: { name: string }[];
-  groups: { name: string; mode: GroupMode; nodes: string[] }[];
+  groups: { name: string; mode: GroupMode; nodes: string[]; vips?: string[] }[];
   // 追加の画面で最初に選ぶノード／グループ。null なら選んでもらう
   defaultTarget: string | null;
 }
@@ -299,6 +327,8 @@ export interface DashboardData {
   admin?: boolean;
   // ノードごとの状態（RPROXY_UI_NODES でノードを設定したときだけ）
   nodes?: NodeSummary[];
+  // vip を設定した active_standby のグループの act
+  groups?: GroupHa[];
 }
 
 export interface PageAuthrized {

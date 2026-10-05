@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { DashboardData, ForwardRules, NodeSummary, Protocol, RuleState } from '@/components/lib';
+import { DashboardData, ForwardRules, GroupHa, NodeSummary, Protocol, RuleState } from '@/components/lib';
+import Tabs, { tabPanelProps } from '@/components/Tabs';
 import {
   EMPTY_FILTER,
   ProtocolSummary,
@@ -30,10 +31,19 @@ import {
   summarize,
   targetLabel,
   tlsBreakdown,
-  uptimeSecs, ConfigStatusView } from '@/components/dashboard';
+  uptimeSecs, ConfigStatusView, driftedNodes, nodeTotals, projectToNode } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
 import { joinList, t, translate } from '@/i18n/core';
-import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
+import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
+
+// 要確認のルールの説明（複数のノード：ずれ・act の判定の警告）
+function nodeIssueText(r: ForwardRules): string {
+  const drifted = driftedNodes(r);
+  if (drifted.length > 0) return translate(`UI の定義とずれているノードがあります: ${drifted.join(', ')}`);
+  if (r.ha?.warning === 'none') return translate('VIP を持つノードがありません');
+  if (r.ha?.warning === 'split') return translate(`VIP を複数のノードが持っています（${r.ha.active.join(', ')}）`);
+  return '';
+}
 
 // 一覧の転送先：代表の名前 1 つ（全部はマウスを乗せたときと詳細画面）
 const TargetName: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
@@ -126,10 +136,23 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
   );
 };
 
-// ノードごとの状態（#98。ノードが 2 つ以上のときだけ出す）
-const NodesCard: React.FC<{ nodes: NodeSummary[] }> = ({ nodes }) => (
+// ノードごとの状態と通信量（#98。ノードが 2 つ以上のときの「全体」のタブ。act と stb を並べて比べる）
+const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: ForwardRules[] }> = ({ nodes, groups, rules }) => (
   <section className="card" aria-labelledby="card-nodes" data-testid="nodes-card">
     <h2 id="card-nodes" className="card-title p-4 pb-2">ノード</h2>
+    {groups.length > 0 && (
+      <ul className="px-4 pb-2 text-sm text-gray-900 space-y-1" data-testid="groups-ha">
+        {groups.map((g) => (
+          <li key={g.name} className="flex flex-wrap items-center gap-2">
+            <span className="font-mono">{g.name}</span>
+            <span className="text-gray-700">act:</span>
+            <span className="font-mono">{g.active.join(', ') || '-'}</span>
+            <span className="text-xs text-gray-600">（VIP <span className="font-mono">{g.addrs.join(', ')}</span>）</span>
+            <HaWarning ha={g} />
+          </li>
+        ))}
+      </ul>
+    )}
     <div className="table-scroll">
       <table className="data-table">
         <caption className="sr-only">rproxy のノードごとの状態</caption>
@@ -139,23 +162,42 @@ const NodesCard: React.FC<{ nodes: NodeSummary[] }> = ({ nodes }) => (
             <th scope="col">接続</th>
             <th scope="col" className="text-right">ルール</th>
             <th scope="col" className="text-right">失敗・未登録</th>
+            <th scope="col" className="text-right">ずれ</th>
+            <th scope="col" className="text-right">現在の接続</th>
+            <th scope="col" className="text-right">rx（受信）</th>
+            <th scope="col" className="text-right">tx（送信）</th>
+            <th scope="col" className="text-right">拒否</th>
+            <th scope="col" className="text-right">HTTP リクエスト</th>
           </tr>
         </thead>
         <tbody>
-          {nodes.map((n) => (
-            <tr key={n.name}>
-              <td className="font-mono text-gray-900">{n.name}</td>
-              <td>
-                <span className={`inline-flex items-center gap-2 ${n.reachable ? 'text-green-700' : 'text-red-700'}`}>
-                  <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${n.reachable ? 'bg-green-600' : 'bg-red-600'}`} />
-                  {n.reachable ? '接続できます' : '接続できません'}
-                </span>
-                {n.error && <div className="text-xs text-red-800 break-all">{n.error}</div>}
-              </td>
-              <td className="text-right tabular-nums text-gray-900">{formatCount(n.rules)}</td>
-              <td className={`text-right tabular-nums ${n.failed > 0 ? 'text-red-800 font-semibold' : 'text-gray-900'}`}>{formatCount(n.failed)}</td>
-            </tr>
-          ))}
+          {nodes.map((n) => {
+            const t = nodeTotals(rules, n.name);
+            const roles = groups.map((g) => (g.nodes.includes(n.name) ? (g.active.includes(n.name) ? 'active' : 'standby') : null)).filter((r) => r !== null);
+            return (
+              <tr key={n.name}>
+                <td className="whitespace-nowrap text-gray-900">
+                  <span className="font-mono mr-1">{n.name}</span>
+                  {n.reachable && roles.map((r, i) => <RoleBadge key={i} role={r} />)}
+                </td>
+                <td>
+                  <span className={`inline-flex items-center gap-2 ${n.reachable ? 'text-green-700' : 'text-red-700'}`}>
+                    <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${n.reachable ? 'bg-green-600' : 'bg-red-600'}`} />
+                    {n.reachable ? '接続できます' : '接続できません'}
+                  </span>
+                  {n.error && <div className="text-xs text-red-800 break-all">{n.error}</div>}
+                </td>
+                <td className="text-right tabular-nums text-gray-900">{formatCount(n.rules)}</td>
+                <td className={`text-right tabular-nums ${n.failed > 0 ? 'text-red-800 font-semibold' : 'text-gray-900'}`}>{formatCount(n.failed)}</td>
+                <td className={`text-right tabular-nums ${(n.drifted ?? 0) > 0 ? 'text-amber-900 font-semibold' : 'text-gray-900'}`}>{formatCount(n.drifted ?? 0)}</td>
+                <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatCount(t.connections) : '-'}</td>
+                <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatBytes(t.rxBytes) : '-'}</td>
+                <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatBytes(t.txBytes) : '-'}</td>
+                <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatCount(t.denied) : '-'}</td>
+                <td className="text-right tabular-nums text-gray-900">{n.reachable ? formatCount(t.httpRequests) : '-'}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -224,7 +266,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = 
               <span className="text-gray-600"> → </span>
               <TargetName rule={r} />
               <p className="text-xs text-red-800 break-all mt-0.5">
-                {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certProblem(r) ?? '')}
+                {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certProblem(r) ?? nodeIssueText(r))}
               </p>
             </div>
           </li>
@@ -325,7 +367,10 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; showTarget: boo
               const routes = r.tls.routes?.length ?? 0;
               return (
                 <tr key={r.id} className="cursor-pointer hover:bg-blue-50" onClick={() => router.push(href)}>
-                  <td><StateBadge state={r.state} /></td>
+                  <td>
+                    <StateBadge state={r.state} />
+                    {showTarget && <span className="ml-1"><RuleDriftBadge rule={r} /></span>}
+                  </td>
                   <td className="uppercase">{r.protocol}</td>
                   <td className="font-mono whitespace-nowrap">
                     <Link href={href} className="link" title={listenLabel(r)} onClick={(e) => e.stopPropagation()}>
@@ -441,15 +486,26 @@ const DashboardPage: React.FC = () => {
   }, [load]);
   useAutoRefresh(load, autoRefresh);
 
-  const rules = useMemo(() => data?.rules ?? [], [data]);
+  // ノードが 2 つ以上なら「全体 / ノードごと」のタブ、ノードの一覧と、ルールのノード／グループを出す（1 つなら今と同じ見た目）
+  const nodes = useMemo(() => data?.nodes ?? [], [data]);
+  const manyNodes = nodes.length > 1;
+  const [tab, setTab] = useState('all');
+  if (tab !== 'all' && !nodes.some((n) => n.name === tab) && data !== null) setTab('all');
+  const allRules = useMemo(() => data?.rules ?? [], [data]);
+  // ノードのタブでは、そのノードに置くルールだけを、そのノードの状態で出す
+  const rules = useMemo(() => (manyNodes && tab !== 'all' ? projectToNode(allRules, tab) : allRules), [allRules, manyNodes, tab]);
   const summary = useMemo(() => summarize(rules), [rules]);
   const attention = useMemo(() => needsAttention(rules), [rules]);
   const now = lastUpdated ?? 0;
-  const reachable = data?.reachable ?? false;
-  // ノードが 2 つ以上なら、ノードの一覧と、ルールのノード／グループを出す（1 つなら今と同じ見た目）
-  const nodes = data?.nodes ?? [];
-  const manyNodes = nodes.length > 1;
+  const nodeView = manyNodes && tab !== 'all' ? nodes.find((n) => n.name === tab) ?? null : null;
+  const reachable = nodeView ? nodeView.reachable : data?.reachable ?? false;
   const nodesUp = nodes.filter((n) => n.reachable).length;
+  const nodeTabs = manyNodes ? [{ id: 'all', label: '全体' }, ...nodes.map((n) => ({
+    id: n.name,
+    label: <span className="font-mono">{n.name}</span>,
+    badge: !n.reachable || n.failed > 0 || (n.drifted ?? 0) > 0
+      ? <span className="ml-1 inline-block h-2 w-2 rounded-full bg-amber-600" aria-label="要確認" /> : undefined,
+  }))] : null;
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
@@ -469,12 +525,25 @@ const DashboardPage: React.FC = () => {
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
       {configStatus?.show && <ConfigStatusNotice status={configStatus} />}
 
+      {data !== null && nodeTabs && <Tabs id="dashboard-nodes" label="ノード" tabs={nodeTabs} active={tab} onChange={setTab} />}
+
       {data === null ? (
         !error && <p className="text-gray-700">読み込み中…</p>
       ) : (
-        <>
+        <div {...(nodeTabs ? tabPanelProps('dashboard-nodes', tab) : { className: 'space-y-4' })}>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {manyNodes ? (
+            {nodeView ? (
+              <StatTile
+                label={translate(`rproxy（${nodeView.name}）`)}
+                value={
+                  <span className={`inline-flex items-center gap-2 ${nodeView.reachable ? 'text-green-700' : 'text-red-700'}`}>
+                    <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${nodeView.reachable ? 'bg-green-600' : 'bg-red-600'}`} />
+                    {nodeView.reachable ? '接続できます' : '接続できません'}
+                  </span>
+                }
+                sub={nodeView.error ? <span className="break-all">{nodeView.error}</span> : `ずれ ${nodeView.drifted ?? 0} 件`}
+              />
+            ) : manyNodes ? (
               <StatTile
                 label="rproxy"
                 value={
@@ -510,12 +579,12 @@ const DashboardPage: React.FC = () => {
             <TlsCard rules={rules} />
           </div>
 
-          {manyNodes && <NodesCard nodes={nodes} />}
+          {manyNodes && tab === 'all' && <NodesCard nodes={nodes} groups={data.groups ?? []} rules={allRules} />}
 
           <AttentionCard rules={attention} showTarget={manyNodes} />
 
           <RulesTable rules={rules} now={now} showTarget={manyNodes} onChanged={() => void load()} onError={setError} />
-        </>
+        </div>
       )}
     </div>
   );

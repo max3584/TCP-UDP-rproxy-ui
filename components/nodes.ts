@@ -2,6 +2,7 @@
 // RPROXY_UI_NODES に YAML / JSON のファイルを指定すると、そのノードとグループを使う。
 // 指定しなければ今までどおり RPROXY_API_URL / RPROXY_API_TOKEN の 1 台だけ（名前は default。DB の target 列は使わない）
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { parse as parseYaml } from 'yaml';
 import type { RproxyNode } from './rproxy';
 import type { GroupMode, NodesInfo } from './lib';
@@ -27,8 +28,10 @@ export interface NodeConfig {
 export interface GroupConfig {
   name: string;
   nodes: string[];
-  // single: 全員に同じルールを送るだけ / active_standby: 同じ（役割の表示は後の版。#98）
+  // single: 全員に同じルールを送るだけ / active_standby: 同じルールを送り、VIP を持つノードを act と表示する
   mode: GroupMode;
+  // active_standby の VIP（keepalived などが付け外しするアドレス）。空ならルールの待ち受けアドレス（特定のアドレスのとき）で判定する
+  vips: string[];
 }
 
 export interface NodesConfig {
@@ -49,7 +52,12 @@ export class NodesConfigError extends Error {
 
 const TOP_KEYS = ['nodes', 'groups', 'default_target'];
 const NODE_KEYS = ['name', 'url', 'token_file'];
-const GROUP_KEYS = ['name', 'nodes', 'mode'];
+const GROUP_KEYS = ['name', 'nodes', 'mode', 'vip'];
+
+// IPv6 は rproxy の GET /interfaces と同じ圧縮表記（小文字）に揃える
+export function normalizeIp(addr: string): string {
+  return isIP(addr) === 6 ? new URL(`http://[${addr}]`).hostname.slice(1, -1) : addr;
+}
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -132,7 +140,14 @@ export function parseNodesConfig(text: string, readToken: (path: string) => stri
     const mode = raw.mode ?? 'single';
     if (!GROUP_MODES.includes(mode as GroupMode)) throw new NodesConfigError(`${where}.mode は single か active_standby にしてください。`);
     if (mode === 'active_standby' && members.length < 2) throw new NodesConfigError(`${where}: active_standby のグループにはノードを 2 つ以上書いてください。`);
-    return { name: name, nodes: members, mode: mode as GroupMode };
+    const rawVip = raw.vip ?? [];
+    const vipList = Array.isArray(rawVip) ? rawVip : [rawVip];
+    const vips = vipList.map((v) => {
+      if (typeof v !== 'string' || isIP(v.trim()) === 0) throw new NodesConfigError(`${where}.vip には IP アドレス（または IP アドレスの配列）を書いてください。`);
+      return normalizeIp(v.trim());
+    });
+    if (vips.length > 0 && mode !== 'active_standby') throw new NodesConfigError(`${where}.vip は active_standby のグループにだけ書けます。`);
+    return { name: name, nodes: members, mode: mode as GroupMode, vips: vips };
   });
 
   let defaultTarget: string | null = null;
@@ -189,6 +204,10 @@ export function isGroup(config: NodesConfig, name: string): boolean {
   return config.groups.some((g) => g.name === name);
 }
 
+export function groupOf(config: NodesConfig, name: string): GroupConfig | undefined {
+  return config.groups.find((g) => g.name === name);
+}
+
 // ノードかグループの名前から、送り先のノード（設定ファイルの順）。知らない名前なら null
 export function targetNodes(config: NodesConfig, target: string): NodeConfig[] | null {
   const node = config.nodes.find((n) => n.name === target);
@@ -227,7 +246,7 @@ export function nodesInfo(config: NodesConfig): NodesInfo {
   return {
     configured: config.configured,
     nodes: config.nodes.map((n) => ({ name: n.name })),
-    groups: config.groups.map((g) => ({ name: g.name, mode: g.mode, nodes: [...g.nodes] })),
+    groups: config.groups.map((g) => ({ name: g.name, mode: g.mode, nodes: [...g.nodes], ...(g.vips.length > 0 ? { vips: [...g.vips] } : {}) })),
     defaultTarget: config.defaultTarget,
   };
 }
@@ -241,4 +260,15 @@ export function probeNode(config: NodesConfig, target: string | undefined): Rpro
   const nodes = targetNodes(config, name);
   if (!nodes || nodes.length === 0) throw new NodesConfigError(`ノード／グループ ${name} は設定にありません。`);
   return toRproxyNode(nodes[0]);
+}
+
+// 起動時の確認（instrumentation.ts）。誤りがあれば理由を出して終了する
+export function checkNodesAtStartup(): void {
+  try {
+    const config = loadNodes();
+    console.log(`rproxy-ui: RPROXY_UI_NODES: nodes ${config.nodes.map((n) => n.name).join(', ')}; groups ${config.groups.map((g) => `${g.name}(${g.nodes.join(',')})`).join(', ') || '-'}`);
+  } catch (err) {
+    console.error(`rproxy-ui: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 }

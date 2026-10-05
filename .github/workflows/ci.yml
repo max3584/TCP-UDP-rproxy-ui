@@ -226,6 +226,7 @@ jobs:
             - name: ha
               nodes: [n1, n2]
               mode: active_standby
+              vip: 10.99.0.10
           YAML
           echo "RPROXY_UI_NODES=$RUNNER_TEMP/nodes.yaml" >> "$GITHUB_ENV"
           for n in n1 n2; do

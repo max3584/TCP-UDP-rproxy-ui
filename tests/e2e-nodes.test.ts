@@ -50,6 +50,21 @@ async function viewPorts(database: string): Promise<number[]> {
   }
 }
 
+// CI の nodes.yaml のグループ ha の vip
+const VIP = '10.99.0.10';
+
+// コンテナのネットワーク名前空間で ip を動かす（keepalived が VIP を付け外しする代わり）
+function ipInContainer(node: string, args: string[]): void {
+  const pid = execFileSync('docker', ['inspect', '-f', '{{.State.Pid}}', container(node)]).toString().trim();
+  execFileSync('sudo', ['nsenter', '-t', pid, '-n', 'ip', ...args], { stdio: 'inherit' });
+}
+
+async function groupHa(): Promise<{ active: string[]; warning: string | null }> {
+  const { json } = await call('dashboard', undefined, 'GET');
+  const g = (json.groups ?? []).find((x: any) => x.name === 'ha');
+  return { active: g.active, warning: g.warning };
+}
+
 function container(node: string): string {
   const pairs = (process.env.E2E_NODE_CONTAINERS ?? '').split(',').map((p) => p.split('='));
   const hit = pairs.find(([n]) => n === node);
@@ -83,7 +98,7 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     const { status, json } = await call('nodes', undefined, 'GET');
     expect(status).toBe(200);
     expect(json.nodes.map((n: any) => n.name)).toEqual(['n1', 'n2']);
-    expect(json.groups).toEqual([{ name: 'ha', mode: 'active_standby', nodes: ['n1', 'n2'] }]);
+    expect(json.groups).toEqual([{ name: 'ha', mode: 'active_standby', nodes: ['n1', 'n2'], vips: [VIP] }]);
   });
 
   it('a group rule is created on both nodes', async () => {
@@ -113,8 +128,8 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect(json.reachable).toBe(true);
     expect(json.rproxyError).toBeNull();
     expect(json.nodes).toEqual([
-      { name: 'n1', reachable: true, error: null, rules: 2, failed: 0 },
-      { name: 'n2', reachable: true, error: null, rules: 2, failed: 0 },
+      { name: 'n1', reachable: true, error: null, rules: 2, failed: 0, drifted: 0 },
+      { name: 'n2', reachable: true, error: null, rules: 2, failed: 0, drifted: 0 },
     ]);
     const group = json.rules.find((r: any) => r.srcPort === GROUP_PORT);
     expect(group.target).toBe('ha');
@@ -172,5 +187,70 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     } finally {
       await withNode(n2, () => deleteRule(key));
     }
+  });
+
+  it('shows the node holding the VIP as act, and warns when none or both hold it', async () => {
+    expect(await groupHa()).toEqual({ active: [], warning: 'none' });
+    ipInContainer('n1', ['addr', 'add', `${VIP}/32`, 'dev', 'eth0']);
+    try {
+      expect(await groupHa()).toEqual({ active: ['n1'], warning: null });
+      ipInContainer('n2', ['addr', 'add', `${VIP}/32`, 'dev', 'eth0']);
+      try {
+        expect(await groupHa()).toEqual({ active: ['n1', 'n2'], warning: 'split' });
+      } finally {
+        ipInContainer('n1', ['addr', 'del', `${VIP}/32`, 'dev', 'eth0']);
+      }
+      expect(await groupHa()).toEqual({ active: ['n2'], warning: null });
+      // ルールの詳細でも、ノードごとの役割が付く
+      expect((await call('add', { ...rule(GROUP_PORT), target: 'ha' })).status).toBe(200);
+      const { json } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '127.0.0.1', port: String(GROUP_PORT), target: 'ha' });
+      expect(json.nodes.map((n: any) => [n.node, n.role])).toEqual([['n1', 'standby'], ['n2', 'active']]);
+      expect(json.ha).toEqual({ addrs: [VIP], active: ['n2'], warning: null });
+    } finally {
+      ipInContainer('n2', ['addr', 'flush', 'dev', 'eth0', 'to', `${VIP}/32`]);
+    }
+  });
+
+  it('detects a rule changed directly on one node (drift) and resending fixes that node only', async () => {
+    const { loadNodes, targetNodes, toRproxyNode } = await import('@/components/nodes');
+    const { modifyRule, withNode } = await import('@/components/rproxy');
+    const n2 = toRproxyNode(targetNodes(loadNodes(), 'n2')![0]);
+    const key = { protocol: 'tcp' as const, listen_addr: '127.0.0.1', listen_port: GROUP_PORT };
+    // UI を通さずに n2 の転送先を変える
+    await withNode(n2, () => modifyRule(key, { remote_addr: '127.0.0.1', remote_port: 10, tls: { mode: 'passthrough' }, allow_from: [] }));
+
+    const q = { protocol: 'tcp', addr: '127.0.0.1', port: String(GROUP_PORT), target: 'ha' };
+    let { json } = await call('rule', undefined, 'GET', q);
+    expect(json.nodes.map((n: any) => [n.node, n.drift])).toEqual([['n1', []], ['n2', ['remote']]]);
+    const dash = await call('dashboard', undefined, 'GET');
+    expect(dash.json.nodes.map((n: any) => [n.name, n.drifted])).toEqual([['n1', 0], ['n2', 1]]);
+
+    const resend = await call('resend', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: GROUP_PORT, target: 'ha', node: 'n2' });
+    expect(resend.status, JSON.stringify(resend.json)).toBe(200);
+    expect(resend.json).toEqual({ node: 'n2', result: 'modified' });
+    ({ json } = await call('rule', undefined, 'GET', q));
+    expect(json.nodes.map((n: any) => n.drift)).toEqual([[], []]);
+
+    // 履歴に送り直し（RESEND）とノードが残る
+    const history = await call('history', undefined, 'GET', { ...q, action: 'RESEND' });
+    expect(history.json.entries[0]).toMatchObject({ action: 'RESEND', node: 'n2', target: 'ha' });
+  });
+
+  it('shows a rule removed from one node as missing, and resending recreates it there', async () => {
+    const { loadNodes, targetNodes, toRproxyNode } = await import('@/components/nodes');
+    const { deleteRule, withNode } = await import('@/components/rproxy');
+    const n1 = toRproxyNode(targetNodes(loadNodes(), 'n1')![0]);
+    await withNode(n1, () => deleteRule({ protocol: 'tcp', listen_addr: '127.0.0.1', listen_port: GROUP_PORT }));
+    const q = { protocol: 'tcp', addr: '127.0.0.1', port: String(GROUP_PORT), target: 'ha' };
+    let { json } = await call('rule', undefined, 'GET', q);
+    expect(json.nodes.map((n: any) => [n.node, n.state])).toEqual([['n1', 'missing'], ['n2', 'running']]);
+
+    const resend = await call('resend', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: GROUP_PORT, target: 'ha', node: 'n1' });
+    expect(resend.json).toEqual({ node: 'n1', result: 'added' });
+    ({ json } = await call('rule', undefined, 'GET', q));
+    expect(json.nodes.map((n: any) => n.state)).toEqual(['running', 'running']);
+    expect(await rulesOn('n1')).toEqual([GROUP_PORT]);
+
+    expect((await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: GROUP_PORT, target: 'ha' })).status).toBe(200);
   });
 });

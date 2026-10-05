@@ -4,13 +4,15 @@ import type { ForwardRule } from './lib';
 import { hostPort, portsLabel } from './dashboard';
 import { tc, translate } from '@/i18n/core';
 
-export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE';
-export const HISTORY_ACTIONS: HistoryAction[] = ['ADD', 'UPDATE', 'DELETE'];
+// RESEND は 1 つのノードへの送り直し（#98。内容は変えない）
+export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND';
+export const HISTORY_ACTIONS: HistoryAction[] = ['ADD', 'UPDATE', 'DELETE', 'RESEND'];
 
 export const ACTION_LABELS: Record<HistoryAction, string> = {
   ADD: '追加',
   UPDATE: '変更',
   DELETE: '削除',
+  RESEND: '送り直し',
 };
 
 // 1 件の履歴。rule はその操作のあとの内容（DELETE は削除する前の内容）。
@@ -27,6 +29,8 @@ export interface HistoryEntry {
   srcPort: number;
   // ノード／グループ（RPROXY_UI_NODES でノードを設定したときだけ）
   target?: string;
+  // 送り直し（RESEND）の相手のノード
+  node?: string;
   rule: ForwardRule | null;
   // 同じルールの 1 つ前の版との違い（最初の版、または読めないときは空）
   changes: string[];

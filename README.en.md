@@ -262,13 +262,18 @@ groups:
   - name: ha
     nodes: [node1, node2]
     mode: active_standby             # single (default) or active_standby
+    vip: 192.0.2.10                  # the active_standby VIP (optional; may be a list; see "act / stb" below)
 default_target: ha                   # chosen first on the add screen (optional; automatic with one node)
 ```
 
 - The file is checked when the UI starts; if it is wrong, the reason is logged and the UI does not start. Restart the UI after changing it. The user running the UI (`rproxy-ui` with the .deb) must be able to read the token files.
-- With two or more nodes, the add screen has a "Node / group" choice, the list and the detail show the node / group, and the dashboard lists the nodes (reachable, rules, failures). A group rule's state is the worse one (failed > missing > unknown > running); connections and traffic are summed.
+- With two or more nodes, the add screen has a "Node / group" choice, and the list and the detail show the node / group. A group rule's state is the worse one (failed > missing > unknown > running); connections and traffic are summed.
+- The dashboard and the rule detail get "All / per node" tabs (no tabs with a single node). A node's tab shows that node's state, connections, rx / tx, denied, HTTP request counts and certificate expiry; "All" shows the totals and a table comparing the nodes (act and stb traffic side by side; on the dashboard also reachability, rules, failures and drift counts).
+- **Drift**: the rule running on each node (`GET /rules`) is compared with the UI's definition (the DB), and differing fields (destination, TLS, allow_from, etc.; runtime figures are not compared) are shown as "Drift". "Resend to this node" on a node's tab of the rule detail sends the UI's definition to that node only (differences PATCH cannot fix (source IP handling, port range, L4 / L7) recreate the rule; a rule missing on the node is created; a paused rule still running is removed). Only the rule's owner and admins can use it, and the history records "Resend" (`RESEND`) with the node.
+- **act / stb**: in an active_standby group, the node whose `GET /interfaces` has the VIP is shown as act, the others as stb. The VIP is the group's `vip`, or, without it, the rule's listen address (when it is not `0.0.0.0`, `::` or loopback). stb does not hold the VIP, so rules usually listen on `0.0.0.0` (without `ip_nonlocal_bind` stb cannot bind the VIP); setting `vip` is recommended. A warning is shown when no node or several nodes hold the VIP.
+- The dashboard's rproxy settings-file warning covers every node, each prefixed with the node name.
 - Rules with the same key (protocol, address, port) can be put on nodes / groups that share no node (otherwise 409 `target_conflict`).
-- Apply `db/migrations/006_nodes.sql` before using it (a `target` column in `forward_rules` and `forward_rules_log`, and the `forward_rule_targets` table). Existing rules belong to `default`: name a node `default` in the file, or move them with `UPDATE forward_rules SET target = 'node1' WHERE target = 'default'`.
+- Apply `db/migrations/006_nodes.sql` and `007_log_node.sql` (the node of a resend in the history) before using it (a `target` column in `forward_rules` and `forward_rules_log`, and the `forward_rule_targets` table). Existing rules belong to `default`: name a node `default` in the file, or move them with `UPDATE forward_rules SET target = 'node1' WHERE target = 'default'`.
 
 ### Restoring at rproxy startup (a view per node)
 

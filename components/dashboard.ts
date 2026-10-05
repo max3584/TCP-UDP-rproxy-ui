@@ -260,7 +260,10 @@ export function certProblem(rule: Pick<ForwardRules, 'certStatus'>): string | nu
 // 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール。それぞれ元の順番のまま）
 export function needsAttention(rules: ForwardRules[]): ForwardRules[] {
   const certs = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certProblem(r) !== null);
-  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs];
+  // 複数のノード：UI の定義とずれているノードがある・act の判定に警告があるルール（#98）
+  const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certProblem(r) === null
+    && (driftedNodes(r).length > 0 || (r.ha?.warning ?? null) !== null));
+  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs, ...nodeIssues];
 }
 
 export interface RuleFilter {
@@ -712,6 +715,20 @@ export function configStatusView(status: { configured: boolean; path?: string; e
   return { show: error !== null || restartNeeded.length > 0, path: status.path ?? null, error: error, restartNeeded: restartNeeded };
 }
 
+// 複数のノード（#98）：ノードごとの状態を 1 つの注意にまとめる（誤り・再起動が要る変更の前に「ノード名: 」を付ける）
+export function mergeConfigStatusViews(views: { node: string; view: ConfigStatusView }[]): ConfigStatusView {
+  const shown = views.filter((v) => v.view.show);
+  if (shown.length === 0) return { show: false, path: null, error: null, restartNeeded: [] };
+  const paths = [...new Set(shown.map((v) => v.view.path).filter((p): p is string => p !== null))];
+  const errors = shown.filter((v) => v.view.error !== null).map((v) => `${v.node}: ${v.view.error}`);
+  return {
+    show: true,
+    path: paths.length === 1 ? paths[0] : null,
+    error: errors.length > 0 ? errors.join(' / ') : null,
+    restartNeeded: shown.flatMap((v) => v.view.restartNeeded.map((r) => `${v.node}: ${r}`)),
+  };
+}
+
 // 待ち受けのアドレスが重なるか（::・0.0.0.0 はそれぞれのファミリーのすべてのアドレスと重なる。:: は IPv4 とも重なりうるので重なる扱い）
 function addressesOverlap(a: string[], b: string[]): boolean {
   const wild = (x: string) => x === '::' || x === '0.0.0.0';
@@ -743,4 +760,58 @@ export function http3PortConflicts(rules: ForwardRules[], target: ListenSide, se
     if (rEnd < start || r.srcPort > end) return false;
     return addressesOverlap(addrs(target), addrs(r));
   });
+}
+
+// ルールを 1 つのノードから見た形にする（状態・接続数・stats・証明書をそのノードの値に。#98 のノードのタブ）。
+// そのノードに置かないルールなら null
+export function projectRule(rule: ForwardRules, node: string): ForwardRules | null {
+  const n = rule.nodes?.find((x) => x.node === node);
+  if (!n) return null;
+  const { certStatus: _omit, ...rest } = rule;
+  void _omit;
+  return {
+    ...rest,
+    state: n.state,
+    error: n.error,
+    connections: n.connections,
+    stats: n.stats,
+    startedAt: n.startedAt,
+    resolved: n.resolved,
+    ...(n.certStatus ? { certStatus: n.certStatus } : {}),
+    nodes: [n],
+  };
+}
+
+export function projectToNode(rules: ForwardRules[], node: string): ForwardRules[] {
+  return rules.map((r) => projectRule(r, node)).filter((r): r is ForwardRules => r !== null);
+}
+
+// ノードごとの合計（ダッシュボードの「全体」の比べる表）
+export interface NodeTotals {
+  connections: number;
+  totalConnections: number;
+  rxBytes: number;
+  txBytes: number;
+  denied: number;
+  httpRequests: number;
+  http5xx: number;
+}
+
+export function nodeTotals(rules: ForwardRules[], node: string): NodeTotals {
+  const t: NodeTotals = { connections: 0, totalConnections: 0, rxBytes: 0, txBytes: 0, denied: 0, httpRequests: 0, http5xx: 0 };
+  for (const r of projectToNode(rules, node)) {
+    t.connections += r.connections ?? 0;
+    t.totalConnections += r.stats?.total_connections ?? 0;
+    t.rxBytes += r.stats?.rx_bytes ?? 0;
+    t.txBytes += r.stats?.tx_bytes ?? 0;
+    t.denied += r.stats?.denied ?? 0;
+    t.httpRequests += r.stats?.http?.requests ?? 0;
+    t.http5xx += r.stats?.http?.by_status['5xx'] ?? 0;
+  }
+  return t;
+}
+
+// ずれのあるノード（そのルールで）
+export function driftedNodes(rule: Pick<ForwardRules, 'nodes'>): string[] {
+  return (rule.nodes ?? []).filter((n) => (n.drift ?? []).length > 0).map((n) => n.node);
 }

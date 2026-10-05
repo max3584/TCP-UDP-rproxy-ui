@@ -1,30 +1,49 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
 import { RproxyError, getConfigStatus, withNode } from '@/components/rproxy';
-import { loadNodes, probeNode } from '@/components/nodes';
 import { requireRole } from '@/components/apiguard';
-import { configStatusView } from '@/components/dashboard';
+import { configStatusView, mergeConfigStatusViews } from '@/components/dashboard';
+import { loadNodes, toRproxyNode } from '@/components/nodes';
 import { localizedApi } from '@/i18n/server';
+
+// 1 台の設定ファイルの状態。読めない（403 / 404 / 届かない）ときは何も出さない形
+async function statusView(fetchStatus: () => ReturnType<typeof getConfigStatus>, node?: string) {
+  try {
+    return configStatusView(await fetchStatus());
+  } catch (err) {
+    const quiet = err instanceof RproxyError && (err.status === 403 || err.status === 404);
+    if (!quiet) Logger('info', { action: 'config' }).warn(`rproxy${node ? `（${node}）` : ''} の設定ファイルの状態を取得できません: ${err}`);
+    return configStatusView(null);
+  }
+}
 
 // rproxy の設定ファイルの状態（GET /config）。ダッシュボードの注意の表示に使う。
 // UI のトークンで読めない（403）・古い rproxy（404）・設定ファイルを使っていない・rproxy に届かないときは
-// 何も出さない（{"show": false}）。ダッシュボードの表示を止めないように、失敗しても 200 で返す
+// 何も出さない（{"show": false}）。ダッシュボードの表示を止めないように、失敗しても 200 で返す。
+// ノードを設定していれば全ノードに聞き、注意のあるノードを「ノード名: 」付きで 1 つにまとめる（#98）
 async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!(await requireRole(req, res))) return;
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', code: 'method_not_allowed' });
   }
 
+  let cfg;
   try {
-    // ノードを設定していれば ?target= のノード（なければ既定のノード）の状態
-    const node = probeNode(loadNodes(), typeof req.query.target === 'string' ? req.query.target : undefined);
-    const status = node ? await withNode(node, () => getConfigStatus()) : await getConfigStatus();
-    return res.status(200).json(configStatusView(status));
+    cfg = loadNodes();
   } catch (err) {
-    const quiet = err instanceof RproxyError && (err.status === 403 || err.status === 404);
-    if (!quiet) Logger('info', { action: 'config' }).warn(`rproxy の設定ファイルの状態を取得できません: ${err}`);
+    Logger('info', { action: 'config' }).error(`${err}`);
     return res.status(200).json(configStatusView(null));
   }
+  if (!cfg.configured) {
+    const view = await statusView(() => getConfigStatus());
+    return res.status(200).json(view);
+  }
+  const views = await Promise.all(cfg.nodes.map(toRproxyNode).map(async (node) => ({
+    node: node.name,
+    view: await statusView(() => withNode(node, () => getConfigStatus()), node.name),
+  })));
+  const merged = mergeConfigStatusViews(views);
+  return res.status(200).json(merged);
 }
 
 // エラーのメッセージは Accept-Language か画面で選んだ言語（cookie）で返す（code は変えない）

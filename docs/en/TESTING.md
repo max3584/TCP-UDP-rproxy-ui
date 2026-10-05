@@ -153,8 +153,11 @@
 - `tests/nodeview.test.ts`: the SQL from `db/node-view.mjs` (the view's columns are those rproxy reads, the filter, the read-only GRANT, name checks)
 - `tests/fanout.test.ts`: sending to every node of a group, undoing the nodes that succeeded when one fails, results per node
 - `tests/forward-nodes.test.ts`: the API route (adding to a group, undo and ROLLBACK on failure, undo on a COMMIT failure, target required and checked, 409 on overlaps, aggregated state per node, target in the history)
-- `tests/nodestate.test.ts`: aggregating states (the worse one), summing stats, `?target=` in URLs
-- `tests/e2e-nodes.test.ts` (CI `e2e-nodes`): a group rule is created on both nodes and a node rule on that node only, the views' contents, a restarted rproxy restores only its own rules, pause / resume / delete, undo when one node fails
+- `tests/nodestate.test.ts`: aggregating states (the worse one), summing stats, `?target=` in URLs, node tabs (`projectRule`, `nodeTotals`), merging the settings-file warnings of all nodes
+- `tests/drift.test.ts`: comparing for drift (defaults and runtime figures ignored, codes of differing fields, a paused rule still running, differences needing a recreate) and act / stb (VIP or listen address, warnings when nobody or several nodes hold it)
+- second half of `tests/forward-nodes.test.ts`: drift and act per node, resending (create when missing, PATCH on drift, nothing when equal, RESEND with the node in the history)
+- `tests/e2e-nodes.test.ts` (CI `e2e-nodes`): a group rule is created on both nodes and a node rule on that node only, the views' contents, a restarted rproxy restores only its own rules, pause / resume / delete, undo when one node fails,
+  act / stb and the warnings change as the VIP is added to / removed from the containers, drift of a rule changed directly on one node and resending, a rule removed from one node shown as missing and resending
 
 ## Not yet tested
 

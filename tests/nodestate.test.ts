@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateNodeStates, multiNode, parseRuleKey, ruleApiUrl, ruleEditHref, ruleHref, ruleKeyOf, sumStats, targetChoices } from '@/components/dashboard';
+import { aggregateNodeStates, driftedNodes, mergeConfigStatusViews, nodeTotals, projectRule, projectToNode, multiNode, parseRuleKey, ruleApiUrl, ruleEditHref, ruleHref, ruleKeyOf, sumStats, targetChoices } from '@/components/dashboard';
 import type { NodeLiveState } from '@/components/lib';
 
 const live = (node: string, extra: Partial<NodeLiveState> = {}): NodeLiveState => ({
@@ -64,5 +64,42 @@ describe('node choices', () => {
     expect(multiNode(info)).toBe(true);
     expect(multiNode({ nodes: [{ name: 'default' }] })).toBe(false);
     expect(multiNode(null)).toBe(false);
+  });
+});
+
+describe('per-node tabs', () => {
+  const rule = {
+    id: 1, origin: 'dynamic', protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 80, srcPortEnd: null, distAddr: 'x', distPort: 80,
+    sourceIp: 'proxy', udpIdleSecs: 30, tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null,
+    crowdsec: false, targets: [], balance: 'round_robin', healthCheck: null, target: 'ha',
+    state: 'failed', error: 'b: boom', connections: 5, stats: null, startedAt: 1, resolved: [], certStatus: [{ role: 'certificate', file: '/a', not_after: '', days_left: 1, state: 'expiring' }],
+    nodes: [
+      { node: 'a', state: 'running', error: null, connections: 2, stats: { total_connections: 4, rx_bytes: 10, tx_bytes: 20, tls_failures: 0, denied: 1 }, startedAt: 1, resolved: [], role: 'active' },
+      { node: 'b', state: 'failed', error: 'boom', connections: 3, stats: null, startedAt: null, resolved: [], drift: ['remote'] },
+    ],
+  } as unknown as import('@/components/lib').ForwardRules;
+
+  it('projectRule shows one node\'s state, numbers and certificates', () => {
+    const a = projectRule(rule, 'a')!;
+    expect(a).toMatchObject({ state: 'running', error: null, connections: 2, nodes: [{ node: 'a' }] });
+    expect(a.certStatus).toBeUndefined();
+    expect(projectRule(rule, 'b')!.state).toBe('failed');
+    expect(projectRule(rule, 'c')).toBeNull();
+    expect(projectToNode([rule], 'c')).toEqual([]);
+  });
+
+  it('nodeTotals sums a node\'s rules; driftedNodes lists drifting nodes', () => {
+    expect(nodeTotals([rule], 'a')).toEqual({ connections: 2, totalConnections: 4, rxBytes: 10, txBytes: 20, denied: 1, httpRequests: 0, http5xx: 0 });
+    expect(driftedNodes(rule)).toEqual(['b']);
+  });
+
+  it('merges the config-file warnings of every node', () => {
+    const ok = { show: false, path: null, error: null, restartNeeded: [] };
+    expect(mergeConfigStatusViews([{ node: 'a', view: ok }]).show).toBe(false);
+    expect(mergeConfigStatusViews([
+      { node: 'a', view: { show: true, path: '/etc/rproxy/config.yaml', error: 'bad yaml', restartNeeded: [] } },
+      { node: 'b', view: ok },
+      { node: 'c', view: { show: true, path: '/etc/rproxy/config.yaml', error: null, restartNeeded: ['global.crowdsec'] } },
+    ])).toEqual({ show: true, path: '/etc/rproxy/config.yaml', error: 'a: bad yaml', restartNeeded: ['c: global.crowdsec'] });
   });
 });

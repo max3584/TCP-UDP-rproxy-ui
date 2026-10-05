@@ -9,6 +9,8 @@ import {
   ForwardRules,
   HttpSpec,
   Logger,
+  GroupHa,
+  HaStatus,
   NodeLiveState,
   NodeSummary,
   Protocol,
@@ -47,13 +49,16 @@ import {
   RproxyRuleStatus,
   addRule,
   deleteRule,
+  getInterfaces,
   getRule,
   listRules,
   modifyRule,
   withNode,
 } from '@/components/rproxy';
 import { aggregateNodeStates, mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
-import { NodesConfig, NodesConfigError, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode } from '@/components/nodes';
+import { NodesConfig, NodesConfigError, groupOf, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode } from '@/components/nodes';
+import { needsRecreateOnNode, ruleDrift } from '@/components/drift';
+import { haStatus, interfaceAddrs, vipAddrs } from '@/components/ha';
 import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout';
 import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
@@ -83,7 +88,8 @@ const pool = process.env.NODE_ENV === 'development'
   ? (globalForPool.rproxyPool ??= createPool())
   : createPool();
 
-type Action = 'ADD' | 'UPDATE' | 'DELETE';
+// RESEND：1 つのノードに DB の内容を送り直した（#98。node 列にそのノード）
+type Action = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND';
 type AppLogger = ReturnType<typeof Logger>;
 
 class HttpError extends Error {
@@ -453,7 +459,14 @@ function isNotFound(err: unknown): boolean {
   return err instanceof RproxyError && err.code === 'not_found';
 }
 
-async function insertLog(conn: PoolConnection, authId: string, place: Place, rule: ForwardRule, action: Action): Promise<void> {
+async function insertLog(conn: PoolConnection, authId: string, place: Place, rule: ForwardRule, action: Action, node?: string): Promise<void> {
+  if (place.target !== null && node !== undefined) {
+    await conn.query(
+      'INSERT INTO forward_rules_log (auth_id, target, node, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options, update_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [authId, place.target, node, rule.protocol, rule.srcAddr, rule.srcPort, rule.srcPortEnd, rule.distAddr, rule.distPort, rule.sourceIp, rule.udpIdleSecs, options(rule), action]
+    );
+    return;
+  }
   if (place.target !== null) {
     await conn.query(
       'INSERT INTO forward_rules_log (auth_id, target, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options, update_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -556,11 +569,41 @@ function nodeLiveState(node: string, rule: ForwardRule, live: boolean, status: R
     startedAt: status?.started_at ?? null,
     resolved: status?.resolved ?? [],
     ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
+    // UI の定義との違い（rproxy にあるときだけ。停止中なのに動いていれば enabled）
+    ...(status ? { drift: ruleDrift(rule, status) } : {}),
   };
 }
 
+// active_standby のグループがあれば、各ノードの GET /interfaces のアドレス（問い合わせできなければ null）
+async function fetchHeld(cfg: NodesConfig, nodes: RproxyNode[], logger: AppLogger): Promise<Map<string, Set<string> | null>> {
+  const held = new Map<string, Set<string> | null>();
+  if (!cfg.groups.some((g) => g.mode === 'active_standby')) return held;
+  await Promise.all(nodes.map(async (node) => {
+    try {
+      held.set(node.name, interfaceAddrs(await withNode(node, () => getInterfaces())));
+    } catch (err) {
+      logger.warn(`rproxy（${node.name}）のインターフェースを取得できません（act の判定をしません）: ${err}`);
+      held.set(node.name, null);
+    }
+  }));
+  return held;
+}
+
+// active_standby のグループのルールなら、VIP を持つノードを act にする（states の role を付け、ルールの ha を返す）
+function applyHa(cfg: NodesConfig, target: string | undefined, rule: ForwardRule, states: NodeLiveState[], held: Map<string, Set<string> | null>): HaStatus | undefined {
+  const group = target !== undefined ? groupOf(cfg, target) : undefined;
+  if (!group || group.mode !== 'active_standby') return undefined;
+  const ha = haStatus(vipAddrs(group.vips, rule), group.nodes, held);
+  if (!ha) return undefined;
+  for (const st of states) {
+    const role = ha.roles.get(st.node);
+    if (role) st.role = role;
+  }
+  return ha.status;
+}
+
 // ノードを設定したときの 1 行：ノードごとの稼働情報と、その集計（aggregateNodeStates）
-function withNodeStates(id: number, rule: ForwardRule, nodes: NodeLiveState[], owner?: string): ForwardRules {
+function withNodeStates(id: number, rule: ForwardRule, nodes: NodeLiveState[], owner?: string, ha?: HaStatus): ForwardRules {
   const agg = aggregateNodeStates(nodes);
   return {
     id: id,
@@ -575,6 +618,7 @@ function withNodeStates(id: number, rule: ForwardRule, nodes: NodeLiveState[], o
     resolved: agg.resolved,
     ...(agg.certStatus ? { certStatus: agg.certStatus } : {}),
     nodes: nodes,
+    ...(ha ? { ha: ha } : {}),
   };
 }
 
@@ -613,10 +657,13 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
     admin ? [] : [actor.id]
   );
   const nodes = cfg.nodes.map(toRproxyNode);
-  const lives: NodeLive[] = await Promise.all(nodes.map(async (node) => ({ node: node, ...(await fetchNodeLive(node, logger)) })));
+  const [lives, held] = await Promise.all([
+    Promise.all(nodes.map(async (node): Promise<NodeLive> => ({ node: node, ...(await fetchNodeLive(node, logger)) }))),
+    fetchHeld(cfg, nodes, logger),
+  ]);
   const byName = new Map(lives.map((l) => [l.node.name, l]));
 
-  const summaries = new Map<string, NodeSummary>(lives.map((l) => [l.node.name, { name: l.node.name, reachable: l.live !== null, error: l.error, rules: 0, failed: 0 }]));
+  const summaries = new Map<string, NodeSummary>(lives.map((l) => [l.node.name, { name: l.node.name, reachable: l.live !== null, error: l.error, rules: 0, failed: 0, drifted: 0 }]));
   // ノードごとに、DB のルールが使っているキー（固定ルールと重なるものは DB のルールを出す）
   const usedKeys = new Map<string, Set<string>>(nodes.map((n) => [n.name, new Set<string>()]));
 
@@ -630,10 +677,12 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
       const sum = summaries.get(m.name)!;
       sum.rules += 1;
       if (st.state === 'failed' || st.state === 'missing') sum.failed += 1;
+      if ((st.drift ?? []).length > 0) sum.drifted += 1;
       usedKeys.get(m.name)!.add(key);
       return st;
     });
-    return withNodeStates(Number(row.id), rule, states, admin ? String(row.auth_id) : undefined);
+    const ha = applyHa(cfg, String(row.target), rule, states, held);
+    return withNodeStates(Number(row.id), rule, states, admin ? String(row.auth_id) : undefined, ha);
   });
 
   let out = rules;
@@ -651,12 +700,17 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
     out = [...rules, ...statics];
   }
   const down = lives.filter((l) => l.live === null);
+  // vip を設定した active_standby のグループの act
+  const groups: GroupHa[] = cfg.groups
+    .filter((g) => g.mode === 'active_standby' && g.vips.length > 0)
+    .map((g) => ({ name: g.name, nodes: [...g.nodes], ...haStatus(g.vips, g.nodes, held)!.status }));
   return {
     reachable: down.length < lives.length,
     rproxyError: down.length === 0 ? null : down.map((l) => `ノード ${l.node.name}: ${l.error}`).join(' / '),
     rules: out,
     ...(admin ? { admin: true } : {}),
     nodes: [...summaries.values()],
+    ...(groups.length > 0 ? { groups: groups } : {}),
   };
 }
 
@@ -738,6 +792,8 @@ async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | str
     throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
   }
   const rule = fromRow(rows[0]);
+  const held = place.target !== null && groupOf(actor.cfg, place.target)?.mode === 'active_standby'
+    ? await fetchHeld(actor.cfg, place.nodes, logger) : new Map<string, Set<string> | null>();
   const states = await Promise.all(place.nodes.map(async (node) => {
     try {
       return nodeLiveState(node.name, rule, true, await withNode(node, () => getRule(key)));
@@ -747,7 +803,8 @@ async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | str
       return nodeLiveState(node.name, rule, false, undefined);
     }
   }));
-  return withNodeStates(Number(rows[0].id), rule, states, actor.access === 'admin' ? String(rows[0].auth_id) : undefined);
+  const ha = applyHa(actor.cfg, place.target ?? undefined, rule, states, held);
+  return withNodeStates(Number(rows[0].id), rule, states, actor.access === 'admin' ? String(rows[0].auth_id) : undefined, ha);
 }
 
 // ほかのノード／グループに同じキーのルールがあり、ノードが重なるなら 409（そのノードで待ち受けがぶつかる）
@@ -1144,7 +1201,7 @@ async function importRules(actor: Actor, body: any, logger: AppLogger) {
 const LOG_COLUMNS = ['id', 'auth_id', 'protocol', 'src_addr', 'src_port', 'src_port_end', 'dist_addr', 'dist_port', 'source_ip', 'udp_idle_secs', 'options', 'update_action', 'updated_at'];
 const LOG_SELECT = LOG_COLUMNS.map((c) => `l.${c}`).join(', ');
 // ノードを設定したときは target 列も読む
-const logSelect = (cfg: NodesConfig) => (cfg.configured ? `${LOG_SELECT}, l.target` : LOG_SELECT);
+const logSelect = (cfg: NodesConfig) => (cfg.configured ? `${LOG_SELECT}, l.target, l.node` : LOG_SELECT);
 
 // 古い行・壊れた options でも一覧は出す（内容は null）
 function logRule(row: any): ForwardRule | null {
@@ -1210,7 +1267,7 @@ async function listHistory(actor: Actor, query: NextApiRequest['query']): Promis
   }
   const action = queryString(query.action).toUpperCase();
   if (action) {
-    if (!HISTORY_ACTIONS.includes(action as HistoryAction)) throw invalid('action は ADD / UPDATE / DELETE のどれかです。');
+    if (!HISTORY_ACTIONS.includes(action as HistoryAction)) throw invalid('action は ADD / UPDATE / DELETE / RESEND のどれかです。');
     where.push('l.update_action = ?');
     params.push(action);
   }
@@ -1264,12 +1321,67 @@ async function listHistory(actor: Actor, query: NextApiRequest['query']): Promis
       srcAddr: String(row.src_addr),
       srcPort: Number(row.src_port),
       ...(actor.cfg.configured ? { target: String(row.target) } : {}),
+      ...(row.node !== null && row.node !== undefined ? { node: String(row.node) } : {}),
       rule: rule,
       changes: changes,
       revertible: rule !== null,
     });
   }
   return { entries: entries, total: total, page: page, perPage: perPage };
+}
+
+// ---- 1 つのノードへの送り直し（#98 の「ずれ」） ----
+
+type ResendResult = 'added' | 'modified' | 'recreated' | 'removed' | 'unchanged';
+
+// そのノード（withNode の中）の実際のルールを DB の内容に合わせる。ずれがなければ何もしない
+async function resendOne(rule: ForwardRule): Promise<ResendResult> {
+  const key = toKey(rule);
+  let live: RproxyRuleStatus | null = null;
+  try {
+    live = await getRule(key);
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+  if (live?.origin === 'static') throw staticRuleError();
+  if (isPaused(rule)) {
+    if (!live) return 'unchanged';
+    await deleteRule(key);
+    return 'removed';
+  }
+  if (!live) {
+    await addRule(toRproxyRule(rule));
+    return 'added';
+  }
+  if (ruleDrift(rule, live).length === 0) return 'unchanged';
+  if (needsRecreateOnNode(rule, live)) {
+    await deleteRule(key);
+    await addRule(toRproxyRule(rule));
+    return 'recreated';
+  }
+  const actual = ruleFromStatus(live, 0);
+  await modifyRule(key, toRproxyPatch(rule, actual.crowdsec, actual.targets.length > 0, (actual.extraListenAddrs ?? []).length > 0));
+  return 'modified';
+}
+
+// POST /api/forward/resend {protocol, srcAddr, srcPort, target?, node}：DB の内容を、置き場所のノードのうち 1 台にだけ送り直す。
+// 自分のルール（admin ならだれのでも）だけ。履歴に RESEND（node 列にノード）を残す。
+// 送り直しは DB の内容に揃えるだけなので、COMMIT に失敗しても rproxy は戻さない（そのノードは DB と同じ内容のまま）
+async function resendToNode(actor: Actor, body: any, logger: AppLogger): Promise<{ node: string; result: ResendResult }> {
+  if (!actor.cfg.configured) throw new HttpError(400, '送り直しは、ノードを設定（RPROXY_UI_NODES）したときだけ使えます。', 'unsupported');
+  const key = parseRule(body, true);
+  const place = await placeForKey(actor, key, body?.target);
+  const node = place.nodes.find((n) => n.name === body?.node);
+  if (!node) throw new HttpError(400, `ノード ${String(body?.node ?? '')} はこのルールの置き場所にありません。`, 'unknown_node');
+  let result: ResendResult = 'unchanged';
+  await withTransaction(logger, async (conn) => {
+    const current = await lockOwnRule(conn, actor, place, key, logger);
+    checkPorts(actor, current);
+    await insertLog(conn, actor.id, place, current, 'RESEND', node.name);
+    result = await withNode(node, () => resendOne(current));
+    return { undo: async () => undefined, results: [{ node: node.name, ok: true }] };
+  });
+  return { node: node.name, result: result };
 }
 
 // POST /api/forward/revert {id}：履歴の版の内容に戻す（あれば置き換え、削除されていれば作り直す）。巻き戻しも履歴に残る
@@ -1372,11 +1484,13 @@ async function syncMembership(cfg: NodesConfig, logger: AppLogger): Promise<void
       );
       logger.info(`forward_rule_targets を設定ファイルに合わせました（${want.length} 行）`);
     }
+    // 送り直しの履歴の node 列（007）があるか
+    await conn.query('SELECT node FROM forward_rules_log LIMIT 0');
     await conn.commit();
     syncedConfigs.add(cfg);
   } catch (err) {
     await conn.rollback().catch(() => undefined);
-    throw new HttpError(500, `forward_rule_targets を更新できません（db/migrations/006_nodes.sql を適用し、UI の DB ユーザーに権限を付けてください）: ${err instanceof Error ? err.message : String(err)}`, 'nodes_db');
+    throw new HttpError(500, `forward_rule_targets を更新できません（db/migrations/006_nodes.sql と 007_log_node.sql を適用し、UI の DB ユーザーに権限を付けてください）: ${err instanceof Error ? err.message : String(err)}`, 'nodes_db');
   } finally {
     conn.release();
   }
@@ -1464,6 +1578,10 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         return res.status(200).json(done(actor, 'Forwarding rule modified successfully', results));
       } else if (query === 'import') {
         const out = await importRules(actor, req.body, logger);
+        return res.status(200).json(out);
+      } else if (query === 'resend') {
+        const out = await resendToNode(actor, req.body, logger);
+        logger.info(`Resent to node ${out.node} (${out.result})`);
         return res.status(200).json(out);
       } else if (query === 'revert') {
         const out = await revertToVersion(actor, req.body, logger);

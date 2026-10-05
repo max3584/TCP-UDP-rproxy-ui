@@ -49,8 +49,8 @@ describe('parseNodesConfig', () => {
       { name: 'c', url: 'https://c.example:8443' },
     ]);
     expect(cfg.groups).toEqual([
-      { name: 'ha', nodes: ['a', 'b'], mode: 'active_standby' },
-      { name: 'all', nodes: ['c', 'a'], mode: 'single' },
+      { name: 'ha', nodes: ['a', 'b'], mode: 'active_standby', vips: [] },
+      { name: 'all', nodes: ['c', 'a'], mode: 'single', vips: [] },
     ]);
     // ノード・グループがいくつかあれば、既定は選ばない
     expect(cfg.defaultTarget).toBeNull();
@@ -59,6 +59,13 @@ describe('parseNodesConfig', () => {
   it('accepts JSON and default_target', () => {
     const cfg = parseNodesConfig(JSON.stringify({ nodes: [{ name: 'a', url: 'http://a:1' }, { name: 'b', url: 'http://b:1' }], groups: [{ name: 'g', nodes: ['a', 'b'] }], default_target: 'g' }), readToken);
     expect(cfg.defaultTarget).toBe('g');
+  });
+
+  it('reads the VIP of an active_standby group (one address or a list; IPv6 compressed)', () => {
+    const base = 'nodes: [{name: a, url: "http://a"}, {name: b, url: "http://b"}]\n';
+    expect(parseNodesConfig(`${base}groups: [{name: g, nodes: [a, b], mode: active_standby, vip: 192.0.2.10}]`, readToken).groups[0].vips).toEqual(['192.0.2.10']);
+    expect(parseNodesConfig(`${base}groups: [{name: g, nodes: [a, b], mode: active_standby, vip: ["192.0.2.10", "2001:db8:0::10"]}]`, readToken).groups[0].vips)
+      .toEqual(['192.0.2.10', '2001:db8::10']);
   });
 
   it('a single node is the default target', () => {
@@ -83,6 +90,8 @@ describe('parseNodesConfig', () => {
     ['empty group', 'nodes: [{name: a, url: "http://a"}]\ngroups: [{name: g, nodes: []}]', /1 つ以上/],
     ['bad mode', 'nodes: [{name: a, url: "http://a"}]\ngroups: [{name: g, nodes: [a], mode: hot}]', /mode/],
     ['act/stb with one node', 'nodes: [{name: a, url: "http://a"}]\ngroups: [{name: g, nodes: [a], mode: active_standby}]', /2 つ以上/],
+    ['bad vip', 'nodes: [{name: a, url: "http://a"}, {name: b, url: "http://b"}]\ngroups: [{name: g, nodes: [a, b], mode: active_standby, vip: nope}]', /vip には IP アドレス/],
+    ['vip on a single group', 'nodes: [{name: a, url: "http://a"}]\ngroups: [{name: g, nodes: [a], vip: 192.0.2.10}]', /active_standby のグループにだけ/],
     ['unknown default', 'nodes: [{name: a, url: "http://a"}]\ndefault_target: z', /default_target/],
   ];
   it.each(bad)('rejects %s', (_, text, message) => {

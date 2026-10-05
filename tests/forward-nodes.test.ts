@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => {
     deleteRule: vi.fn(),
     listRules: vi.fn(),
     getRule: vi.fn(),
+    getInterfaces: vi.fn(),
   };
 });
 
@@ -43,6 +44,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => ({
   deleteRule: mocks.deleteRule,
   listRules: mocks.listRules,
   getRule: mocks.getRule,
+  getInterfaces: mocks.getInterfaces,
 }));
 
 import handler from '@/pages/api/forward/[forward]';
@@ -120,6 +122,7 @@ beforeEach(() => {
   conn.query.mockImplementation(async (q: string) => (q.startsWith('SELECT') ? [] : { affectedRows: 1 }));
   conn.rollback.mockResolvedValue(undefined);
   pool.query.mockResolvedValue([]);
+  mocks.getInterfaces.mockResolvedValue({ interfaces: [], reserved: [] });
 });
 
 describe('nodes and groups (#98)', () => {
@@ -261,9 +264,9 @@ describe('nodes and groups (#98)', () => {
     expect(body.reachable).toBe(true);
     expect(body.rproxyError).toBe('ノード c: rproxy に接続できません: ECONNREFUSED');
     expect(body.nodes).toEqual([
-      { name: 'a', reachable: true, error: null, rules: 1, failed: 0 },
-      { name: 'b', reachable: true, error: null, rules: 1, failed: 1 },
-      { name: 'c', reachable: false, error: 'rproxy に接続できません: ECONNREFUSED', rules: 1, failed: 0 },
+      { name: 'a', reachable: true, error: null, rules: 1, failed: 0, drifted: 0 },
+      { name: 'b', reachable: true, error: null, rules: 1, failed: 1, drifted: 0 },
+      { name: 'c', reachable: false, error: 'rproxy に接続できません: ECONNREFUSED', rules: 1, failed: 0, drifted: 0 },
     ]);
 
     const group = body.rules.find((r: any) => r.id === 1);
@@ -309,5 +312,63 @@ describe('nodes and groups (#98)', () => {
     const count = pool.query.mock.calls.find((c) => String(c[0]).startsWith('SELECT COUNT(*)'))!;
     expect(count[0]).toContain('l.target = ?');
     expect(count[1]).toContain('ha');
+  });
+
+  it('dashboard: drift per node and the act of an active_standby group (VIP = specific listen address)', async () => {
+    pool.query.mockImplementation(async (q: string) => (q.includes('FROM forward_rules') ? [row(1, 'ha', { src_addr: '192.0.2.10', src_port: 8001 })] : []));
+    mocks.listRules.mockImplementation(async () => {
+      const node = currentNode()?.name;
+      if (node === 'a') return [status(8001, { listen_addr: '192.0.2.10' })];
+      if (node === 'b') return [status(8001, { listen_addr: '192.0.2.10', remote_port: 81 })];
+      return [];
+    });
+    mocks.getInterfaces.mockImplementation(async () => ({
+      interfaces: currentNode()?.name === 'b' ? [{ addr: '192.0.2.10' }, { addr: '10.0.0.2' }] : [{ addr: '10.0.0.1' }],
+      reserved: [],
+    }));
+    const { body } = await call('dashboard', undefined, 'GET');
+    const r = body.rules[0];
+    expect(r.nodes.map((n: any) => [n.node, n.role, n.drift])).toEqual([['a', 'standby', []], ['b', 'active', ['remote']]]);
+    expect(r.ha).toEqual({ addrs: ['192.0.2.10'], active: ['b'], warning: null });
+    expect(body.nodes.find((n: any) => n.name === 'b').drifted).toBe(1);
+  });
+
+  it('resend: recreates the rule on the one node where it is missing, and records RESEND with the node', async () => {
+    conn.query.mockImplementation(async (q: string) => (q.includes('FOR UPDATE') && q.includes('forward_rules WHERE') ? [row(1, 'ha')] : q.startsWith('SELECT') ? [] : { affectedRows: 1 }));
+    const got: string[] = [];
+    mocks.getRule.mockImplementation(onNode(got, () => { throw new RproxyError('no such rule', 'not_found', 404); }));
+    const added: string[] = [];
+    mocks.addRule.mockImplementation(onNode(added, () => ({})));
+
+    const { status: code, body } = await call('resend', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', node: 'b' });
+    expect(code).toBe(200);
+    expect(body).toEqual({ node: 'b', result: 'added' });
+    expect(got).toEqual(['b']);
+    expect(added).toEqual(['b']);
+    const log = conn.query.mock.calls.find((c) => String(c[0]).startsWith('INSERT INTO forward_rules_log'))!;
+    expect(log[0]).toContain('(auth_id, target, node,');
+    expect(log[1].slice(0, 3)).toEqual(['user-1', 'ha', 'b']);
+    expect(log[1].at(-1)).toBe('RESEND');
+    expect(conn.commit).toHaveBeenCalled();
+  });
+
+  it('resend: PATCHes a drifted rule, and does nothing when the node already matches', async () => {
+    conn.query.mockImplementation(async (q: string) => (q.includes('FOR UPDATE') && q.includes('forward_rules WHERE') ? [row(1, 'ha')] : q.startsWith('SELECT') ? [] : { affectedRows: 1 }));
+    mocks.getRule.mockResolvedValue(status(8001, { remote_port: 81 }));
+    const patched: string[] = [];
+    mocks.modifyRule.mockImplementation(onNode(patched, () => ({})));
+    expect((await call('resend', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', node: 'a' })).body.result).toBe('modified');
+    expect(patched).toEqual(['a']);
+    expect(mocks.modifyRule.mock.calls[0][1]).toMatchObject({ remote_addr: 'example.com', remote_port: 80 });
+
+    mocks.getRule.mockResolvedValue(status(8001));
+    expect((await call('resend', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', node: 'a' })).body.result).toBe('unchanged');
+    expect(mocks.modifyRule).toHaveBeenCalledTimes(1);
+  });
+
+  it('resend: the node must belong to the rule', async () => {
+    const { status: code, body } = await call('resend', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', node: 'c' });
+    expect(code).toBe(400);
+    expect(body.code).toBe('unknown_node');
   });
 });
