@@ -240,6 +240,12 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 - rproxy の固定ルールは DB にないので、履歴にも出ません（同じキーの固定ルールがあるときは巻き戻せません）。
 - 履歴は DB の `forward_rules_log` です。列の追加はないので、migration は要りません。
 
+## バックアップと復旧
+
+UI のルールの正は DB の `forward_rules`（履歴は `forward_rules_log`）です。DB に加えて、`/etc/rproxy-ui/rproxy-ui.env`（`NEXTAUTH_SECRET`・`KEYCLOAK_CLIENT_SECRET`・`DB_PASSWORD`・`RPROXY_API_TOKEN`）と rproxy 側の `/etc/rproxy` も取ります。
+取り方（`mariadb-dump --single-transaction`、systemd の timer の例）、戻す順番、戻した後の確認（rproxy の `GET /rules` と DB の比べ方）、新しいホストへの移し方、DB が壊れたときに rproxy だけで動かす方法は、rproxy-api の [docs/BACKUP.md](https://github.com/max3584/rproxy-api/blob/master/docs/BACKUP.md) にまとめています。
+「エクスポート（JSON）」もルールの控えとして使えます（上の「エクスポートとインポート」）。
+
 ## テスト
 
 ```bash

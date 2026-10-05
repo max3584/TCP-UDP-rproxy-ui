@@ -240,6 +240,12 @@ You can filter by protocol, listen address, port, operation and period (`rproxy-
 - rproxy static rules are not in the DB, so they do not appear in the history (a revert is not possible when a static rule with the same key exists).
 - The history is the DB's `forward_rules_log`. No columns were added, so no migration is needed.
 
+## Backup and restore
+
+The source of truth for the UI's rules is the DB's `forward_rules` (the history is `forward_rules_log`). Besides the DB, back up `/etc/rproxy-ui/rproxy-ui.env` (`NEXTAUTH_SECRET`, `KEYCLOAK_CLIENT_SECRET`, `DB_PASSWORD`, `RPROXY_API_TOKEN`) and `/etc/rproxy` on the rproxy side.
+How to take backups (`mariadb-dump --single-transaction`, a systemd timer example), the restore order, checks after restoring (comparing rproxy's `GET /rules` with the DB), moving to a new host, and running rproxy alone when the DB is broken are described in [docs/en/BACKUP.md](https://github.com/max3584/rproxy-api/blob/master/docs/en/BACKUP.md) of rproxy-api.
+"Export (JSON)" also works as a copy of the rules (see "Export and import" above).
+
 ## Tests
 
 ```bash
