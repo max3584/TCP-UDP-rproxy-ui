@@ -1,7 +1,7 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
 import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames } from './lib';
-import type { Balance, CertRole, CertState, ForwardRule, ForwardRules, HttpSpec, HttpStats, Protocol, RuleState, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
+import type { Balance, CertRole, CertState, CertStatus, ForwardRule, ForwardRules, HttpSpec, HttpStats, NodeLiveState, NodesInfo, Protocol, RuleState, RuleStats, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 import { hostsOfMatch } from './httpspec';
@@ -298,6 +298,8 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
     ...(rule.tls.routes ?? []).flatMap((r) => [...routeNames(r), r.remote_addr]),
     // L7 のルートの Host(...) の名前（一覧には代表の 1 つしか出さないので、ほかの名前でも探せるように）
     ...l7Hosts(rule.http),
+    // ノード／グループの名前（#98）
+    ...(rule.target !== undefined ? [rule.target] : []),
   ];
   return haystack.some((h) => h.toLowerCase().includes(q));
 }
@@ -474,24 +476,34 @@ export interface RuleKey {
   protocol: Protocol;
   addr: string;
   port: number;
+  // ノード／グループ（RPROXY_UI_NODES でノードを設定したときだけ。同じキーのルールが別のノードにあってもよい）
+  target?: string;
 }
 
-export function ruleKeyOf(rule: Pick<ForwardRule, 'protocol' | 'srcAddr' | 'srcPort'>): RuleKey {
-  return { protocol: rule.protocol, addr: rule.srcAddr, port: rule.srcPort };
+export function ruleKeyOf(rule: Pick<ForwardRule, 'protocol' | 'srcAddr' | 'srcPort' | 'target'>): RuleKey {
+  return { protocol: rule.protocol, addr: rule.srcAddr, port: rule.srcPort, ...(rule.target !== undefined ? { target: rule.target } : {}) };
+}
+
+function targetQuery(key: RuleKey): string {
+  return key.target !== undefined ? `?target=${encodeURIComponent(key.target)}` : '';
+}
+
+function rulePath(key: RuleKey): string {
+  return `/rules/${key.protocol}/${encodeURIComponent(key.addr)}/${key.port}`;
 }
 
 // 詳細画面の URL。アドレスは URL エンコードする（IPv6 の : を含められるように）
 export function ruleHref(key: RuleKey): string {
-  return `/rules/${key.protocol}/${encodeURIComponent(key.addr)}/${key.port}`;
+  return `${rulePath(key)}${targetQuery(key)}`;
 }
 
 export function ruleEditHref(key: RuleKey): string {
-  return `${ruleHref(key)}/edit`;
+  return `${rulePath(key)}/edit${targetQuery(key)}`;
 }
 
 // 1 件取得の API の URL
 export function ruleApiUrl(key: RuleKey): string {
-  const q = new URLSearchParams({ protocol: key.protocol, addr: key.addr, port: String(key.port) });
+  const q = new URLSearchParams({ protocol: key.protocol, addr: key.addr, port: String(key.port), ...(key.target !== undefined ? { target: key.target } : {}) });
   return `/api/forward/rule?${q.toString()}`;
 }
 
@@ -505,7 +517,8 @@ export function parseRuleKey(query: Record<string, string | string[] | undefined
   if (!addr || !portText || !/^[0-9]+$/.test(portText)) return null;
   const port = Number(portText);
   if (port < 1 || port > 65535) return null;
-  return { protocol: protocol, addr: addr, port: port };
+  const target = one(query.target);
+  return { protocol: protocol, addr: addr, port: port, ...(target ? { target: target } : {}) };
 }
 
 // ドーナツの conic-gradient。ルールがなければ灰色一色
@@ -552,7 +565,85 @@ export function toRule(rule: ForwardRule): ForwardRule {
     targets: rule.targets ?? [],
     balance: rule.balance ?? DEFAULT_BALANCE,
     healthCheck: rule.healthCheck ?? null,
+    ...(rule.target !== undefined ? { target: rule.target } : {}),
   };
+}
+
+// ---- 複数のノード（#98） ----
+
+// 集計の state：悪いものを優先する（failed > missing > unknown > running。全員が paused なら paused）
+const STATE_ORDER: RuleState[] = ['failed', 'missing', 'unknown', 'running', 'paused'];
+
+// 数を足す（weight・port は宛先の設定なので足さずに最初の値。真偽値はどれかが true なら true、文字列は最初の値）
+const KEEP_FIRST = new Set(['weight', 'port']);
+
+function sumValues(a: unknown, b: unknown, key = ''): unknown {
+  if (a === undefined || a === null) return b;
+  if (b === undefined || b === null) return a;
+  if (typeof a === 'number' && typeof b === 'number') return KEEP_FIRST.has(key) ? a : a + b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return a || b;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return Array.from({ length: Math.max(a.length, b.length) }, (_, i) => sumValues(a[i], b[i]));
+  }
+  if (typeof a === 'object' && typeof b === 'object') {
+    const out: Record<string, unknown> = { ...(a as Record<string, unknown>) };
+    for (const [k, v] of Object.entries(b as Record<string, unknown>)) out[k] = sumValues(out[k], v, k);
+    return out;
+  }
+  return a;
+}
+
+// ノードごとの stats を足し合わせる（接続数・バイト数・HTTP のリクエスト数など。宛先ごとの状態は同じ順の宛先どうし）
+export function sumStats(list: (RuleStats | null)[]): RuleStats | null {
+  const present = list.filter((s): s is RuleStats => s !== null);
+  if (present.length === 0) return null;
+  return present.reduce((acc, s) => sumValues(acc, s) as RuleStats);
+}
+
+export interface AggregatedState {
+  state: RuleState;
+  error: string | null;
+  connections: number | null;
+  stats: RuleStats | null;
+  startedAt: number | null;
+  resolved: string[];
+  certStatus?: CertStatus[];
+}
+
+// グループのルールの、ノードごとの稼働情報をまとめる（一覧・ダッシュボードの 1 行に出す値）。
+// ノードが 1 つならその値のまま。error は「ノード名: 理由」をつなぐ
+export function aggregateNodeStates(nodes: NodeLiveState[]): AggregatedState {
+  if (nodes.length === 0) return { state: 'unknown', error: null, connections: null, stats: null, startedAt: null, resolved: [] };
+  const state = STATE_ORDER.find((s) => nodes.some((n) => n.state === s)) ?? 'unknown';
+  const errors = nodes.filter((n) => n.error !== null);
+  const error = errors.length === 0 ? null
+    : nodes.length === 1 ? errors[0].error
+    : errors.map((n) => `${n.node}: ${n.error}`).join(' / ');
+  const conns = nodes.map((n) => n.connections).filter((c): c is number => c !== null);
+  const starts = nodes.map((n) => n.startedAt).filter((t): t is number => t !== null);
+  const cert = nodes.find((n) => Array.isArray(n.certStatus))?.certStatus;
+  return {
+    state: state,
+    error: error,
+    connections: conns.length === 0 ? null : conns.reduce((a, b) => a + b, 0),
+    stats: sumStats(nodes.map((n) => n.stats)),
+    startedAt: starts.length === 0 ? null : Math.min(...starts),
+    resolved: [...new Set(nodes.flatMap((n) => n.resolved))],
+    ...(cert ? { certStatus: cert } : {}),
+  };
+}
+
+// 画面に出すノード／グループの名前の一覧（追加の画面の選択肢）。グループは「名前（ノード a, b）」
+export function targetChoices(info: NodesInfo): { value: string; label: string; group: boolean }[] {
+  return [
+    ...info.groups.map((g) => ({ value: g.name, label: `${g.name}（${g.mode === 'active_standby' ? 'act/stb' : 'グループ'}: ${g.nodes.join(', ')}）`, group: true })),
+    ...info.nodes.map((n) => ({ value: n.name, label: n.name, group: false })),
+  ];
+}
+
+// ノードが 2 つ以上あるか（ノードの選択・表示を出すか。1 つなら今と同じ見た目）
+export function multiNode(info: Pick<NodesInfo, 'nodes'> | null | undefined): boolean {
+  return (info?.nodes.length ?? 0) > 1;
 }
 
 export const STATUS_CLASSES: StatusClass[] = ['1xx', '2xx', '3xx', '4xx', '5xx'];

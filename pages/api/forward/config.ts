@@ -1,6 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
-import { RproxyError, getConfigStatus } from '@/components/rproxy';
+import { RproxyError, getConfigStatus, withNode } from '@/components/rproxy';
+import { loadNodes, probeNode } from '@/components/nodes';
 import { requireRole } from '@/components/apiguard';
 import { configStatusView } from '@/components/dashboard';
 import { localizedApi } from '@/i18n/server';
@@ -15,7 +16,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   try {
-    const status = await getConfigStatus();
+    // ノードを設定していれば ?target= のノード（なければ既定のノード）の状態
+    const node = probeNode(loadNodes(), typeof req.query.target === 'string' ? req.query.target : undefined);
+    const status = node ? await withNode(node, () => getConfigStatus()) : await getConfigStatus();
     return res.status(200).json(configStatusView(status));
   } catch (err) {
     const quiet = err instanceof RproxyError && (err.status === 403 || err.status === 404);

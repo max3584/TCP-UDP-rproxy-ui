@@ -31,7 +31,8 @@ import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHtt
 import TargetsEditor from './TargetsEditor';
 import { EMPTY_ROW, HealthCheckRow, TargetRow, buildBalancing, toHealthCheckRow, toRows } from './targets';
 import { Balancing, NO_BALANCING } from './tls';
-import { hostPort, http3PortConflicts } from './dashboard';
+import { hostPort, http3PortConflicts, multiNode, targetChoices } from './dashboard';
+import { useNodes } from './ui';
 import { joinList } from '@/i18n/core';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
@@ -129,6 +130,7 @@ type TabId = 'basic' | 'http' | 'tls' | 'mail' | 'advanced';
 const TAB_IDS: TabId[] = ['basic', 'http', 'tls', 'mail', 'advanced'];
 
 type FieldErrors = {
+  node: string;
   srcAddr: string;
   extraListenAddrs: string;
   srcPort: string;
@@ -145,7 +147,7 @@ type FieldErrors = {
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
 const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
-  basic: ['srcAddr', 'extraListenAddrs', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort', 'targets'],
+  basic: ['node', 'srcAddr', 'extraListenAddrs', 'srcPort', 'srcPortEnd', 'distAddr', 'distPort', 'targets'],
   http: ['http'],
   tls: ['tls'],
   mail: [],
@@ -153,6 +155,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
 };
 
 const EMPTY_ERRORS: FieldErrors = {
+  node: '',
   srcAddr: '',
   extraListenAddrs: '',
   srcPort: '',
@@ -227,6 +230,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [caps, setCaps] = useState<Caps>(FALLBACK_CAPS);
   const [capabilitiesError, setCapabilitiesError] = useState('');
   const editMode = initialData ? true : false;
+  // ルールを置くノード／グループ（#98）。ノードが 2 つ以上のときだけ選ぶ（1 つなら今と同じ見た目）
+  const nodesInfo = useNodes();
+  const manyNodes = multiNode(nodesInfo);
+  const [targetChoice, setTargetChoice] = useState(initialData?.target ?? '');
+  const chosenTarget = targetChoice || (nodesInfo?.configured ? nodesInfo.defaultTarget ?? '' : '');
+  // 対応機能・インターフェースは、選んだノード（グループなら先頭のノード）に聞く
+  const probeQuery = nodesInfo?.configured && chosenTarget ? `?target=${encodeURIComponent(chosenTarget)}` : '';
   // 待ち受けアドレス：rproxy のホストのインターフェースから選ぶか、手入力（カスタム）
   const [interfaces, setInterfaces] = useState<InterfacesInfo | null>(null);
   const [interfacesError, setInterfacesError] = useState('');
@@ -240,7 +250,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   useEffect(() => {
     const getCapabilities = async () => {
       try {
-        const res = await fetch('/api/forward/capabilities');
+        const res = await fetch(`/api/forward/capabilities${probeQuery}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
         setCaps({
@@ -264,13 +274,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       }
     };
     getCapabilities();
-  }, []);
+  }, [probeQuery]);
 
   useEffect(() => {
     if (editMode) return;
     const getInterfaces = async () => {
       try {
-        const res = await fetch('/api/forward/interfaces');
+        const res = await fetch(`/api/forward/interfaces${probeQuery}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
         setInterfaces({
@@ -283,7 +293,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       }
     };
     getInterfaces();
-  }, [editMode]);
+  }, [editMode, probeQuery]);
 
   // HTTP/3（http.http3）の L7 のルールと同じアドレス・ポートの UDP は併用できないので、ほかのルールを読んで警告する
   const [otherRules, setOtherRules] = useState<ForwardRules[]>([]);
@@ -482,6 +492,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
   const handleSubmit = () => {
     const newErrors: FieldErrors = {
+      node: manyNodes && !editMode && chosenTarget === '' ? 'ルールを置くノードかグループを選んでください。' : '',
       extraListenAddrs: (() => {
         try {
           normalizeExtraListenAddrs(extraAddrs.map((a) => a.trim()).filter((a) => a !== ''), srcAddr);
@@ -561,6 +572,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       crowdsec: crowdsec,
       ...(l7 ? NO_BALANCING : balancing),
       extraListenAddrs: normalizeExtraListenAddrs(extraAddrs.map((a) => a.trim()).filter((a) => a !== ''), srcAddr),
+      // ノードを設定しているときだけ送る（RPROXY_UI_NODES がなければ API は使わない）
+      ...(nodesInfo?.configured && chosenTarget ? { target: chosenTarget } : {}),
     };
 
     void onSubmit(rule);
@@ -658,6 +671,24 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       </div>
 
       <div {...panelProps('basic')}>
+        {manyNodes && nodesInfo && (
+          <div className="mb-4">
+            <label htmlFor="rule-target" className={labelClass}>ノード／グループ:</label>
+            {editMode ?
+              <input id="rule-target" type="text" value={chosenTarget} className={inputClass} readOnly /> :
+              <select id="rule-target" className={inputClass} value={chosenTarget} onChange={(e) => setTargetChoice(e.target.value)}>
+                {chosenTarget === '' && <option value="">選んでください</option>}
+                {targetChoices(nodesInfo).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </select>
+            }
+            <p className={helpClass}>
+              {editMode
+                ? '置き場所は変えられません（別のノードに置くときは作り直してください）。'
+                : 'グループを選ぶと、そのすべてのノードに同じルールを送ります（1 台でも失敗したら、ほかのノードも元に戻します）。'}
+            </p>
+            {errors.node && <p className={errorClass}>{errors.node}</p>}
+          </div>
+        )}
         {!editMode && (
           <div className="mb-4">
             <label htmlFor="rule-profile" className={labelClass}>プロファイル:</label>

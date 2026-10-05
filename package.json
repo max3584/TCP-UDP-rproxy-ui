@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:ui": "playwright test",
     "i18n:check": "vitest run tests/i18n.test.ts",
+    "db:node-view": "node db/node-view.mjs",
     "screenshots": "playwright test -c scripts/screenshots/playwright.config.ts"
   },
   "dependencies": {

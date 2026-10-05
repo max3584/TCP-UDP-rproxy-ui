@@ -28,8 +28,9 @@ import {
   tlsLabel,
   toRule,
   uptimeSecs,
+  multiNode,
 } from '@/components/dashboard';
-import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, StateBadge, StaticBadge, postRule, useAutoRefresh, useRule } from '@/components/ui';
+import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, ErrorBanner, NodeStates, StateBadge, StaticBadge, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
 import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
 import HttpSummary from '@/components/HttpSummary';
 import HistoryList from '@/components/HistoryList';
@@ -291,6 +292,8 @@ const RuleDetailPage: React.FC = () => {
   const router = useRouter();
   const key = useMemo(() => (router.isReady ? parseRuleKey(router.query) : null), [router.isReady, router.query]);
   const { rule, error, setError, notFound, lastUpdated, load } = useRule(key);
+  // ノードが 2 つ以上なら、ノード／グループとノードごとの状態を出す（#98）
+  const manyNodes = multiNode(useNodes());
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -380,6 +383,10 @@ const RuleDetailPage: React.FC = () => {
             <Section id="section-overview" title="概要">
               <Fields items={[
                 ['状態', <StateBadge key="s" state={rule.state} />],
+                ...(manyNodes && rule.target !== undefined ? [
+                  ['ノード／グループ', <Mono key="t">{rule.target}</Mono>] as [string, React.ReactNode],
+                  ['ノードごとの状態', <NodeStates key="n" nodes={rule.nodes} />] as [string, React.ReactNode],
+                ] : []),
                 ['エラー', rule.error ? <span className="text-red-800">{ruleErrorText(rule.error)}</span> : rule.state === 'missing'
                   ? <span className="text-amber-900">rproxy でこのルールが動いていません（編集して保存すると作り直します）。</span>
                   : rule.state === 'unknown' ? <span className="text-gray-700">rproxy に接続できないため、稼働状態がわかりません。</span>
@@ -504,7 +511,7 @@ const RuleDetailPage: React.FC = () => {
       {/* 変更の履歴（#61）。固定ルールは DB にないので履歴もない */}
       {key && !(rule && rule.origin === 'static') && (
         <Section id="section-history" title="変更の履歴">
-          <HistoryList filter={{ protocol: key.protocol, addr: key.addr, port: key.port }} onReverted={() => void load()} />
+          <HistoryList filter={{ protocol: key.protocol, addr: key.addr, port: key.port, ...((key.target ?? rule?.target) !== undefined ? { target: key.target ?? rule?.target } : {}) }} onReverted={() => void load()} />
         </Section>
       )}
 

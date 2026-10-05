@@ -151,6 +151,8 @@ export interface ForwardRule {
   extraListenAddrs?: string[];
   // false なら一時停止中（DB に残したまま rproxy から外している）。省略は true
   enabled?: boolean;
+  // ルールを置くノードかグループの名前（#98）。RPROXY_UI_NODES でノードを設定したときだけ付く
+  target?: string;
 }
 
 export const MAX_EXTRA_LISTEN_ADDRS = 16;
@@ -243,6 +245,46 @@ export interface ForwardRules extends ForwardRule {
   owner?: string;
   // 証明書の期限（rproxy の cert_status）。証明書がないルールと古い rproxy では付かない
   certStatus?: CertStatus[];
+  // ノードごとの稼働情報（RPROXY_UI_NODES でノードを設定したときだけ。グループのルールでは全員分）。
+  // 上の state などはその集計（state は悪いほう、接続数と stats は合計）
+  nodes?: NodeLiveState[];
+}
+
+// ルールの 1 ノードでの稼働情報
+export interface NodeLiveState {
+  node: string;
+  state: RuleState;
+  error: string | null;
+  connections: number | null;
+  stats: RuleStats | null;
+  startedAt: number | null;
+  resolved: string[];
+  certStatus?: CertStatus[];
+}
+
+// ダッシュボードのノードの一覧の 1 行
+export interface NodeSummary {
+  name: string;
+  // rproxy の GET /rules に答えたか
+  reachable: boolean;
+  error: string | null;
+  // このノードに置くルール（ノードのルールとグループのルール。固定ルールは含めない）の数
+  rules: number;
+  // そのうち、このノードで failed / missing のもの
+  failed: number;
+}
+
+// single: 全員に同じルールを送る / active_standby: 同じルールを送り、どれが動いているかを表示する（表示は後の版）
+export type GroupMode = 'single' | 'active_standby';
+
+// GET /api/forward/nodes の応答（URL とトークンは含めない）
+export interface NodesInfo {
+  // RPROXY_UI_NODES を使っているか
+  configured: boolean;
+  nodes: { name: string }[];
+  groups: { name: string; mode: GroupMode; nodes: string[] }[];
+  // 追加の画面で最初に選ぶノード／グループ。null なら選んでもらう
+  defaultTarget: string | null;
 }
 
 // GET /api/forward/dashboard の応答
@@ -255,6 +297,8 @@ export interface DashboardData {
   rules: ForwardRules[];
   // 管理者（rproxy-admin）として見ているか（所有者の列を出す）
   admin?: boolean;
+  // ノードごとの状態（RPROXY_UI_NODES でノードを設定したときだけ）
+  nodes?: NodeSummary[];
 }
 
 export interface PageAuthrized {

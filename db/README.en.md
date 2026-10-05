@@ -12,6 +12,8 @@ Definitions of the tables shared by the UI and rproxy-api.
 | `migrations/003_auth_id_to_keycloak.sql` | A template that replaces `auth_id` from the Auth0 sub with the Keycloak sub (run manually, once) |
 | `migrations/004_log_auth_id.sql` | Adds a column for the user who performed the operation (`auth_id`) to `forward_rules_log` |
 | `migrations/005_ranges_and_tls.sql` | Adds to both tables a column for the end of the port range (`src_port_end`) and one for the TLS / STARTTLS settings (`options`) |
+| `migrations/006_nodes.sql` | Several rproxy instances (#98): adds a `target` column to both tables, makes the key `(target, protocol, src_addr, src_port)` and adds the `forward_rule_targets` table. A single-node setup without `RPROXY_UI_NODES` works without it |
+| `node-view.mjs` | Prints the SQL for a per-node database with a `forward_rules` view and a read-only DB user (see "Several rproxy instances (a view per node)" below) |
 
 On existing environments, apply them in order starting from `002`. When you change `schema.sql`, also add a migration that makes the same change.
 
@@ -21,7 +23,8 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 
 ## Tables
 
-- `forward_rules`: forwarding rules. Unique on `(protocol, src_addr, src_port)`. `auth_id` is the IdP's (Keycloak's) `sub`.
+- `forward_rules`: forwarding rules. Unique on `(target, protocol, src_addr, src_port)` (`(protocol, src_addr, src_port)` before `006`). `auth_id` is the IdP's (Keycloak's) `sub`.
+  - `target`: the node or group the rule belongs to (`RPROXY_UI_NODES`; default `default`). Without `RPROXY_UI_NODES` the UI neither reads nor writes this column (everything is `default`).
   `protocol` is stored as lowercase `tcp` / `udp`, and an IPv6 `src_addr` in compressed form (e.g. `::1`).
   - `src_port_end`: the end of the port range. NULL for a single port. The key of a range rule is the first port, `src_port` (rproxy rejects overlapping ranges).
   - `options`: JSON of the TLS / STARTTLS / allowed sources / L7 settings. Its shape is always `{"tls": <TLS>, "starttls": "smtp" | "imap" | "pop3" | null, "starttls_required": bool, "allow_from": [<CIDR>, ...], "http": <L7>, "crowdsec": bool, "targets": [<target>, ...], "balance": "round_robin" | "least_conn" | "failover", "health_check": {"interval", "timeout", "port"}, "extra_listen_addrs": [<IP>, ...], "enabled": false}`
@@ -39,6 +42,9 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `forward_rules_log`: history of additions, changes and deletions. `update_action` is `ADD` / `UPDATE` / `DELETE`, and `auth_id` is the user who performed the operation (NULL for rows from before `004`).
   Each row holds the rule's contents after the operation (for `DELETE`, the contents before deletion), so the UI's "Change history" shows the difference from the previous version from these rows, and "Revert to this version" restores those contents (import and revert operations are recorded in the same way).
 
+- `forward_rule_targets`: node → the `target`s that node reads (the node itself and the groups containing it). The UI rewrites it to match `RPROXY_UI_NODES` (only when it is set). The per-node views filter through it.
+  `forward_rules_log` has a `target` column too.
+
 ## DB users
 
 Give the UI's user read and write privileges on both tables.
@@ -47,6 +53,8 @@ Give the UI's user read and write privileges on both tables.
 CREATE USER 'rproxy_ui'@'10.0.0.%' IDENTIFIED BY '<password>';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rules     TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@'10.0.0.%';
+-- with RPROXY_UI_NODES
+GRANT SELECT, INSERT, DELETE         ON rproxy.forward_rule_targets TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api only reads `forward_rules` at startup, so use a read-only user.
@@ -59,6 +67,31 @@ GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
 ```
 
 (The examples use `rproxy` as the database name. Adjust it to match `DB_DATABASE`.)
+
+## Several rproxy instances (a view per node)
+
+With several nodes in `RPROXY_UI_NODES`, give each rproxy its own database containing a view named `forward_rules`.
+The view shows, of the UI's table, only the rows of that node and of the groups containing it, with only the columns rproxy reads (rproxy's `SELECT ... CAST(src_port AS SIGNED) ... FROM forward_rules` works on the view as is).
+Give rproxy's DB user read access to the view only (the view reads the base table with its creator's privileges, `SQL SECURITY DEFINER`; do not drop the creator's account).
+
+```bash
+node db/node-view.mjs node1 --database rproxy --host 10.0.0.11 --password '<password>' | mariadb -u root -p
+```
+
+The SQL it prints (`--view-database` defaults to `rproxy_node_<node>`, `--user` to `rproxy_<node>`, `--host` to `127.0.0.1`; without `--password` no CREATE USER is printed):
+
+```sql
+CREATE DATABASE IF NOT EXISTS `rproxy_node_node1` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`forward_rules` AS
+  SELECT r.`protocol`, r.`src_addr`, r.`src_port`, r.`src_port_end`, r.`dist_addr`, r.`dist_port`, r.`source_ip`, r.`udp_idle_secs`, r.`options`
+    FROM `rproxy`.`forward_rules` r
+   WHERE r.`target` IN (SELECT t.`target` FROM `rproxy`.`forward_rule_targets` t WHERE t.`node` = 'node1');
+CREATE USER IF NOT EXISTS 'rproxy_node1'@'10.0.0.11' IDENTIFIED BY '<password>';
+GRANT SELECT ON `rproxy_node_node1`.`forward_rules` TO 'rproxy_node1'@'10.0.0.11';
+```
+
+Set that rproxy's `RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB host>/rproxy_node_node1`.
+Changing groups needs no new view, since the UI updates `forward_rule_targets`. Run it only for a node you add.
 
 ## Backup
 

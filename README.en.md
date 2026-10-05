@@ -80,6 +80,8 @@ KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
+# several rproxy instances (see "Several rproxy instances (nodes and groups)"). When set, RPROXY_API_URL / RPROXY_API_TOKEN are not used
+# RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
 ```
 
 `RPROXY_API_URL` is an `http://` / `https://` URL, or `unix:/run/rproxy/api.sock` (the Unix socket of rproxy-api's `RPROXY_API_SOCKET`; the HTTP Host is `localhost`).
@@ -239,6 +241,46 @@ You can filter by protocol, listen address, port, operation and period (`rproxy-
   If the rule still exists it is replaced (a version that differs in source IP handling, port range or L4 / L7 is recreated); if it was deleted it is recreated. Reverts are also recorded in the history.
 - rproxy static rules are not in the DB, so they do not appear in the history (a revert is not possible when a static rule with the same key exists).
 - The history is the DB's `forward_rules_log`. No columns were added, so no migration is needed.
+
+## Several rproxy instances (nodes and groups)
+
+One UI can manage several rproxy instances (**nodes**) (#98; this version lays the foundation). Nodes that carry the same rules form a **group** (active / standby is a group too; showing the roles comes in a later version).
+A rule belongs to a node or a group. Adding, changing, deleting, pausing, resuming, importing and reverting a group's rule is sent to every node of the group. If one node fails, the change is undone on the nodes that succeeded and the DB is left unchanged (the response's `nodes` has the result per node).
+
+Without `RPROXY_UI_NODES`, the UI works as before with the single rproxy of `RPROXY_API_URL` / `RPROXY_API_TOKEN` (no change to the settings or the DB; the screens look the same).
+
+```yaml
+# /etc/rproxy-ui/nodes.yaml (RPROXY_UI_NODES=/etc/rproxy-ui/nodes.yaml; YAML or JSON)
+nodes:
+  - name: node1                      # up to 32 lowercase letters, digits or _ (node and group names must all differ)
+    url: http://10.0.0.11:8080       # http(s):// or unix:/run/rproxy/api.sock
+    token_file: /etc/rproxy-ui/tokens/node1   # tokens are read from files (never stored in the DB)
+  - name: node2
+    url: http://10.0.0.12:8080
+    token_file: /etc/rproxy-ui/tokens/node2
+groups:
+  - name: ha
+    nodes: [node1, node2]
+    mode: active_standby             # single (default) or active_standby
+default_target: ha                   # chosen first on the add screen (optional; automatic with one node)
+```
+
+- The file is checked when the UI starts; if it is wrong, the reason is logged and the UI does not start. Restart the UI after changing it. The user running the UI (`rproxy-ui` with the .deb) must be able to read the token files.
+- With two or more nodes, the add screen has a "Node / group" choice, the list and the detail show the node / group, and the dashboard lists the nodes (reachable, rules, failures). A group rule's state is the worse one (failed > missing > unknown > running); connections and traffic are summed.
+- Rules with the same key (protocol, address, port) can be put on nodes / groups that share no node (otherwise 409 `target_conflict`).
+- Apply `db/migrations/006_nodes.sql` before using it (a `target` column in `forward_rules` and `forward_rules_log`, and the `forward_rule_targets` table). Existing rules belong to `default`: name a node `default` in the file, or move them with `UPDATE forward_rules SET target = 'node1' WHERE target = 'default'`.
+
+### Restoring at rproxy startup (a view per node)
+
+rproxy reads the whole `forward_rules` at startup, so each node gets its own database containing a view named `forward_rules` with only the rows of that node and of the groups containing it (rproxy is not changed).
+`db/node-view.mjs` prints the SQL (`/usr/share/rproxy-ui/db/node-view.mjs` with the .deb). Run it as an administrator who can read the UI's tables.
+
+```bash
+node db/node-view.mjs node1 --database rproxy --host 10.0.0.11 --password '<password>' | mariadb -u root -p
+# rproxy on node1: RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB host>/rproxy_node_node1
+```
+
+The view filters through `forward_rule_targets` (rewritten by the UI to match the file), so changing groups needs no new view (run it only for a node you add). See `db/README.en.md`.
 
 ## Backup and restore
 
