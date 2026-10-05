@@ -53,10 +53,9 @@ async function viewPorts(database: string): Promise<number[]> {
 // CI の nodes.yaml のグループ ha の vip
 const VIP = '10.99.0.10';
 
-// コンテナのネットワーク名前空間で ip を動かす（keepalived が VIP を付け外しする代わり）
+// コンテナの中で ip を動かす（keepalived が VIP を付け外しする代わり。コンテナに iproute2 と NET_ADMIN が要る）
 function ipInContainer(node: string, args: string[]): void {
-  const pid = execFileSync('docker', ['inspect', '-f', '{{.State.Pid}}', container(node)]).toString().trim();
-  execFileSync('sudo', ['nsenter', '-t', pid, '-n', 'ip', ...args], { stdio: 'inherit' });
+  execFileSync('docker', ['exec', '-u', '0', container(node), 'ip', ...args], { stdio: 'inherit' });
 }
 
 async function groupHa(): Promise<{ active: string[]; warning: string | null }> {

@@ -4,7 +4,7 @@
 #   scripts/build-deb.sh [出力先のディレクトリ（既定 dist/）]
 #
 # next build（output: 'standalone'）の結果を /usr/lib/rproxy-ui に置き、node server.js で動かす。
-# 必要なもの: node / npm（npm ci 済み）、dpkg-deb。
+# 必要なもの: node / npm（npm ci 済み）、dpkg-deb。CI と release.yml は debian:trixie-slim と NodeSource の nodejs で作る。
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -62,7 +62,7 @@ Architecture: all
 Maintainer: touka shiro / max3584 <max3584.work@gmail.com>
 Installed-Size: $(du -sk --exclude=DEBIAN "$stage" | cut -f1)
 Depends: nodejs (>= 22.19.0), passwd
-Suggests: rproxy-api (= $version-1)
+Suggests: rproxy-api
 Section: web
 Priority: optional
 Homepage: https://github.com/max3584/TCP-UDP-rproxy-ui
