@@ -121,7 +121,7 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     const { status, json } = await call('nodes', undefined, 'GET');
     expect(status).toBe(200);
     expect(json.nodes.map((n: any) => n.name)).toEqual(['n1', 'n2']);
-    expect(json.groups).toEqual([{ name: 'ha', mode: 'active_standby', nodes: ['n1', 'n2'], vips: [VIP] }]);
+    expect(json.groups).toEqual([{ name: 'ha', mode: 'active_standby', nodes: ['n1', 'n2'], vips: [VIP], autoResend: true }]);
   });
 
   it('a group rule is created on both nodes', async () => {
@@ -338,5 +338,63 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
 
     expect((await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.2', srcPort: OV_PORT, target: 'n2' })).status).toBe(200);
     expect(await liveOn('n2', OV_PORT)).toBeUndefined();
+  });
+
+  const HA_PORT = 19420;
+
+  // keepalived の口（/api/forward/ha/*）を、トークンを付けて呼ぶ
+  async function haCall(path: 'ready' | 'notify', query: Record<string, string>) {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const p = await import('node:path');
+    if (!process.env.RPROXY_UI_HA_TOKEN_FILE) {
+      const file = p.join(fs.mkdtempSync(p.join(os.tmpdir(), 'rproxy-ui-ha-')), 'tokens');
+      fs.writeFileSync(file, 'e2e-ha-token\n');
+      process.env.RPROXY_UI_HA_TOKEN_FILE = file;
+    }
+    const { default: handler } = path === 'ready'
+      ? await import('@/pages/api/forward/ha/ready')
+      : await import('@/pages/api/forward/ha/notify');
+    let status = 0;
+    let json: any;
+    const res = { status(s: number) { status = s; return res; }, json(j: unknown) { json = j; return res; } } as unknown as NextApiResponse;
+    await handler({ method: path === 'ready' ? 'GET' : 'POST', query: query, headers: { authorization: 'Bearer e2e-ha-token' } } as unknown as NextApiRequest, res);
+    return { status, json };
+  }
+
+  it('ha/ready reports a drifted stb (503) and the automatic resend brings it back in line (RESEND by system)', async () => {
+    expect((await call('add', { ...rule(HA_PORT), target: 'ha' })).status).toBe(200);
+    expect((await haCall('ready', { node: 'n2' })).status).toBe(200);
+
+    const { loadNodes, targetNodes, toRproxyNode } = await import('@/components/nodes');
+    const { modifyRule, deleteRule, withNode } = await import('@/components/rproxy');
+    const n2 = toRproxyNode(targetNodes(loadNodes(), 'n2')![0]);
+    const key = { protocol: 'tcp' as const, listen_addr: '127.0.0.1', listen_port: HA_PORT };
+    await withNode(n2, () => modifyRule(key, { remote_addr: '127.0.0.1', remote_port: 11, tls: { mode: 'passthrough' }, allow_from: [] }));
+
+    const drifted = await haCall('ready', { node: 'n2' });
+    expect(drifted.status).toBe(503);
+    expect(drifted.json.issues).toEqual([{ target: 'ha', key: `tcp|127.0.0.1|${HA_PORT}`, state: 'drift', fields: ['remote'] }]);
+    expect((await haCall('ready', { node: 'n1' })).status).toBe(200);
+
+    const { runHaSyncOnce } = await import('@/components/hasync');
+    expect(await runHaSyncOnce()).toBe('done');
+    expect((await haCall('ready', { node: 'n2' })).status).toBe(200);
+    expect(await liveOn('n2', HA_PORT)).toMatchObject({ remote_port: 9 });
+    const history = await call('history', undefined, 'GET', { protocol: 'tcp', port: String(HA_PORT), action: 'RESEND' });
+    expect(history.json.entries[0]).toMatchObject({ action: 'RESEND', actor: 'system', node: 'n2', target: 'ha' });
+
+    // 昇格した直後（notify_master）：n1 から消えたルールをすぐ作り直す
+    const n1 = toRproxyNode(targetNodes(loadNodes(), 'n1')![0]);
+    await withNode(n1, () => deleteRule(key));
+    expect((await haCall('ready', { node: 'n1' })).status).toBe(503);
+    const notified = await haCall('notify', { node: 'n1', state: 'MASTER' });
+    expect(notified.status).toBe(200);
+    expect(notified.json.results).toEqual([{ target: 'ha', key: `tcp|127.0.0.1|${HA_PORT}`, result: 'added' }]);
+    expect(await liveOn('n1', HA_PORT)).toMatchObject({ listen_addr: '127.0.0.1' });
+
+    // act/stb の画面の元（admin だけ）は e2e のセッションが admin でないので 403
+    expect((await call('ha', undefined, 'GET')).status).toBe(403);
+    expect((await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: HA_PORT, target: 'ha' })).status).toBe(200);
   });
 });

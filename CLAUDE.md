@@ -36,7 +36,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 - Next.js 16 は学習データより新しいので、API や設定を変えるときは `node_modules/next/dist/docs/` の説明書を先に読む（`next.config.mjs` の `agentRules: false` で、`next dev` がこの注意を CLAUDE.md に書き足すのを止めている）。
 - `next dev` が動いている間に同じディレクトリで `npm run build` を実行しない（`.next` を上書きして開発サーバが 404 を返すようになる）。
 - react-hooks v7 の規則（`set-state-in-effect` など）が有効。選べなくなった値を既定に戻す処理は、エフェクトではなく描画中に条件つきで `setState` する（React の「props が変わったときに state を直す」の書き方）。初回の取得（`await` の後でだけ state を変える）はコメントを付けて規則を外している。
-- DB の接続プールは、開発モードでは `globalThis` に置いて使い回す（読み直しのたびにプールが増えて Too many connections になるのを防ぐ）。
+- DB の接続プールは `globalThis` に置いて使い回す（`components/ruledb.ts` の `getPool`。読み直しのたびにプールが増えて Too many connections になるのを防ぎ、instrumentation の自動の送り直しと API route で 1 つにする）。
 
 - パッケージマネージャは npm だけ（`package-lock.json`）。CI・.deb の作成・Renovate もこれを使う。ほかのロックファイル（`pnpm-lock.yaml` など）は足さない（Renovate が「複数の npm のロックファイル」の警告を出す）。
 - 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`（複数の rproxy なら代わりに `RPROXY_UI_NODES`）。
@@ -65,6 +65,11 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/nodes.ts` | 複数の rproxy（#98）の設定。`RPROXY_UI_NODES`（YAML / JSON）の `nodes`（name・url・token_file）と `groups`（name・nodes・mode: single / active_standby）、`default_target` を読んで確かめる（`parseNodesConfig`、誤りは `NodesConfigError`）。なければ `RPROXY_API_URL` / `RPROXY_API_TOKEN` の 1 台（`implicitConfig`、名前 `default`、`configured: false`）。グループのノード（`targetNodes`）、重なり（`targetsOverlap`）、`forward_rule_targets` の行（`membership`）、1 台に聞く問い合わせの相手（`probeNode`） |
 | `components/overrides.ts` | グループのルールのノードごとの上書き（`NodeOverride`：待ち受けアドレス・追加の待ち受けアドレス・転送先（1 つか複数）・allow_from・このノードだけの停止）。検証 `normalizeOverride`、そのノードで動かす内容 `effectiveRule`、DB の行 `overrideRow` / `overrideFromRow`（options は JSON_MERGE_PATCH の差分。ビューと同じ重ね方）、エクスポートの形 `toSettingsOverride` / `settingsOverridesToBody`。React と Node に依存しない |
 | `components/OverrideEditor.tsx` | ルールの詳細のノードのタブの「このノードだけの設定（上書き）」 |
+| `components/hasync.ts` | act / stb の昇格の前に揃える（#109）：自動の送り直し（`startHaSync` を instrumentation から 1 回。状態は globalThis、見回りは DB の `GET_LOCK` で 1 つの UI だけ。`runHaSyncOnce`・`syncNode`。履歴は RESEND で操作者 `system`）、昇格してよいか（`nodeReadiness`）、act / stb の画面の元（`haOverview`）、失敗の数（`haSyncStatus`） |
+| `components/hatoken.ts` | keepalived の口（`pages/api/forward/ha/ready.ts`・`notify.ts`）の認証。`RPROXY_UI_HA_TOKEN_FILE` のトークンを Bearer で受け取る（なければ 404 `ha_disabled`） |
+| `components/ruledb.ts` | DB のプール（`getPool`。globalThis で 1 つ）、行とルールの変換（`fromRow`・`ruleOptions`）、上書きの読み込み、1 つのノードへの送り直し（`resendOne`）。API route と hasync が共有する |
+| `pages/ha.tsx` | act / stb の画面（グループの act、ノードごとに揃っているか、「このノードを揃える」、failback の手順）。管理者だけ |
+| `contrib/keepalived/` | keepalived の track_script（`rproxy-ui-ready.sh`。503 のときだけ 1）・notify_master（`rproxy-ui-notify.sh`）と設定の例。.deb の `/usr/share/doc/rproxy-ui/examples/keepalived/` |
 | `components/drift.ts` | UI の定義と各ノードの実際のルールの「ずれ」（`ruleDrift`：`ruleFromStatus` で画面の形に揃え、`canon` で既定値・空の値を省いて項目ごとに比べる。結果は項目のコード `DriftField`、名前は `DRIFT_LABELS`）と、送り直しで作り直しが要るか（`needsRecreateOnNode`） |
 | `components/ha.ts` | active_standby の act の判定（`vipAddrs`：グループの `vip`、なければルールの特定の待ち受けアドレス。`haStatus`：各ノードの `GET /interfaces` に VIP があれば act、だれも・複数が持てば警告 none / split） |
 | `components/Tabs.tsx` | WAI-ARIA のタブの並び（矢印キー / Home / End）と `tabPanelProps`。ダッシュボードとルールの詳細の「全体 / ノードごと」 |
@@ -138,6 +143,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
    - `pause-node`（POST `{node, action}`）：そのノードのルールをまとめて止める・再開する（そのノードに置いたルールはルールの停止、グループのルールは上書きの `enabled: false`）。1 件ずつ別のトランザクション。
    - `copy`（POST `{protocol, srcAddr, srcPort, target, to, move?}`）：ほかのノード／グループへコピー・移動（重なる先へのコピーは 409 `target_conflict`、重なる先への移動は元を消してから作り、だめなら戻す）。上書きは先にもあるノードの分だけ。ノードに置くときはそのノードの上書きを重ねた内容。
    - `RPROXY_UI_USER_NODES`：`rproxy-user` が触れるノード（`checkNodes`。外は 403 `node_not_allowed`。`nodes` の応答の `allowedTargets` で画面の選択肢も絞る）。admin とノードを設定していないときは関係ない。
+   - act / stb（#109）：`ha`（GET。admin だけ。グループの act とノードごとの揃い具合）、`ha-sync`（POST `{node}`。admin だけ）。`dashboard` に `haSync`（自動の送り直しの間隔・最後の見回り・続けて失敗しているもの）。グループの `auto_resend: false` なら自動では送り直さない（notify・ha-sync は送る）。
    - `dashboard` の `nodes[].lastSync`：そのノードを含むノード／グループの履歴の最後（送り直し・上書きはそのノードの分だけ）。
 
 HTTP の取り決めは `../rproxy-api/docs/API.md` が正。変更するときは両方のリポジトリを揃えること。

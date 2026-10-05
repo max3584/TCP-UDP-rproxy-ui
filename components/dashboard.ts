@@ -819,3 +819,10 @@ export function nodeTotals(rules: ForwardRules[], node: string): NodeTotals {
 export function driftedNodes(rule: Pick<ForwardRules, 'nodes'>): string[] {
   return (rule.nodes ?? []).filter((n) => (n.drift ?? []).length > 0).map((n) => n.node);
 }
+
+// act/stb の自動の送り直しが続けてこの回数失敗したら、ダッシュボードに注意を出す（#109）
+export const HA_FAILURE_WARN_COUNT = 3;
+
+export function haSyncWarnings(status: import('./lib').HaSyncStatus | undefined): import('./lib').HaSyncFailure[] {
+  return (status?.failures ?? []).filter((f) => f.count >= HA_FAILURE_WARN_COUNT);
+}

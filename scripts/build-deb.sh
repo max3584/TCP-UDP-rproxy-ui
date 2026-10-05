@@ -45,6 +45,9 @@ install -m 0644 README.md "$stage/usr/share/doc/rproxy-ui/README.md"
 install -m 0644 README.en.md "$stage/usr/share/doc/rproxy-ui/README.en.md"
 install -m 0644 LICENSE "$stage/usr/share/doc/rproxy-ui/copyright"
 cp -a db "$stage/usr/share/rproxy-ui/db"
+# keepalived と組むスクリプトと設定の例（#109）
+mkdir -p "$stage/usr/share/doc/rproxy-ui/examples"
+cp -a contrib/keepalived "$stage/usr/share/doc/rproxy-ui/examples/keepalived"
 for s in postinst prerm postrm; do install -m 0755 "packaging/debian/$s" "$stage/DEBIAN/$s"; done
 echo /etc/rproxy-ui/rproxy-ui.env > "$stage/DEBIAN/conffiles"
 # the same modes whatever the umask of the build machine
