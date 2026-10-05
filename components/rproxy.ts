@@ -92,6 +92,8 @@ export interface CapabilityFeatures {
 }
 
 export interface Capabilities {
+  // rproxy-api の版（例 0.3.18。v0.3.18 から。古い rproxy は返さない。components/version.ts）
+  version?: string;
   source_ip: SourceIp[];
   transparent?: boolean;
   tls_modes?: TlsMode[];

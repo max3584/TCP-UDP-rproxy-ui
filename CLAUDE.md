@@ -5,7 +5,7 @@ Next.js 16（Pages Router）、React 19、NextAuth v4 + Keycloak、MariaDB、Tai
 
 ## バージョン管理
 
-`docs/RELEASING.md` の決まりで、確認を取らずに進める。番号の並びは rproxy-api と共有する。両方の動くものが変わったら同じ番号で一緒に、片方だけなら片方だけ出す（UI だけの版は rproxy-api の `release.yml` を手動で実行して apt に載せる）。
+`docs/RELEASING.md` の決まりで、確認を取らずに進める。番号は rproxy-api と別々に進め、タグはずれてよい。動くものが変わったリポジトリだけ番号を上げて出す。組み合わせは UI が `GET /capabilities` の `version` で確かめ（`components/version.ts` の `MIN_RPROXY_VERSION`。新しい rproxy-api の機能が要るようになったら上げる）、UI のリリースノートに必要な rproxy-api の最小の版を書く。UI の .deb は UI のリリースの後に `gh workflow run release.yml -R max3584/rproxy-api -f ui_tag=vX.Y.Z` で apt に載せる。
 PR・issue を作るときにパッチ／マイナーのマイルストーンを付け、マージ後のタグ・リリースノート・マイルストーンの片付けまで行う。
 PR のブランチに追加で push する前に、その PR がまだ開いているか（`gh pr view <n> --json state`）を確かめる。
 
@@ -13,7 +13,7 @@ PR のブランチに追加で push する前に、その PR がまだ開いて�
 
 `scripts/build-deb.sh` が `next build`（`output: 'standalone'`、`images.unoptimized`）の結果から `rproxy-ui_<version>-1_all.deb` を作る（`packaging/debian/` にユニット・設定・maintainer scripts）。
 CPU ごとのネイティブなモジュール（`.node`）が入ると `all` にできないので、build-deb.sh が見つけたら止める。依存を足すときに気をつける。
-CI の `Debian package` ジョブ（`scripts/test-deb.sh`、NodeSource の nodejs で実際に入れる）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の apt リポジトリがそれを取る（docs/RELEASING.md）。
+CI の `Debian package` ジョブ（`scripts/test-deb.sh`、NodeSource の nodejs で実際に入れる）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の `release.yml` を `ui_tag` で手動実行すると apt リポジトリに載る（docs/RELEASING.md）。
 
 ## ドキュメント（日本語と英語）
 
@@ -75,7 +75,10 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/Tabs.tsx` | WAI-ARIA のタブの並び（矢印キー / Home / End）と `tabPanelProps`。ダッシュボードとルールの詳細の「全体 / ノードごと」 |
 | `components/fanout.ts` | グループの変更を全ノードに送る `applyToNodes`（`withNode` でノードごとに実行。1 台でも失敗したら成功したノードの undo を実行して `FanoutError`（ノードごとの結果 `results`）。ノードが 1 つなら例外をそのまま投げる） |
 | `db/node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけのユーザーの SQL を出す（依存のない JS。`npm run db:node-view -- <ノード>`。.deb の db/ からも動く） |
-| `instrumentation.ts` | 起動時に `RPROXY_UI_NODES` を確かめ、誤りなら理由を出して終了する |
+| `instrumentation.ts` | 起動時に `RPROXY_UI_NODES` を確かめ、誤りなら理由を出して終了する。各ノードの rproxy-api の版をログに出す（`logVersions`。待たない・失敗しても起動を止めない） |
+| `components/version.ts` | UI の版（`UI_VERSION`。`next.config.mjs` の `env` が package.json から埋め込む）、必要な rproxy-api の最小の版（`MIN_RPROXY_VERSION`）と知っているマイナー（`KNOWN_RPROXY_MINOR`）、版の比較と判定（`versionStatus`：ok / old / unknown / newer / unreachable）。React に依存しない |
+| `components/versioncheck.ts` / `pages/api/forward/versions.ts` | 各ノードの `GET /capabilities` の `version` を聞く（`checkVersions`）。`/api/forward/versions` は問い合わせできないノードがあっても 200 |
+| `components/VersionInfo.tsx` | サイドバーの下の版（`SidebarVersions`）、ダッシュボードの注意（`VersionNotice`：古い・分からないは注意、新しいマイナーは知らせるだけ）、ノードが 1 つのときの版の一覧（`VersionsCard`）と、2 つ以上のときのノードの一覧（`NodesCard`）の rproxy-api の欄（`NodeVersionCell`）。機能ごとの判断は `features` のまま |
 | `components/rproxy.ts` | rproxy-api の HTTP クライアント。`withNode(node, fn)`（AsyncLocalStorage）の中ではそのノードの URL とトークン、外では `RPROXY_API_URL` / `RPROXY_API_TOKEN` に送る（関数の引数は 1 台のときと同じ）。失敗時は `RproxyError`（`code`、`status`。通信失敗は `unreachable` / 0）。`RPROXY_API_URL=unix:/path` なら Unix ソケット（rproxy の `RPROXY_API_SOCKET`）に undici の `fetch` と `Agent({ connect: { socketPath } })` で接続する（`apiTarget`。TCP はグローバルの `fetch`） |
 | `pages/api/auth/[...nextauth].ts` | Keycloak の設定。サインイン時にアクセストークンのロール（既定 `realm_access.roles`）を読んで JWT に保存し、セッションに `roles` と `access`（admin / user / none。画面の表示用）を入れる |
 | `pages/api/forward/[forward].ts` | `nodes` / `list` / `dashboard` / `rule` / `export` / `history`(GET)、`add` / `modify` / `delete` / `import` / `revert` / `pause` / `resume`(POST) のエンドポイント |

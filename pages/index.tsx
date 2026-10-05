@@ -33,6 +33,7 @@ import {
   tlsBreakdown,
   uptimeSecs, ConfigStatusView, driftedNodes, haSyncWarnings, nodeTotals, projectToNode, targetChoices } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
+import { NodeVersionCell, VersionNotice, VersionsCard } from '@/components/VersionInfo';
 import { joinList, localeTag, t, translate } from '@/i18n/core';
 import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
 
@@ -166,6 +167,7 @@ const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: Forw
           <tr>
             <th scope="col">ノード</th>
             <th scope="col">接続</th>
+            <th scope="col">rproxy-api</th>
             <th scope="col" className="text-right">ルール</th>
             <th scope="col" className="text-right">失敗・未登録</th>
             <th scope="col" className="text-right">ずれ</th>
@@ -194,6 +196,7 @@ const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: Forw
                   </span>
                   {n.error && <div className="text-xs text-red-800 break-all">{n.error}</div>}
                 </td>
+                <td className="whitespace-nowrap text-gray-900"><NodeVersionCell name={n.name} /></td>
                 <td className="text-right tabular-nums text-gray-900">{formatCount(n.rules)}</td>
                 <td className={`text-right tabular-nums ${n.failed > 0 ? 'text-red-800 font-semibold' : 'text-gray-900'}`}>{formatCount(n.failed)}</td>
                 <td className={`text-right tabular-nums ${(n.drifted ?? 0) > 0 ? 'text-amber-900 font-semibold' : 'text-gray-900'}`}>{formatCount(n.drifted ?? 0)}</td>
@@ -581,6 +584,7 @@ const DashboardPage: React.FC = () => {
           <Link href="/ha" className="link">act / stb の画面へ</Link>
         </div>
       )}
+      <VersionNotice />
 
       {data !== null && nodeTabs && <Tabs id="dashboard-nodes" label="ノード" tabs={nodeTabs} active={tab} onChange={setTab} />}
 
@@ -658,6 +662,9 @@ const DashboardPage: React.FC = () => {
           <RulesTable rules={rules} now={now} showTarget={manyNodes} onChanged={() => void load()} onError={setError} />
         </div>
       )}
+
+      {/* ノードが 2 つ以上なら、rproxy-api の版はノードの一覧（全体のタブ）に出す */}
+      {data !== null && !manyNodes && <VersionsCard />}
     </div>
   );
 };

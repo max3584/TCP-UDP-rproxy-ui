@@ -4,6 +4,7 @@ import path from 'node:path';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { encode } from 'next-auth/jwt';
 import type { Locale } from '@/i18n/core';
+import { KNOWN_RPROXY_MINOR, MIN_RPROXY_VERSION } from '@/components/version';
 import { NEXTAUTH_SECRET, baseURL } from './playwright.config';
 import { CAPABILITIES, CONFIG_STATUS, DETAIL_RULE, INTERFACES, historyFor, NOW, RULES } from './sample-data';
 
@@ -55,6 +56,8 @@ async function mockApi(context: BrowserContext, lang: Locale): Promise<void> {
         return json(INTERFACES);
       case 'config':
         return json(CONFIG_STATUS);
+      case 'versions':
+        return json({ ui: (JSON.parse(fs.readFileSync('package.json', 'utf8')) as { version: string }).version, minimum: MIN_RPROXY_VERSION, knownMinor: KNOWN_RPROXY_MINOR, nodes: [{ name: 'default', version: '0.3.18', reachable: true, status: 'ok' }] });
       default:
         return json({ error: 'Not available in screenshots', code: 'unsupported' }, 400);
     }
