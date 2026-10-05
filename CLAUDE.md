@@ -39,6 +39,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 - DB の接続プールは `globalThis` に置いて使い回す（`components/ruledb.ts` の `getPool`。読み直しのたびにプールが増えて Too many connections になるのを防ぎ、instrumentation の自動の送り直しと API route で 1 つにする）。
 
 - パッケージマネージャは npm だけ（`package-lock.json`）。CI・.deb の作成・Renovate もこれを使う。ほかのロックファイル（`pnpm-lock.yaml` など）は足さない（Renovate が「複数の npm のロックファイル」の警告を出す）。
+- TypeScript は 7（`@typescript/native` = `npm:typescript@^7`、`npx tsc` はこれ）と 6 の API（`typescript` = `npm:@typescript/typescript6`、コマンドは `tsc6`）を並べて入れている。TypeScript 7 には JavaScript の API がなく、typescript-eslint（eslint-config-next が使う）と `i18n/extract.mjs` は `typescript` の API を読むため（TypeScript 7.0 の告知の「Running side-by-side with TypeScript 6.0」の書き方）。`next build` の型チェックは `typescript` の CLI（tsc6）を使う。typescript-eslint が TypeScript 7.1 の API に対応したら（typescript-eslint/typescript-eslint#10940）`typescript` を 7 に戻す。
 - 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`（複数の rproxy なら代わりに `RPROXY_UI_NODES`）。
 - import のパスエイリアスは `@/`（リポジトリのルート）。vitest でも `vitest.config.mts` で同じエイリアスを設定している。
 - テストは MariaDB・rproxy・NextAuth をすべてモックする（`tests/forward.test.ts`）。実際の DB や rproxy は不要。
