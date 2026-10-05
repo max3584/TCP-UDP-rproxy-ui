@@ -16,7 +16,7 @@ const Profile: React.FC = () => {
           <p className="text-lg font-medium mb-4">You are not signed in</p>
           <button
             onClick={() => signIn('keycloak')}
-            className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded transition duration-300 ease-in-out"
+            className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-sm transition duration-300 ease-in-out"
           >
             Sign In
           </button>

@@ -129,7 +129,7 @@ const ImportPage: React.FC = () => {
         {manyNodes && nodesInfo && (
           <label className="block">
             <span className="block mb-1">読み込む先のノード／グループ</span>
-            <select className="border border-gray-400 rounded px-2 py-1 bg-white text-gray-900 max-w-full" value={target}
+            <select className="border border-gray-400 rounded-sm px-2 py-1 bg-white text-gray-900 max-w-full" value={target}
               onChange={(e) => { setTargetChoice(e.target.value); setPreview(null); setResults(null); }}>
               {target === '' && <option value="">選んでください</option>}
               {targetChoices(nodesInfo).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
@@ -143,7 +143,7 @@ const ImportPage: React.FC = () => {
         <label className="block">
           <span className="block mb-1">または貼り付け</span>
           <textarea
-            className="w-full h-64 border border-gray-400 rounded p-2 font-mono text-xs bg-white text-gray-900"
+            className="w-full h-64 border border-gray-400 rounded-sm p-2 font-mono text-xs bg-white text-gray-900"
             value={text}
             onChange={(e) => { setText(e.target.value); setPreview(null); setResults(null); }}
             placeholder={'version: 1\nrules:\n  - protocol: tcp\n    listen_addr: 0.0.0.0\n    listen_port: 8443\n    remote_addr: 10.0.0.10\n    remote_port: 443'}
@@ -162,7 +162,7 @@ const ImportPage: React.FC = () => {
         <section className="card p-4" aria-labelledby="import-preview">
           <h2 id="import-preview" className="card-title mb-3">確かめた結果（{preview.items.length} 件）</h2>
           {preview.ignoredGlobal && (
-            <p className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <p className="mb-3 rounded-sm border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               <code>global</code> は読み飛ばします（rproxy の設定ファイルの側で設定してください）。
             </p>
           )}

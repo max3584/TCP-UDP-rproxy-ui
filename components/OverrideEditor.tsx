@@ -8,7 +8,7 @@ import { errorDetail } from './ui';
 
 type DestMode = 'group' | 'single' | 'multi';
 
-const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full bg-white text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
 const labelClass = 'block text-sm font-medium text-gray-800 mb-1';
 const helpClass = 'mt-1 text-xs text-gray-600';
 

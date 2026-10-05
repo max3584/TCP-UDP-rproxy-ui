@@ -1,7 +1,7 @@
 # CLAUDE.md — TCP-UDP-rproxy-ui
 
 `rproxy-api`（Rust 製の TCP/UDP リバースプロキシ、別リポジトリ `../rproxy-api`）の転送ルールを管理する Web UI。
-Next.js 16（Pages Router）、React 19、NextAuth v4 + Keycloak、MariaDB、Tailwind CSS 3 で構成されている。
+Next.js 16（Pages Router）、React 19、NextAuth v4 + Keycloak、MariaDB、Tailwind CSS 4 で構成されている。
 
 ## バージョン管理
 
@@ -180,6 +180,7 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
 - 画面の言語（日本語 / English、#82）：文言は日本語のままソースに書き、`i18n/en.ts`（キーは日本語の文言、`{0}` は差し込む値）で訳す。JSX の文字列と属性は `tsconfig.json` の `jsxImportSource: "@/i18n"`（`i18n/jsx-runtime.ts`）が自動で訳し、JSX を通らない文字列（`window.confirm` など）は `t()`、日付は `localeTag()`。API route は `localizedApi` で包み、`error` / `message` を cookie（`rproxy_ui_lang`）か Accept-Language の言語で返す（`code` は変えない）。文言を足したら `npm run i18n:check` で訳を足す。E2E は `locale: 'ja-JP'`（日本語）。
   組み立てた文字列（条件で付け足す部分・`join` でつないだもの・文を続けたもの）は丸ごとでは辞書に一致しないので、組み立てる側で部品ごとに訳す（#94）：語句を並べるのは `joinList`（英語は ", "）、文を並べるのは `joinSentences`（英語は文の間に空白）、場面で訳が違う語は `tc('有効', 'on-off')`（辞書のキーは `有効|on-off`）。履歴の差分の文（`ruleChanges`）は API がリクエストの言語で作る。JSX で「。」で終わる文の後に別の子が続くときは、英語では `i18n/props.ts` が空白を足す。`tests/i18n-leak.test.ts` が英語で組み立てた結果に日本語が残らないことを確かめる。
 - 画面は明るい配色だけ。カード・表・ボタンは `styles/globals.css` の `.card` / `.data-table` / `.btn-*` / `.badge` を使い、背景色と文字色を必ず両方指定する（以前、白地に白文字になる不具合があった）。
+- Tailwind CSS 4 は CSS で設定する（`styles/globals.css`。`tailwind.config.ts` はない）。クラスを探すのは `pages/` と `components/` だけ（`@source`）。色は v3 の値（`styles/tailwind-v3-colors.css`）、文字の並び・枠線の既定の色・プレースホルダの色・ボタンのカーソル・`hover:`（タッチ端末でも効く）・dialog の margin・表のセルの padding は v3 と同じになるように `globals.css` で上書きしている。v4 の名前を使う（角の丸めは `rounded-sm`（v3 の `rounded`）/ `rounded-xs`（v3 の `rounded-sm`）、`outline-hidden`（v3 の `outline-none`）、`shadow-xs`（v3 の `shadow-sm`）、`wrap-break-word`）。
 - レスポンシブ（#88）：lg（1024px）以上は左のサイドバー、未満はヘッダーの「メニュー」で開閉する（`Layout` が状態を持ち、画面を移る・Esc で閉じる。言語の切り替えとサインアウトもメニューの中）。横に長い表は `.table-scroll` で包み、表の中だけを横にスクロールさせる（ページ全体をはみ出させない。`relative` は表の中の `sr-only` がページの幅を広げないため）。狭い幅のボタンは `max-lg:min-h-11` でタップしやすくする。`tests/ui/responsive.spec.ts` が 375px と 768px ではみ出さないことを確かめる。
 - `res.status(200).json(await ...)` と書かない（`status` が先に呼ばれて、失敗しても 200 になる）。先に値を取ってから返す。
 - `mariadb` ドライバは JSON 列をオブジェクトで返すことがある。`parseOptions` は文字列とオブジェクトの両方を受け付ける。

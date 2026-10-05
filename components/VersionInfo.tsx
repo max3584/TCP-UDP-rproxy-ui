@@ -46,7 +46,7 @@ export const SidebarVersions: React.FC = () => {
   const view = useVersions();
   const nodes = view?.nodes ?? [];
   return (
-    <div data-testid="sidebar-versions" className="mt-4 pt-4 border-t border-gray-700 text-xs text-gray-300 space-y-1 break-words">
+    <div data-testid="sidebar-versions" className="mt-4 pt-4 border-t border-gray-700 text-xs text-gray-300 space-y-1 wrap-break-word">
       <p>UI <VersionText version={view?.ui || UI_VERSION} testId="ui-version" /></p>
       {nodes.length === 1 && (
         <p>rproxy-api <VersionText version={nodes[0].version} testId="rproxy-version" /></p>
@@ -82,11 +82,11 @@ export const VersionNotice: React.FC = () => {
   const many = view.nodes.length > 1;
   const colors = level === 'warning' ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-blue-300 bg-blue-50 text-blue-900';
   return (
-    <div role="status" data-testid="version-notice" data-level={level} className={`rounded border px-4 py-3 text-sm space-y-1 ${colors}`}>
+    <div role="status" data-testid="version-notice" data-level={level} className={`rounded-sm border px-4 py-3 text-sm space-y-1 ${colors}`}>
       <p className="font-semibold">rproxy-api の版の組み合わせ</p>
       <ul className="space-y-1">
         {issues.map((n) => (
-          <li key={n.name} className="break-words">
+          <li key={n.name} className="wrap-break-word">
             {many && <span className="font-mono">{n.name}: </span>}
             {issueText(n, view)}
           </li>

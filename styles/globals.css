@@ -1,6 +1,58 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind CSS v4（CSS で設定する。tailwind.config.ts はない）。
+   クラスを探すのは pages/ と components/ だけ（v3 の content と同じ。i18n/ や tests/ の文字列からクラスを作らない） */
+@import 'tailwindcss' source(none);
+@source '../pages';
+@source '../components';
+
+@import './tailwind-v3-colors.css';
+
+/* 文字の並び（v4 の既定の sans は -apple-system から始まる別の並び）を v3 と同じにする */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+/* v3 と同じく、hover: はホバーできない端末（タッチ）でも効かせる（v4 の既定は @media (hover: hover) の中だけ） */
+@custom-variant hover (&:hover);
+
+/* v3 の preflight との違いを埋めて、見た目を v3 のときと同じにする */
+@layer base {
+  /* 枠線の既定の色（v4 は currentcolor） */
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+
+  /* プレースホルダの色（v4 は文字色の 50%） */
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-gray-400);
+  }
+
+  /* v4 の preflight はすべての要素の margin・padding を 0 にする。v3 が消していなかったもの（ブラウザの既定）に戻す。
+     dialog の margin（auto。showModal() で画面の中央に出す）、表のセル・select の選択肢の padding */
+  dialog {
+    margin: revert;
+  }
+
+  option {
+    padding: revert;
+  }
+
+  /* 表のセルの 1px はブラウザの既定（table の cellpadding の扱い）なので revert では戻らない */
+  th,
+  td {
+    padding: 1px;
+  }
+
+  /* ボタンのカーソル（v4 は default） */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+}
 
 /* ライト配色のみ。OS がダークモードでも文字色が白にならないようにする */
 :root {
@@ -23,10 +75,11 @@
   }
 }
 
-/* カード・表・ボタンは背景色と文字色を必ず両方指定する（白地に白文字にならないように） */
+/* カード・表・ボタンは背景色と文字色を必ず両方指定する（白地に白文字にならないように）。
+   v3 の @layer components と同じく、ユーティリティ（p-4 など）で上書きできるように components の層に置く */
 @layer components {
   .card {
-    @apply bg-white text-gray-900 border border-gray-200 rounded-lg shadow-sm;
+    @apply bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xs;
   }
 
   .card-title {
@@ -57,23 +110,23 @@
   }
 
   .btn-primary {
-    @apply inline-block whitespace-nowrap bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500;
+    @apply inline-block whitespace-nowrap bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-sm disabled:opacity-60 disabled:cursor-not-allowed focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500;
   }
 
   .btn-secondary {
-    @apply inline-block whitespace-nowrap bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 px-4 py-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500;
+    @apply inline-block whitespace-nowrap bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 px-4 py-2 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500;
   }
 
   .btn-danger {
-    @apply inline-block whitespace-nowrap bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-red-500;
+    @apply inline-block whitespace-nowrap bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-sm disabled:opacity-60 disabled:cursor-not-allowed focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-red-500;
   }
 
   .badge {
-    @apply inline-block px-2 py-0.5 rounded text-xs font-semibold whitespace-nowrap;
+    @apply inline-block px-2 py-0.5 rounded-sm text-xs font-semibold whitespace-nowrap;
   }
 
   .link {
-    @apply text-blue-700 hover:text-blue-900 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded;
+    @apply text-blue-700 hover:text-blue-900 underline-offset-2 hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm;
   }
 
   dialog.confirm-dialog {
@@ -82,11 +135,5 @@
 
   dialog.confirm-dialog::backdrop {
     background: rgb(0 0 0 / 0.4);
-  }
-}
-
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
   }
 }

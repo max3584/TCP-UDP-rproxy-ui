@@ -27,12 +27,12 @@ export interface HttpEditorProps {
   http3: boolean;
 }
 
-const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full bg-white text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
 const monoInput = `${inputClass} font-mono text-sm`;
-const smallButton = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
-const removeButton = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
+const smallButton = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded-sm text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
+const removeButton = 'text-red-700 hover:text-red-900 text-sm px-1 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 const labelClass = 'block text-xs font-medium text-gray-800 mb-1';
-const boxClass = 'border border-gray-300 rounded p-3 mb-3 bg-white';
+const boxClass = 'border border-gray-300 rounded-sm p-3 mb-3 bg-white';
 const headingClass = 'text-sm font-semibold text-gray-900 mb-2';
 
 // 種類ごとの入力欄（ここにない種類は JSON で編集する）
@@ -204,7 +204,7 @@ const MatchBuilder: React.FC<{ id: string; onApply: (match: string) => void }> =
   return (
     <details className="mt-1">
       <summary className="text-xs text-blue-700 cursor-pointer">条件を選んで組み立てる</summary>
-      <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-gray-50 border border-gray-200 rounded p-2">
+      <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-gray-50 border border-gray-200 rounded-sm p-2">
         {fields.map(([key, label, value, setter, ph]) => (
           <div key={key}>
             <label htmlFor={`${id}-${key}`} className={labelClass}>{label}（カンマ区切りでいずれか）</label>
@@ -421,7 +421,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     aria-label={`サービス ${name} の転送先 ${k + 1} の重み`}
                     type="number"
                     min="0"
-                    className={`${inputClass} max-w-[5rem] shrink-0`}
+                    className={`${inputClass} max-w-20 shrink-0`}
                     value={srv.weight ?? 1}
                     onChange={(e) => updateService(name, { servers: s.servers.map((x, j) => (j === k ? { ...x, weight: e.target.value === '' ? undefined : Number(e.target.value) } : x)) })}
                   />

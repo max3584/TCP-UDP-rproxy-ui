@@ -15,7 +15,7 @@ export function tabPanelProps(id: string, tab: string) {
     id: `${id}-panel-${tab}`,
     'aria-labelledby': `${id}-tab-${tab}`,
     tabIndex: 0,
-    className: 'space-y-4 focus:outline-none',
+    className: 'space-y-4 focus:outline-hidden',
   };
 }
 
@@ -47,7 +47,7 @@ const Tabs: React.FC<{ id: string; label: string; tabs: TabItem[]; active: strin
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(t.id)}
             onKeyDown={onKeyDown}
-            className={`shrink-0 whitespace-nowrap px-3 py-2 max-lg:min-h-11 text-sm border-b-2 focus:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-blue-500 ${selected
+            className={`shrink-0 whitespace-nowrap px-3 py-2 max-lg:min-h-11 text-sm border-b-2 focus:outline-hidden focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-blue-500 ${selected
               ? 'border-blue-600 text-blue-700 font-semibold bg-white'
               : 'border-transparent text-gray-700 hover:text-gray-900 bg-transparent'}`}
           >

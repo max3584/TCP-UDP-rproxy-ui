@@ -134,10 +134,10 @@ export const AllowFromBadge: React.FC<{ allowFrom: string[] }> = ({ allowFrom })
 );
 
 export const ErrorBanner: React.FC<{ message: string; onClose?: () => void }> = ({ message, onClose }) => (
-  <div role="alert" className="bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded mb-4 flex justify-between items-start">
+  <div role="alert" className="bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded-sm mb-4 flex justify-between items-start">
     <span className="break-all">{message}</span>
     {onClose && (
-      <button type="button" onClick={onClose} className="ml-4 shrink-0 max-lg:min-h-11 max-lg:min-w-11 font-bold text-red-800 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500" aria-label="閉じる">×</button>
+      <button type="button" onClick={onClose} className="ml-4 shrink-0 max-lg:min-h-11 max-lg:min-w-11 font-bold text-red-800 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-red-500" aria-label="閉じる">×</button>
     )}
   </div>
 );

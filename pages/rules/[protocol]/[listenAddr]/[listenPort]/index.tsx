@@ -537,7 +537,7 @@ const RuleDetailPage: React.FC = () => {
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
-      {notice && <p role="status" className="rounded border border-green-300 bg-green-50 px-4 py-2 text-sm text-green-900">{notice}</p>}
+      {notice && <p role="status" className="rounded-sm border border-green-300 bg-green-50 px-4 py-2 text-sm text-green-900">{notice}</p>}
       {notFound && (
         <div className="card p-4 text-gray-900">
           <p>このルールは見つかりません（削除されたか、ほかの利用者のルールです）。</p>
@@ -708,7 +708,7 @@ const RuleDetailPage: React.FC = () => {
       >
         <label className="block text-sm text-gray-900">
           <span className="block mb-1">先のノード／グループ</span>
-          <select className="border border-gray-300 rounded px-2 py-1 w-full bg-white text-gray-900" value={copyTo} onChange={(e) => setCopyTo(e.target.value)} data-testid="copy-to">
+          <select className="border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900" value={copyTo} onChange={(e) => setCopyTo(e.target.value)} data-testid="copy-to">
             <option value="">選んでください</option>
             {nodesInfo && targetChoices(nodesInfo).filter((c) => c.value !== rule?.target).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
