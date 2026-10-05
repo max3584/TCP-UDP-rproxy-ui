@@ -1,6 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
-import { getInterfaces } from '@/components/rproxy';
+import { getInterfaces, withNode } from '@/components/rproxy';
+import { loadNodes, probeNode } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
 import { localizedApi } from '@/i18n/server';
 
@@ -12,7 +13,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   try {
-    const info = await getInterfaces();
+    // ノードを設定していれば ?target= のノード（グループなら先頭のノード）に聞く
+    const node = probeNode(loadNodes(), typeof req.query.target === 'string' ? req.query.target : undefined);
+    const info = node ? await withNode(node, () => getInterfaces()) : await getInterfaces();
     return res.status(200).json(info);
   } catch (err) {
     Logger('info', { action: 'interfaces' }).error(`rproxy error: ${err}`);

@@ -7,6 +7,7 @@ English: [en/TESTING.md](en/TESTING.md)
 | `npx tsc --noEmit` / `npm run lint` / `npm run build` | 型、lint、ビルド | `check` |
 | `npm test` | 単体テスト（DB・rproxy・NextAuth はモック） | `check` |
 | `RUN_E2E=1 npx vitest run tests/e2e.test.ts` | 本物の MariaDB と rproxy-api につないだ E2E。変数がなければスキップ | `e2e`（rproxy-api の同じ名前のブランチ、なければ master をビルドして使う） |
+| `RUN_E2E_NODES=1 npx vitest run tests/e2e-nodes.test.ts` | 複数のノード（#98）の E2E。rproxy-api を 2 台（別々のコンテナ、Unix ソケット）動かし、ノードごとのビューで戻す。変数がなければスキップ | `e2e-nodes` |
 
 ## 単体テスト：rproxy クライアント（`tests/rproxy.test.ts`）
 
@@ -145,6 +146,15 @@ English: [en/TESTING.md](en/TESTING.md)
 | round-trips allow_from through the DB and rproxy and drops connections outside it | `allowFrom` が正規化されて DB の `options` と rproxy（`GET /rules/{key}` の `allow_from`、`origin: dynamic`）に入り、範囲外にすると接続が切られて `stats.denied` が増える。省いた変更では保ち、`[]` で解除（`options` は NULL） |
 | rejects a terminate rule whose certificate cannot be read without leaving rows | 存在しない証明書の terminate は 400 `tls_config` で、DB に行が残らない |
 | deletes the range rule | 範囲ルールを削除すると接続できなくなる |
+
+## 複数のノード（#98）
+
+- `tests/nodes.test.ts`：`RPROXY_UI_NODES` の設定ファイルの読み込みと誤り（名前・URL・token_file・グループ・default_target）、グループのノード、重なり、`forward_rule_targets` の行、ファイルがないときの 1 台
+- `tests/nodeview.test.ts`：`db/node-view.mjs` が出す SQL（ビューの列が rproxy の読む列と同じ、絞り込み、読み取りだけの GRANT、名前の検査）
+- `tests/fanout.test.ts`：グループの全ノードへの送信、1 台が失敗したときに成功したノードを戻すこと、ノードごとの結果
+- `tests/forward-nodes.test.ts`：API route（グループへの追加・失敗時の取り消しと ROLLBACK・COMMIT 失敗時の取り消し・target の必須と検査・重なりの 409・ノードごとの状態の集計・履歴の target）
+- `tests/nodestate.test.ts`：状態の集計（悪いほう）、stats の合計、URL の `?target=`
+- `tests/e2e-nodes.test.ts`（CI の `e2e-nodes`）：グループのルールが両方に、ノードのルールがそのノードだけに作られること、ビューの中身、rproxy を再起動すると自分のルールだけが戻ること、停止・再開・削除、片方で失敗したときの取り消し
 
 ## まだテストしていないこと
 

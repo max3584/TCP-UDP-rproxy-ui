@@ -80,6 +80,8 @@ KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
+# 複数の rproxy（README の「複数の rproxy（ノードとグループ）」）。指定すると RPROXY_API_URL / RPROXY_API_TOKEN は使わない
+# RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
 ```
 
 `RPROXY_API_URL` は `http://` / `https://` の URL か、`unix:/run/rproxy/api.sock`（rproxy-api の `RPROXY_API_SOCKET` の Unix ソケット。HTTP の Host は `localhost`）。
@@ -239,6 +241,46 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
   ルールが今もあれば置き換え（送信元 IP の扱い・ポート範囲・L4 / L7 が違う版は作り直し）、削除されていれば作り直します。巻き戻しも履歴に残ります。
 - rproxy の固定ルールは DB にないので、履歴にも出ません（同じキーの固定ルールがあるときは巻き戻せません）。
 - 履歴は DB の `forward_rules_log` です。列の追加はないので、migration は要りません。
+
+## 複数の rproxy（ノードとグループ）
+
+複数の rproxy（**ノード**）を 1 つの UI で管理できる（#98。今の版はその土台）。同じルールを持つノードのまとまりを**グループ**にする（active / standby もグループの 1 つ。役割の表示は後の版）。
+ルールはノードかグループに属し、グループのルールの追加・変更・削除・一時停止・再開・インポート・巻き戻しはグループの全ノードに送る。1 台でも失敗したら、成功したノードの変更も元に戻して DB は変えない（応答の `nodes` にノードごとの結果）。
+
+`RPROXY_UI_NODES` を指定しなければ、今までどおり `RPROXY_API_URL` / `RPROXY_API_TOKEN` の 1 台だけで動く（設定も DB も変えなくてよい。画面も今と同じ）。
+
+```yaml
+# /etc/rproxy-ui/nodes.yaml（RPROXY_UI_NODES=/etc/rproxy-ui/nodes.yaml。YAML か JSON）
+nodes:
+  - name: node1                      # 英小文字・数字・_ の 32 文字まで（ノードとグループで重ならないこと）
+    url: http://10.0.0.11:8080       # http(s):// か unix:/run/rproxy/api.sock
+    token_file: /etc/rproxy-ui/tokens/node1   # トークンはファイルから読む（DB には置かない）
+  - name: node2
+    url: http://10.0.0.12:8080
+    token_file: /etc/rproxy-ui/tokens/node2
+groups:
+  - name: ha
+    nodes: [node1, node2]
+    mode: active_standby             # single（既定）か active_standby
+default_target: ha                   # 追加の画面で最初に選ぶもの（省略可。ノードが 1 つなら自動）
+```
+
+- ファイルは UI の起動時に確かめ、誤りがあれば理由をログに出して起動しない。変えたら UI を再起動する。トークンファイルは UI を動かすユーザー（.deb では `rproxy-ui`）が読めるようにする。
+- ノードが 2 つ以上あると、追加の画面に「ノード／グループ」の選択、一覧と詳細にノード／グループ、ダッシュボードにノードの一覧（つながるか・ルール数・失敗数）が出る。グループのルールの状態は悪いほう（失敗 > 未登録 > 不明 > 稼働中）、接続数と転送量は合計。
+- 同じキー（プロトコル・アドレス・ポート）のルールは、ノードが重ならないノード／グループどうしなら別々に置ける（重なると 409 `target_conflict`）。
+- 使う前に DB に `db/migrations/006_nodes.sql` を適用する（`forward_rules` と `forward_rules_log` に `target` 列、`forward_rule_targets` 表）。既存のルールは `default` に属するので、設定ファイルのノードの名前を `default` にするか、`UPDATE forward_rules SET target = 'node1' WHERE target = 'default'` で付け替える。
+
+### rproxy の起動時の復元（ノードごとのビュー）
+
+rproxy は起動時に `forward_rules` を丸ごと読むので、ノードごとにデータベースを分け、その中に「自分のノードと、自分を含むグループの行だけ」の `forward_rules` という名前のビューを作る（rproxy は変えない）。
+SQL は `db/node-view.mjs` が出す（.deb では `/usr/share/rproxy-ui/db/node-view.mjs`）。UI のテーブルを読める管理者で流す。
+
+```bash
+node db/node-view.mjs node1 --database rproxy --host 10.0.0.11 --password '<password>' | mariadb -u root -p
+# node1 の rproxy: RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB のホスト>/rproxy_node_node1
+```
+
+ビューは `forward_rule_targets`（UI が設定ファイルに合わせて書き直す）で絞るので、グループの構成を変えてもビューは作り直さなくてよい（ノードを足したときだけ、そのノードの分を流す）。詳しくは `db/README.md`。
 
 ## バックアップと復旧
 

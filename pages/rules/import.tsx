@@ -1,7 +1,8 @@
 // ルールのインポート（/rules/import。#60）。rproxy の設定ファイルと同じ形の YAML / JSON を読み込む
 import { useState } from 'react';
 import Link from 'next/link';
-import { ErrorBanner, errorDetail } from '@/components/ui';
+import { ErrorBanner, errorDetail, useNodes } from '@/components/ui';
+import { multiNode, targetChoices } from '@/components/dashboard';
 
 type Status = 'new' | 'exists' | 'error';
 type Result = 'added' | 'replaced' | 'skipped' | 'error';
@@ -56,6 +57,12 @@ const ImportPage: React.FC = () => {
   // 同じキーがあるときに置き換えるキー
   const [replace, setReplace] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<ResultItem[] | null>(null);
+  // 読み込む先のノード／グループ（#98。ノードが 2 つ以上のときだけ選ぶ）
+  const nodesInfo = useNodes();
+  const manyNodes = multiNode(nodesInfo);
+  const [targetChoice, setTargetChoice] = useState('');
+  const target = targetChoice || (nodesInfo?.configured ? nodesInfo.defaultTarget ?? '' : '');
+  const targetBody = nodesInfo?.configured && target ? { target: target } : {};
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -70,7 +77,7 @@ const ImportPage: React.FC = () => {
     setError('');
     setResults(null);
     try {
-      const out = await postImport({ text: text, dryRun: true }) as { items: PreviewItem[]; ignoredGlobal: boolean };
+      const out = await postImport({ text: text, dryRun: true, ...targetBody }) as { items: PreviewItem[]; ignoredGlobal: boolean };
       setPreview(out);
       setReplace(new Set());
     } catch (err) {
@@ -85,7 +92,7 @@ const ImportPage: React.FC = () => {
     setBusy(true);
     setError('');
     try {
-      const out = await postImport({ text: text, replace: [...replace] }) as { results: ResultItem[] };
+      const out = await postImport({ text: text, replace: [...replace], ...targetBody }) as { results: ResultItem[] };
       setResults(out.results);
       setPreview(null);
     } catch (err) {
@@ -119,6 +126,16 @@ const ImportPage: React.FC = () => {
           設定ファイルの <code>global</code> は rproxy 側の設定なので読み飛ばします。
         </p>
         <p>先に「確かめる」で 1 件ずつ検証し、結果を見てから実行します。1 件ずつ追加・置き換えるので、途中で失敗しても成功した分は残ります。</p>
+        {manyNodes && nodesInfo && (
+          <label className="block">
+            <span className="block mb-1">読み込む先のノード／グループ</span>
+            <select className="border border-gray-400 rounded px-2 py-1 bg-white text-gray-900 max-w-full" value={target}
+              onChange={(e) => { setTargetChoice(e.target.value); setPreview(null); setResults(null); }}>
+              {target === '' && <option value="">選んでください</option>}
+              {targetChoices(nodesInfo).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          </label>
+        )}
         <label className="block">
           <span className="block mb-1">ファイル</span>
           <input type="file" className="block w-full max-w-full text-sm" accept=".yaml,.yml,.json,application/json,application/yaml,text/yaml" onChange={(e) => void onFile(e)} />

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { DashboardData, ForwardRules, Protocol, RuleState } from '@/components/lib';
+import { DashboardData, ForwardRules, NodeSummary, Protocol, RuleState } from '@/components/lib';
 import {
   EMPTY_FILTER,
   ProtocolSummary,
@@ -33,7 +33,7 @@ import {
   uptimeSecs, ConfigStatusView } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
 import { joinList, t, translate } from '@/i18n/core';
-import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
+import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh } from '@/components/ui';
 
 // 一覧の転送先：代表の名前 1 つ（全部はマウスを乗せたときと詳細画面）
 const TargetName: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
@@ -126,6 +126,42 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
   );
 };
 
+// ノードごとの状態（#98。ノードが 2 つ以上のときだけ出す）
+const NodesCard: React.FC<{ nodes: NodeSummary[] }> = ({ nodes }) => (
+  <section className="card" aria-labelledby="card-nodes" data-testid="nodes-card">
+    <h2 id="card-nodes" className="card-title p-4 pb-2">ノード</h2>
+    <div className="table-scroll">
+      <table className="data-table">
+        <caption className="sr-only">rproxy のノードごとの状態</caption>
+        <thead>
+          <tr>
+            <th scope="col">ノード</th>
+            <th scope="col">接続</th>
+            <th scope="col" className="text-right">ルール</th>
+            <th scope="col" className="text-right">失敗・未登録</th>
+          </tr>
+        </thead>
+        <tbody>
+          {nodes.map((n) => (
+            <tr key={n.name}>
+              <td className="font-mono text-gray-900">{n.name}</td>
+              <td>
+                <span className={`inline-flex items-center gap-2 ${n.reachable ? 'text-green-700' : 'text-red-700'}`}>
+                  <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${n.reachable ? 'bg-green-600' : 'bg-red-600'}`} />
+                  {n.reachable ? '接続できます' : '接続できません'}
+                </span>
+                {n.error && <div className="text-xs text-red-800 break-all">{n.error}</div>}
+              </td>
+              <td className="text-right tabular-nums text-gray-900">{formatCount(n.rules)}</td>
+              <td className={`text-right tabular-nums ${n.failed > 0 ? 'text-red-800 font-semibold' : 'text-gray-900'}`}>{formatCount(n.failed)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+);
+
 const TLS_SEGMENTS: { key: 'passthrough' | 'sni' | 'tls' | 'dtls'; label: string; color: string }[] = [
   { key: 'passthrough', label: 'passthrough', color: '#6b7280' },
   { key: 'sni', label: 'SNI 振り分け', color: '#2563eb' },
@@ -165,7 +201,7 @@ const TlsCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => {
   );
 };
 
-const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
+const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = ({ rules, showTarget }) => (
   <section className="card p-4" aria-labelledby="card-attention">
     <h2 id="card-attention" className="card-title mb-3">要確認のルール</h2>
     {rules.length === 0 ? (
@@ -179,6 +215,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => (
               <span className="badge bg-gray-100 text-gray-800 uppercase">{r.protocol}</span>
               {r.origin === 'static' && <StaticBadge />}
               <CertBadge state={worstCertState(r)} />
+              {showTarget && <TargetBadge target={r.target} />}
             </div>
             <div className="min-w-0 flex-1 text-sm">
               <Link href={ruleHref(ruleKeyOf(r))} className="link font-mono break-all" title={listenLabel(r)}>
@@ -223,7 +260,7 @@ const PauseResumeButton: React.FC<{ rule: ForwardRules; onDone: () => void; onEr
   );
 };
 
-const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () => void; onError: (message: string) => void }> = ({ rules, now, onChanged, onError }) => {
+const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; showTarget: boolean; onChanged: () => void; onError: (message: string) => void }> = ({ rules, now, showTarget, onChanged, onError }) => {
   const router = useRouter();
   const [filter, setFilter] = useState<RuleFilter>(EMPTY_FILTER);
   const shown = useMemo(() => filterRules(rules, filter), [rules, filter]);
@@ -300,6 +337,9 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; onChanged: () =
                         <AllowFromBadge allowFrom={r.allowFrom} />
                         <CertBadge state={worstCertState(r)} />
                       </div>
+                    )}
+                    {showTarget && r.target !== undefined && (
+                      <div className="mt-0.5 font-sans"><TargetBadge target={r.target} /></div>
                     )}
                     {r.owner !== undefined && (
                       <div className="mt-0.5 text-xs text-gray-600 font-sans" title="作成した利用者（Keycloak の ID）">
@@ -406,6 +446,10 @@ const DashboardPage: React.FC = () => {
   const attention = useMemo(() => needsAttention(rules), [rules]);
   const now = lastUpdated ?? 0;
   const reachable = data?.reachable ?? false;
+  // ノードが 2 つ以上なら、ノードの一覧と、ルールのノード／グループを出す（1 つなら今と同じ見た目）
+  const nodes = data?.nodes ?? [];
+  const manyNodes = nodes.length > 1;
+  const nodesUp = nodes.filter((n) => n.reachable).length;
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
@@ -430,16 +474,29 @@ const DashboardPage: React.FC = () => {
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatTile
-              label="rproxy"
-              value={
-                <span className={`inline-flex items-center gap-2 ${reachable ? 'text-green-700' : 'text-red-700'}`}>
-                  <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${reachable ? 'bg-green-600' : 'bg-red-600'}`} />
-                  {reachable ? '接続できます' : '接続できません'}
-                </span>
-              }
-              sub={reachable ? '稼働状態を取得しました' : <span className="break-all">{data.rproxyError ?? '稼働状態を取得できません'}</span>}
-            />
+            {manyNodes ? (
+              <StatTile
+                label="rproxy"
+                value={
+                  <span className={`inline-flex items-center gap-2 ${nodesUp === nodes.length ? 'text-green-700' : 'text-red-700'}`}>
+                    <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${nodesUp === nodes.length ? 'bg-green-600' : 'bg-red-600'}`} />
+                    {`${nodesUp} / ${nodes.length} 台に接続できます`}
+                  </span>
+                }
+                sub={data.rproxyError ? <span className="break-all">{data.rproxyError}</span> : '稼働状態を取得しました'}
+              />
+            ) : (
+              <StatTile
+                label="rproxy"
+                value={
+                  <span className={`inline-flex items-center gap-2 ${reachable ? 'text-green-700' : 'text-red-700'}`}>
+                    <span aria-hidden="true" className={`inline-block h-3 w-3 rounded-full ${reachable ? 'bg-green-600' : 'bg-red-600'}`} />
+                    {reachable ? '接続できます' : '接続できません'}
+                  </span>
+                }
+                sub={reachable ? '稼働状態を取得しました' : <span className="break-all">{data.rproxyError ?? '稼働状態を取得できません'}</span>}
+              />
+            )}
             <StatTile label="ルール" value={formatCount(summary.all.total)}
               sub={`TCP ${summary.tcp.counts.total} / UDP ${summary.udp.counts.total}${summary.staticRules > 0 ? translate(`（うち固定 ${summary.staticRules}）`) : ''}`} />
             <StatTile label="稼働中" value={<span className="text-green-700">{formatCount(summary.all.running)}</span>}
@@ -453,9 +510,11 @@ const DashboardPage: React.FC = () => {
             <TlsCard rules={rules} />
           </div>
 
-          <AttentionCard rules={attention} />
+          {manyNodes && <NodesCard nodes={nodes} />}
 
-          <RulesTable rules={rules} now={now} onChanged={() => void load()} onError={setError} />
+          <AttentionCard rules={attention} showTarget={manyNodes} />
+
+          <RulesTable rules={rules} now={now} showTarget={manyNodes} onChanged={() => void load()} onError={setError} />
         </>
       )}
     </div>

@@ -1,5 +1,6 @@
 // rproxy-api の HTTP クライアント（契約は ../rproxy-api/docs/API.md）
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Agent, fetch as undiciFetch } from 'undici';
 import type { Balance, CertStatus, HealthCheck, HttpSpec, Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, Target, TlsMode, TlsSpec } from './lib';
 import type { InterfacesInfo } from './listen';
@@ -152,15 +153,36 @@ export function rulePath(key: RproxyRuleKey): string {
   return `/rules/${encodeURIComponent(key.protocol)}/${encodeURIComponent(key.listen_addr)}/${key.listen_port}`;
 }
 
+// 問い合わせ先の rproxy（#98 のノード）。url は RPROXY_API_URL と同じ書き方
+export interface RproxyNode {
+  name: string;
+  url: string;
+  token?: string;
+}
+
+// withNode の中（await の先を含む）の問い合わせは、そのノードに送る。外では RPROXY_API_URL / RPROXY_API_TOKEN。
+// 関数の引数を変えずに済むので、1 台のときの呼び出しは今までと同じ
+const nodeContext = new AsyncLocalStorage<RproxyNode>();
+
+export function withNode<T>(node: RproxyNode, fn: () => Promise<T>): Promise<T> {
+  return nodeContext.run(node, fn);
+}
+
+// 今の問い合わせ先のノード（withNode の外なら undefined）
+export function currentNode(): RproxyNode | undefined {
+  return nodeContext.getStore();
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const node = nodeContext.getStore();
   const headers: Record<string, string> = { Accept: 'application/json' };
-  const token = process.env.RPROXY_API_TOKEN;
+  const token = node ? node.token : process.env.RPROXY_API_TOKEN;
   if (token) headers['Authorization'] = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
   let res: FetchResponse;
   try {
-    const target = apiTarget(process.env.RPROXY_API_URL);
+    const target = apiTarget(node ? node.url : process.env.RPROXY_API_URL);
     if (target.socketPath === '') throw new Error('RPROXY_API_URL の unix: のあとにソケットのパスを書いてください');
     const init = {
       method,

@@ -3,8 +3,8 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { Protocol } from './lib';
 import { ACTION_LABELS, HistoryEntry, HistoryFilter, HistoryPage, historyQuery } from './history';
-import { hostPort, portsLabel, ruleHref } from './dashboard';
-import { ConfirmDialog, ErrorBanner, errorDetail } from './ui';
+import { hostPort, multiNode, portsLabel, ruleHref } from './dashboard';
+import { ConfirmDialog, ErrorBanner, TargetBadge, errorDetail, useNodes } from './ui';
 import { localeTag } from '@/i18n/core';
 
 const RESULT_LABELS: Record<string, string> = {
@@ -27,6 +27,8 @@ const HistoryList: React.FC<{
   onReverted?: () => void;
 }> = ({ filter, showRule = false, perPage = 20, onReverted }) => {
   const [page, setPage] = useState(1);
+  // ノードが 2 つ以上なら、履歴のノード／グループを出す（#98）
+  const manyNodes = multiNode(useNodes());
   const [data, setData] = useState<HistoryPage | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -114,10 +116,11 @@ const HistoryList: React.FC<{
                       <td className="font-mono break-all">
                         <Link
                           className="link"
-                          href={ruleHref({ protocol: e.protocol as Protocol, addr: e.srcAddr, port: e.srcPort })}
+                          href={ruleHref({ protocol: e.protocol as Protocol, addr: e.srcAddr, port: e.srcPort, ...(e.target !== undefined ? { target: e.target } : {}) })}
                         >
                           {e.protocol.toUpperCase()} {hostPort(e.srcAddr, e.rule ? portsLabel(e.rule.srcPort, e.rule.srcPortEnd) : e.srcPort)}
                         </Link>
+                        {manyNodes && e.target !== undefined && <span className="ml-1 font-sans"><TargetBadge target={e.target} /></span>}
                       </td>
                     )}
                     <td className="whitespace-nowrap">{ACTION_LABELS[e.action] ?? e.action}</td>

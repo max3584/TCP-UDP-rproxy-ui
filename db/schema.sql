@@ -1,10 +1,12 @@
 -- 現在のテーブル定義（MariaDB）。migrations/ をすべて適用した結果と同じ内容に保つこと。
 -- rproxy-api が読む列: protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options
+-- （複数のノードでは、rproxy はノードごとのデータベースの forward_rules ビューを読む。db/node-view.mjs）
 -- options は {"tls": ..., "starttls": ..., "starttls_required": ..., "allow_from": [...]} の JSON（allow_from は省略できる）。rproxy は未知のキーを拒否するので、ほかのキーを入れないこと
 
 CREATE TABLE IF NOT EXISTS forward_rules (
   id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
   auth_id       VARCHAR(255) NOT NULL COMMENT 'IdP（Keycloak）の sub',
+  target        VARCHAR(32)  NOT NULL DEFAULT 'default' COMMENT 'ノードかグループの名前（RPROXY_UI_NODES）',
   protocol      VARCHAR(3)   NOT NULL COMMENT 'tcp / udp（小文字）',
   src_addr      VARCHAR(45)  NOT NULL COMMENT '待ち受け IP アドレス',
   src_port      INT          NOT NULL,
@@ -17,13 +19,14 @@ CREATE TABLE IF NOT EXISTS forward_rules (
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_forward_rules_listen (protocol, src_addr, src_port),
+  UNIQUE KEY uq_forward_rules_target_listen (target, protocol, src_addr, src_port),
   KEY idx_forward_rules_auth_id (auth_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS forward_rules_log (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   auth_id       VARCHAR(255) NULL COMMENT '操作した利用者（IdP の sub）',
+  target        VARCHAR(32)  NOT NULL DEFAULT 'default',
   protocol      VARCHAR(3)   NOT NULL,
   src_addr      VARCHAR(45)  NOT NULL,
   src_port      INT          NOT NULL,
@@ -38,4 +41,11 @@ CREATE TABLE IF NOT EXISTS forward_rules_log (
   PRIMARY KEY (id),
   KEY idx_forward_rules_log_listen (protocol, src_addr, src_port),
   KEY idx_forward_rules_log_auth_id (auth_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ノード → そのノードが読む target（自分の名前と、自分を含むグループ）。UI が RPROXY_UI_NODES に合わせて書き直す
+CREATE TABLE IF NOT EXISTS forward_rule_targets (
+  node   VARCHAR(32) NOT NULL COMMENT 'ノードの名前',
+  target VARCHAR(32) NOT NULL COMMENT 'そのノードが読む target（ノード自身か、ノードを含むグループ）',
+  PRIMARY KEY (node, target)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

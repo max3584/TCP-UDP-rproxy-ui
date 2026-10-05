@@ -7,6 +7,7 @@
 | `npx tsc --noEmit` / `npm run lint` / `npm run build` | Types, lint, build | `check` |
 | `npm test` | Unit tests (DB, rproxy and NextAuth are mocked) | `check` |
 | `RUN_E2E=1 npx vitest run tests/e2e.test.ts` | E2E connected to a real MariaDB and rproxy-api. Skipped without the variable | `e2e` (builds and uses the rproxy-api branch with the same name, or master if there is none) |
+| `RUN_E2E_NODES=1 npx vitest run tests/e2e-nodes.test.ts` | E2E for several nodes (#98). Runs two rproxy-api instances (separate containers, Unix sockets) restoring through per-node views. Skipped without the variable | `e2e-nodes` |
 
 ## Unit tests: rproxy client (`tests/rproxy.test.ts`)
 
@@ -145,6 +146,15 @@
 | round-trips allow_from through the DB and rproxy and drops connections outside it | `allowFrom` is normalized and goes into the DB's `options` and rproxy (`allow_from` of `GET /rules/{key}`, `origin: dynamic`); when set out of range, connections are dropped and `stats.denied` increases. Kept by a change that omits it, cleared with `[]` (`options` NULL) |
 | rejects a terminate rule whose certificate cannot be read without leaving rows | terminate with a nonexistent certificate gives 400 `tls_config`, and no rows remain in the DB |
 | deletes the range rule | After deleting the range rule, connections fail |
+
+## Several nodes (#98)
+
+- `tests/nodes.test.ts`: reading the `RPROXY_UI_NODES` file and its errors (names, URLs, token_file, groups, default_target), the nodes of a group, overlaps, the `forward_rule_targets` rows, and the single node without the file
+- `tests/nodeview.test.ts`: the SQL from `db/node-view.mjs` (the view's columns are those rproxy reads, the filter, the read-only GRANT, name checks)
+- `tests/fanout.test.ts`: sending to every node of a group, undoing the nodes that succeeded when one fails, results per node
+- `tests/forward-nodes.test.ts`: the API route (adding to a group, undo and ROLLBACK on failure, undo on a COMMIT failure, target required and checked, 409 on overlaps, aggregated state per node, target in the history)
+- `tests/nodestate.test.ts`: aggregating states (the worse one), summing stats, `?target=` in URLs
+- `tests/e2e-nodes.test.ts` (CI `e2e-nodes`): a group rule is created on both nodes and a node rule on that node only, the views' contents, a restarted rproxy restores only its own rules, pause / resume / delete, undo when one node fails
 
 ## Not yet tested
 

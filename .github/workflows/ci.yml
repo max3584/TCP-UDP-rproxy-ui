@@ -142,3 +142,106 @@ jobs:
       - name: rproxy-api log
         if: always()
         run: cat "$RUNNER_TEMP/rproxy.log" || true
+
+  # 複数のノード（#98）：rproxy-api を 2 台（それぞれ別のコンテナ。同じ待ち受けを両方で使えるように）動かし、
+  # ノードごとのデータベースのビュー（db/node-view.mjs）から起動時に自分のルールだけを戻すことを確かめる
+  e2e-nodes:
+    name: e2e (two rproxy nodes + group)
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: rproxy_e2e
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: rproxy_e2e
+      DB_USER: root
+      DB_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pick rproxy-api ref
+        id: rproxy
+        run: |
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          if git ls-remote --exit-code --heads https://github.com/max3584/rproxy-api.git "$branch" >/dev/null; then
+            echo "ref=$branch" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=master" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: max3584/rproxy-api
+          ref: ${{ steps.rproxy.outputs.ref }}
+          path: rproxy-api
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rproxy-api
+      - name: build rproxy-api (${{ steps.rproxy.outputs.ref }})
+        run: cargo build --manifest-path rproxy-api/Cargo.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: create tables from db/schema.sql
+        run: docker exec -i ${{ job.services.mariadb.id }} mariadb -uroot -proot rproxy_e2e < db/schema.sql
+
+      - name: create the per-node databases and views (db/node-view.mjs)
+        run: |
+          for n in n1 n2; do
+            node db/node-view.mjs "$n" --database rproxy_e2e --host '%' --password "pw-$n"
+          done | tee /dev/stderr | docker exec -i ${{ job.services.mariadb.id }} mariadb -uroot -proot
+
+      - name: start two rproxy-api nodes (Unix sockets)
+        run: |
+          for n in n1 n2; do
+            mkdir -p "$RUNNER_TEMP/$n"
+            echo "token-$n" > "$RUNNER_TEMP/$n/tokens"
+            docker run -d --name "rproxy-$n" --user "$(id -u):$(id -g)" --add-host=host.docker.internal:host-gateway \
+              -v "$PWD/rproxy-api/target/debug/rproxy-api:/usr/local/bin/rproxy-api:ro" -v "$RUNNER_TEMP/$n:/run/rproxy" \
+              -e RPROXY_API_PORT=0 -e RPROXY_API_SOCKET=/run/rproxy/api.sock -e RPROXY_TOKEN_FILE=/run/rproxy/tokens \
+              -e RPROXY_DATABASE_URL="mysql://rproxy_$n:pw-$n@host.docker.internal:3306/rproxy_node_$n" \
+              ubuntu:24.04 rproxy-api
+          done
+          cat > "$RUNNER_TEMP/nodes.yaml" <<YAML
+          nodes:
+            - name: n1
+              url: unix:$RUNNER_TEMP/n1/api.sock
+              token_file: $RUNNER_TEMP/n1/tokens
+            - name: n2
+              url: unix:$RUNNER_TEMP/n2/api.sock
+              token_file: $RUNNER_TEMP/n2/tokens
+          groups:
+            - name: ha
+              nodes: [n1, n2]
+              mode: active_standby
+          YAML
+          echo "RPROXY_UI_NODES=$RUNNER_TEMP/nodes.yaml" >> "$GITHUB_ENV"
+          for n in n1 n2; do
+            ok=
+            for i in $(seq 1 30); do
+              if curl -sf --unix-socket "$RUNNER_TEMP/$n/api.sock" http://localhost/healthz; then ok=1; break; fi
+              sleep 1
+            done
+            if [ -z "$ok" ]; then docker logs "rproxy-$n"; exit 1; fi
+          done
+
+      - name: e2e tests (nodes)
+        run: RUN_E2E_NODES=1 E2E_NODE_CONTAINERS=n1=rproxy-n1,n2=rproxy-n2 npx vitest run tests/e2e-nodes.test.ts
+
+      - name: rproxy-api logs
+        if: always()
+        run: |
+          docker logs rproxy-n1 || true
+          docker logs rproxy-n2 || true

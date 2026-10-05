@@ -1,7 +1,7 @@
 // ダッシュボードと詳細画面で共通の小さな部品（状態のバッジ、エラーのバナー、確認ダイアログ、自動更新）
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { CertState, ForwardRule, ForwardRules, RuleState } from './lib';
+import type { CertState, ForwardRule, ForwardRules, NodeLiveState, NodesInfo, RuleState } from './lib';
 import { RuleKey, STATE_LABELS, ruleApiUrl, tlsLabel } from './dashboard';
 import { explainError } from './messages';
 import { localeTag } from '@/i18n/core';
@@ -45,6 +45,49 @@ export const CertBadge: React.FC<{ state: CertState | null }> = ({ state }) => {
   if (state === 'expiring') return <span className="badge bg-amber-100 text-amber-900" title="期限が近い証明書があります">証明書 期限間近</span>;
   return null;
 };
+
+// ルールを置くノード／グループ（ノードが 2 つ以上のときだけ出す。#98）
+export const TargetBadge: React.FC<{ target: string | undefined }> = ({ target }) => (
+  target === undefined ? null : (
+    <span className="badge bg-teal-50 text-teal-900 border border-teal-300" title={`ノード／グループ: ${target}`}>
+      <span className="font-mono">{target}</span>
+    </span>
+  )
+);
+
+// ノードごとの状態（グループのルールでは全員分）。ノードが 2 つ以上のときだけ出す
+export const NodeStates: React.FC<{ nodes: NodeLiveState[] | undefined }> = ({ nodes }) => (
+  !nodes || nodes.length === 0 ? null : (
+    <ul className="flex flex-wrap gap-2" aria-label="ノードごとの状態">
+      {nodes.map((n) => (
+        <li key={n.node} className="inline-flex items-center gap-1 text-xs text-gray-800" title={n.error ?? undefined}>
+          <span className="font-mono">{n.node}</span>
+          <StateBadge state={n.state} />
+        </li>
+      ))}
+    </ul>
+  )
+);
+
+// GET /api/forward/nodes（ノードとグループ）。読めなければ null（1 台として扱う）
+export function useNodes(): NodesInfo | null {
+  const [info, setInfo] = useState<NodesInfo | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/forward/nodes');
+        if (!res.ok) return;
+        const data = await res.json() as NodesInfo;
+        if (!cancelled && Array.isArray(data?.nodes)) setInfo(data);
+      } catch {
+        // 読めなければノードの表示を出さないだけ
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return info;
+}
 
 // allow_from で送信元を絞っているルール
 export const AllowFromBadge: React.FC<{ allowFrom: string[] }> = ({ allowFrom }) => (

@@ -25,6 +25,8 @@ export interface HistoryEntry {
   protocol: string;
   srcAddr: string;
   srcPort: number;
+  // ノード／グループ（RPROXY_UI_NODES でノードを設定したときだけ）
+  target?: string;
   rule: ForwardRule | null;
   // 同じルールの 1 つ前の版との違い（最初の版、または読めないときは空）
   changes: string[];
@@ -43,6 +45,7 @@ export interface HistoryFilter {
   protocol?: string;
   addr?: string;
   port?: number;
+  target?: string;
   user?: string;
   action?: HistoryAction;
   // YYYY-MM-DD（その日を含む）

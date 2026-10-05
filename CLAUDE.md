@@ -39,9 +39,10 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 - DB の接続プールは、開発モードでは `globalThis` に置いて使い回す（読み直しのたびにプールが増えて Too many connections になるのを防ぐ）。
 
 - パッケージマネージャは npm だけ（`package-lock.json`）。CI・.deb の作成・Renovate もこれを使う。ほかのロックファイル（`pnpm-lock.yaml` など）は足さない（Renovate が「複数の npm のロックファイル」の警告を出す）。
-- 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`。
+- 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`（複数の rproxy なら代わりに `RPROXY_UI_NODES`）。
 - import のパスエイリアスは `@/`（リポジトリのルート）。vitest でも `vitest.config.mts` で同じエイリアスを設定している。
 - テストは MariaDB・rproxy・NextAuth をすべてモックする（`tests/forward.test.ts`）。実際の DB や rproxy は不要。
+- 複数のノードの E2E（`tests/e2e-nodes.test.ts`、CI の `e2e-nodes`）は rproxy-api を 2 台、別々のコンテナ（同じ待ち受けを両方で使うため。制御 API は Unix ソケット）で動かし、ノードごとのビューから戻すことまで確かめる。
 - 画面操作の E2E（`tests/ui`、Playwright）は CI の e2e ジョブで本物の MariaDB と rproxy-api を相手に動く。サインインは Keycloak を通さず、テスト用の `NEXTAUTH_SECRET` で作ったセッションのクッキー（`tests/ui/global-setup.ts`）。ライト・ダークで白地に白文字がないことも確かめる。画面の文言やボタン名を変えたら `tests/ui` も直す。
 - README のスクリーンショット（`scripts/screenshots/`、`npm run screenshots`）は通常の E2E とは別の Playwright の設定で、3197 番（`SCREENSHOTS_PORT`）で `next start` し、画面が呼ぶ `/api/forward/*` をブラウザの中で `sample-data.ts` のデータに差し替える（本番のコードにモックは入れない。DB・rproxy・Keycloak は不要）。データは文書用のアドレス（192.0.2.0/24・198.51.100.0/24・2001:db8::/32）と example.com だけ。PNG は next が入れる sharp があれば 256 色に減らす。画面を大きく変えたら撮り直し、画像を目で確かめる。
 
@@ -61,9 +62,13 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/tls.ts` | TLS / STARTTLS / ポート範囲 / allow_from / unmatched の正規化と検証、DB の `options` 列の読み書き。画面と API route の両方で使う |
 | `components/cidr.ts` | allow_from の CIDR / 単一 IP の検証と正規化（rproxy の `src/cidr.rs` と同じ規則。Node の `net` を使わないので画面でも使える） |
 | `components/lib.ts` | 共通の型（`ForwardRule`、`TlsSpec`、`ForwardRules`、`RuleStats`、`DashboardData`、`sessionUser` など）と pino ロガー |
-| `components/rproxy.ts` | rproxy-api の HTTP クライアント。失敗時は `RproxyError`（`code`、`status`。通信失敗は `unreachable` / 0）。`RPROXY_API_URL=unix:/path` なら Unix ソケット（rproxy の `RPROXY_API_SOCKET`）に undici の `fetch` と `Agent({ connect: { socketPath } })` で接続する（`apiTarget`。TCP はグローバルの `fetch`） |
+| `components/nodes.ts` | 複数の rproxy（#98）の設定。`RPROXY_UI_NODES`（YAML / JSON）の `nodes`（name・url・token_file）と `groups`（name・nodes・mode: single / active_standby）、`default_target` を読んで確かめる（`parseNodesConfig`、誤りは `NodesConfigError`）。なければ `RPROXY_API_URL` / `RPROXY_API_TOKEN` の 1 台（`implicitConfig`、名前 `default`、`configured: false`）。グループのノード（`targetNodes`）、重なり（`targetsOverlap`）、`forward_rule_targets` の行（`membership`）、1 台に聞く問い合わせの相手（`probeNode`） |
+| `components/fanout.ts` | グループの変更を全ノードに送る `applyToNodes`（`withNode` でノードごとに実行。1 台でも失敗したら成功したノードの undo を実行して `FanoutError`（ノードごとの結果 `results`）。ノードが 1 つなら例外をそのまま投げる） |
+| `db/node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけのユーザーの SQL を出す（依存のない JS。`npm run db:node-view -- <ノード>`。.deb の db/ からも動く） |
+| `instrumentation.ts` | 起動時に `RPROXY_UI_NODES` を確かめ、誤りなら理由を出して終了する |
+| `components/rproxy.ts` | rproxy-api の HTTP クライアント。`withNode(node, fn)`（AsyncLocalStorage）の中ではそのノードの URL とトークン、外では `RPROXY_API_URL` / `RPROXY_API_TOKEN` に送る（関数の引数は 1 台のときと同じ）。失敗時は `RproxyError`（`code`、`status`。通信失敗は `unreachable` / 0）。`RPROXY_API_URL=unix:/path` なら Unix ソケット（rproxy の `RPROXY_API_SOCKET`）に undici の `fetch` と `Agent({ connect: { socketPath } })` で接続する（`apiTarget`。TCP はグローバルの `fetch`） |
 | `pages/api/auth/[...nextauth].ts` | Keycloak の設定。サインイン時にアクセストークンのロール（既定 `realm_access.roles`）を読んで JWT に保存し、セッションに `roles` と `access`（admin / user / none。画面の表示用）を入れる |
-| `pages/api/forward/[forward].ts` | `list` / `dashboard` / `rule` / `export` / `history`(GET)、`add` / `modify` / `delete` / `import` / `revert` / `pause` / `resume`(POST) のエンドポイント |
+| `pages/api/forward/[forward].ts` | `nodes` / `list` / `dashboard` / `rule` / `export` / `history`(GET)、`add` / `modify` / `delete` / `import` / `revert` / `pause` / `resume`(POST) のエンドポイント |
 | `pages/api/forward/capabilities.ts` | rproxy の `GET /capabilities` をそのまま返す |
 | `pages/api/forward/config.ts` | rproxy の設定ファイルの状態（`GET /config`）を、ダッシュボードの注意（誤り・再起動が要る変更）の形で返す（`configStatusView`）。読めない（403 / 404 / 届かない）ときは何も出さない |
 | `pages/api/forward/interfaces.ts` | rproxy の `GET /interfaces`（待ち受けアドレスの候補と、制御 API が使う予約済みのアドレス）を返す |
@@ -105,6 +110,10 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
    - 変更の PATCH には毎回 `tls`（と STARTTLS を使うなら `starttls` / `starttls_required`）と `allow_from`（空なら `[]`）を付け、丸ごと置き換える。COMMIT が失敗したときの undo も、元の転送先・TLS の設定・allow_from で PATCH する。
      `modify` の body に `allowFrom` がなければ DB の値を保つ（あれば置き換える）。追加の POST には `allow_from` が空でなければ付ける。
    - 固定ルール（rproxy の `--static-rules` のファイルのルール。`origin: "static"`）は DB にない。`modify` / `delete` で自分の行がなく、rproxy の `GET /rules/{key}` が `origin: "static"` を返したら 409 `static` を返す（rproxy も PATCH / DELETE を 409 `static` で拒否する。その場合もそのまま返す）。
+   - 複数のノード（#98。`RPROXY_UI_NODES` があるときだけ）：ルールの置き場所 `Place`（`target` とノード）を body / query の `target` で決める（追加は `target` か `default_target`、なければ 400 `target_required`。既存のルールは `target` がなければ DB で探し、同じキーが複数あれば 400 `target_required`。設定にない名前は 400 `unknown_target`）。
+     SQL は `target` 列を使い（`keyWhere`）、rproxy への反映は `onNodes`（`applyToNodes`）でグループの全ノードに送る。一部のノードで失敗したら、成功したノードを戻し、ROLLBACK し、失敗したノードの応答のステータスで `{error: "ノード X: ...", code, nodes}` を返す。成功の応答にも `nodes`。
+     同じキーをノードが重なるノード／グループに置くのは 409 `target_conflict`（`checkOverlap`。一意キーは target ごとなので UI が確かめる）。最初のリクエストで `forward_rule_targets` を設定に合わせる（`syncMembership`）。
+     `RPROXY_UI_NODES` がなければ SQL も応答も今までと同じ（`target` 列を読み書きしない。migration 006 なしで動く）。既存の単体テストがそのまま通ることで確かめている。
 5. `list` は DB のルールに rproxy の `GET /rules` の稼働状態をつけて返す（`state` は `running` / `failed` / `missing`（rproxy にない）/ `unknown`（rproxy に問い合わせできない）/ `paused`（UI で一時停止中））。
    稼働情報は `connections`、`stats`（rproxy の `{total_connections, rx_bytes, tx_bytes, tls_failures, denied, dropped, http}` をそのまま。`dropped`（UDP で rproxy が捨てたデータグラム）は v0.3.9 より前の rproxy にはない（そのときは画面に出さない）。`denied` は古い rproxy に、`http`（L7 のリクエスト数：`requests`・`by_status`・`routes`・`limited`・`blocked`）は v0.3.1 より前の rproxy と http のないルールにはない）、`startedAt`（rproxy の `started_at`、Unix 秒）、`resolved`。`missing` / `unknown` のときは null / 空配列。
    各行には `origin`（DB の行は常に `dynamic`）と `allowFrom` が付く。`list` は自分の DB のルールだけ（`rproxy-admin` はすべての利用者のルールで、`owner` が付く）。
@@ -112,8 +121,12 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
      固定ルールはシステムのルールなので、ログインしていればだれにでも見せる（ほかの利用者の `dynamic` なルールは見せない）。rproxy に接続できなければ固定ルールは出ない。ルールが 0 件でも rproxy に接続できるかがわかる。
    - `rule?protocol=&addr=&port=` は自分のルール 1 件か、DB になければ rproxy の固定ルール（キーが不正なら 400、ほかの利用者のルールや存在しないルールは 404、DB になく rproxy に問い合わせできなければ 502）。稼働状態は rproxy の `GET /rules/{protocol}/{addr}/{port}` から取る。
 
+   - 複数のノード：全ノードに `GET /rules` を聞き、各ルールに `target` とノードごとの状態 `nodes`（`NodeLiveState[]`）を付け、上の `state` などはその集計（`aggregateNodeStates`：state は悪いほう、接続数・stats は合計）。`dashboard` には `nodes`（`NodeSummary`：つながるか・ルール数・失敗数）、`reachable` はどれか 1 台に聞けたか、`rproxyError` は聞けなかったノード。固定ルールはノードごと（`target` がそのノード）。
+     画面は `useNodes()`（`GET /api/forward/nodes`）でノードが 2 つ以上のときだけ、フォームの「ノード／グループ」・一覧と詳細のノード／グループ・ダッシュボードのノードの一覧を出す（1 つなら今と同じ見た目）。詳細・変更の URL は `?target=` を付ける（`ruleHref`）。
+     ノードごとのタブ・ずれの検出と送り直し・ノードごとの上書き・コピー／移動・ノード単位の停止とエクスポート・ノードに限ったロールは後の段階（#98）。
+
 HTTP の取り決めは `../rproxy-api/docs/API.md` が正。変更するときは両方のリポジトリを揃えること。
-rproxy は起動時に `forward_rules` を読んでルールを復元する（読む列は `db/README.md` を参照）。
+rproxy は起動時に `forward_rules` を読んでルールを復元する（読む列は `db/README.md` を参照）。複数のノードでは、各 rproxy はノードごとのデータベースの `forward_rules` ビュー（`db/node-view.mjs`。`forward_rule_targets` で自分とグループの行に絞る）を読む。rproxy-api は変えない。
 
 ## 注意点
 
