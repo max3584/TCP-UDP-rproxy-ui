@@ -25,7 +25,7 @@ sudo apt update
 sudo apt install rproxy-api rproxy-ui
 ```
 
-- rproxy-ui requires Node.js 20.18.1 or later. On Ubuntu 24.04, install nodejs (22, for example) from [NodeSource](https://github.com/nodesource/distributions) first.
+- rproxy-ui requires Node.js 22.19.0 or later. On Debian 13 (standard: 20) and Ubuntu 24.04 (standard: 18), install nodejs (22 or 24) from [NodeSource](https://github.com/nodesource/distributions) first.
 - If rproxy-api is installed first, installing rproxy-ui puts rproxy-api's token and the control API URL into `/etc/rproxy-ui/rproxy-ui.env`.
 - Neither starts just by being installed.
 - For permissions (capabilities, file ownership), see rproxy-api's [docs/PERMISSIONS.md](https://github.com/max3584/rproxy-api/blob/master/docs/PERMISSIONS.md).

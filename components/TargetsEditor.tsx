@@ -19,9 +19,9 @@ interface Props {
   error: string;
 }
 
-const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
-const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 max-lg:min-h-11 max-lg:min-w-11';
-const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
+const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
+const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded-sm text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 max-lg:min-h-11 max-lg:min-w-11';
+const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 const labelClass = 'block text-sm font-medium text-gray-800 mb-1';
 const helpClass = 'mt-1 text-xs text-gray-600';
 
@@ -39,7 +39,7 @@ const TargetsEditor: React.FC<Props> = ({
         <legend className={labelClass}>宛先{range ? '（ポートは範囲の先頭）' : ''}:</legend>
         <ol className="space-y-2">
           {rows.map((r, i) => (
-            <li key={i} className="border border-gray-200 rounded p-2 bg-gray-50">
+            <li key={i} className="border border-gray-200 rounded-sm p-2 bg-gray-50">
               <div className="flex flex-wrap items-end gap-2">
                 <span className="text-sm text-gray-700 w-6" aria-hidden="true">{i + 1}.</span>
                 <div className="flex-1 basis-full sm:basis-0 min-w-40">

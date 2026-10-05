@@ -88,7 +88,7 @@ const HistoryList: React.FC<{
     <div data-testid="history-list">
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
       {notice && (
-        <p role="status" className="mb-3 rounded border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-900">{notice}</p>
+        <p role="status" className="mb-3 rounded-sm border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-900">{notice}</p>
       )}
       {data === null ? (
         !error && <p className="text-gray-700 text-sm">読み込み中…</p>

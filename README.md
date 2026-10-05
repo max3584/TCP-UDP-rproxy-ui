@@ -3,7 +3,7 @@
 [![CI](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/max3584/TCP-UDP-rproxy-ui)](https://github.com/max3584/TCP-UDP-rproxy-ui/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20.18.1-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.19.0-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://github.com/max3584/TCP-UDP-rproxy-ui/issues?q=is%3Aissue+is%3Aopen+%22Dependency+Dashboard%22)
 
 English: [README.en.md](README.en.md)
@@ -26,7 +26,7 @@ English: [README.en.md](README.en.md)
 ## インストール（Debian / Ubuntu）
 
 rproxy-api と同じ apt リポジトリから入れられる（`rproxy-ui`、CPU を問わない 1 つのパッケージ）。
-Node.js 20.18.1 以上が要る（Next.js 16 は 20.9、Unix ソケットに使う undici 7 は 20.18.1 から）。Debian 13 は標準の `nodejs` でよい。Ubuntu 24.04 の標準の nodejs は 18 なので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 など）を入れる。
+Node.js 22.19.0 以上が要る（Next.js 16 は 20.9、Unix ソケットに使う undici 8 は 22.19.0 から）。Debian 13 の標準の nodejs は 20、Ubuntu 24.04 は 18 なので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs（22 か 24）を入れる。
 
 ```shell
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg

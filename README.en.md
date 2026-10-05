@@ -3,7 +3,7 @@
 [![CI](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/max3584/TCP-UDP-rproxy-ui)](https://github.com/max3584/TCP-UDP-rproxy-ui/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20.18.1-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.19.0-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://github.com/max3584/TCP-UDP-rproxy-ui/issues?q=is%3Aissue+is%3Aopen+%22Dependency+Dashboard%22)
 
 日本語: [README.md](README.md)
@@ -26,7 +26,7 @@ The data is documentation sample data (192.0.2.0/24, 198.51.100.0/24, 2001:db8::
 ## Installation (Debian / Ubuntu)
 
 It can be installed from the same apt repository as rproxy-api (`rproxy-ui`, a single package for any CPU).
-Node.js 20.18.1 or later is required (Next.js 16 needs 20.9, and undici 7, used for Unix sockets, needs 20.18.1). On Debian 13 the standard `nodejs` is fine. Ubuntu 24.04's standard nodejs is 18, so install nodejs (22, for example) from [NodeSource](https://github.com/nodesource/distributions) first.
+Node.js 22.19.0 or later is required (Next.js 16 needs 20.9, and undici 8, used for Unix sockets, needs 22.19.0). Debian 13's standard nodejs is 20 and Ubuntu 24.04's is 18, so install nodejs (22 or 24) from [NodeSource](https://github.com/nodesource/distributions) first.
 
 ```shell
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg

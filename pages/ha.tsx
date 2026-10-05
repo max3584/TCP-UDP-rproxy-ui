@@ -110,7 +110,7 @@ const HaPage: React.FC = () => {
         <button type="button" className="btn-secondary" onClick={() => void load()}>今すぐ更新</button>
       </div>
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
-      {notice && <p role="status" className="rounded border border-green-300 bg-green-50 px-4 py-2 text-sm text-green-900">{notice}</p>}
+      {notice && <p role="status" className="rounded-sm border border-green-300 bg-green-50 px-4 py-2 text-sm text-green-900">{notice}</p>}
       {groups === null && !error && <p className="text-gray-700">読み込み中…</p>}
       {groups !== null && groups.length === 0 && (
         <div className="card p-4 text-sm text-gray-900">active_standby のグループはありません（RPROXY_UI_NODES の groups に mode: active_standby を書きます）。</div>

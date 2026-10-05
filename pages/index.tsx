@@ -106,7 +106,7 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
         <ul className="text-sm space-y-1 min-w-0">
           {RULE_STATES.map((s) => (
             <li key={s} className="flex items-center gap-2 text-gray-800">
-              <span aria-hidden="true" className="inline-block h-3 w-3 rounded-sm" style={{ background: STATE_COLORS[s] }} />
+              <span aria-hidden="true" className="inline-block h-3 w-3 rounded-xs" style={{ background: STATE_COLORS[s] }} />
               <span className="w-16 shrink-0">{STATE_LABELS[s]}</span>
               <span className="font-semibold tabular-nums text-gray-900">{summary.counts[s]}</span>
               <span className="text-xs text-gray-600 tabular-nums">{pct(summary.counts[s])}%</span>
@@ -229,7 +229,7 @@ const TlsCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => {
     <section className="card p-4" aria-labelledby="card-tls">
       <h2 id="card-tls" className="card-title mb-3">TLS / DTLS</h2>
       <div
-        className="flex h-3 w-full overflow-hidden rounded bg-gray-200"
+        className="flex h-3 w-full overflow-hidden rounded-sm bg-gray-200"
         role="img"
         aria-label={joinList(TLS_SEGMENTS.map((s) => `${s.label} ${b[s.key]}`))}
       >
@@ -240,7 +240,7 @@ const TlsCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => {
       <ul className="mt-3 text-sm space-y-1">
         {TLS_SEGMENTS.map((s) => (
           <li key={s.key} className="flex items-center gap-2 text-gray-800">
-            <span aria-hidden="true" className="inline-block h-3 w-3 rounded-sm" style={{ background: s.color }} />
+            <span aria-hidden="true" className="inline-block h-3 w-3 rounded-xs" style={{ background: s.color }} />
             <span className="flex-1">{s.label}</span>
             <span className="font-semibold tabular-nums text-gray-900">{b[s.key]}</span>
           </li>
@@ -317,7 +317,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; showTarget: boo
   const router = useRouter();
   const [filter, setFilter] = useState<RuleFilter>(EMPTY_FILTER);
   const shown = useMemo(() => filterRules(rules, filter), [rules, filter]);
-  const controlClass = 'border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+  const controlClass = 'border border-gray-300 rounded-sm px-2 py-1 text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
 
   return (
     <section className="card" aria-labelledby="card-rules">
@@ -441,7 +441,7 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; showTarget: boo
 
 // rproxy の設定ファイル（RPROXY_CONFIG）に誤りがある・再起動が要る変更があるときの注意
 const ConfigStatusNotice: React.FC<{ status: ConfigStatusView }> = ({ status }) => (
-  <div role="status" data-testid="config-status" className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-4 py-3 text-sm space-y-1">
+  <div role="status" data-testid="config-status" className="rounded-sm border border-amber-300 bg-amber-50 text-amber-900 px-4 py-3 text-sm space-y-1">
     <p className="font-semibold">rproxy の設定ファイル{status.path ? <>（<span className="font-mono">{status.path}</span>）</> : ''}</p>
     {status.error && (
       <p>最新の内容を反映できませんでした（それまでの内容で動いています）：<span className="font-mono break-all">{status.error}</span></p>
@@ -557,7 +557,7 @@ const DashboardPage: React.FC = () => {
           {/* 自分のルール（rproxy-admin はすべての利用者のルール）を rproxy の設定ファイルと同じ形で書き出す */}
           {manyNodes && (
             // ノード単位のエクスポート（#98。そのノード／グループに置いたルールだけ）
-            <select aria-label="エクスポートする範囲" className="border border-gray-300 rounded px-2 py-1 text-sm bg-white text-gray-900 max-lg:min-h-11"
+            <select aria-label="エクスポートする範囲" className="border border-gray-300 rounded-sm px-2 py-1 text-sm bg-white text-gray-900 max-lg:min-h-11"
               value={exportTarget} onChange={(e) => setExportTarget(e.target.value)} data-testid="export-target">
               <option value="">すべて</option>
               {nodesInfo && targetChoices(nodesInfo).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
@@ -574,7 +574,7 @@ const DashboardPage: React.FC = () => {
       {configStatus?.show && <ConfigStatusNotice status={configStatus} />}
       {haSyncWarnings(data?.haSync).length > 0 && (
         // act/stb の自動の送り直しが続けて失敗している（#109）
-        <div role="status" data-testid="ha-sync-warning" className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-4 py-3 text-sm space-y-1">
+        <div role="status" data-testid="ha-sync-warning" className="rounded-sm border border-amber-300 bg-amber-50 text-amber-900 px-4 py-3 text-sm space-y-1">
           <p className="font-semibold">stb を DB の定義に揃える自動の送り直しが、続けて失敗しています（昇格したときに古い設定で動くおそれがあります）。</p>
           <ul>
             {haSyncWarnings(data?.haSync).map((f) => (
