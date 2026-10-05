@@ -31,7 +31,7 @@ sudo grep -qx 'RPROXY_API_TOKEN=from-rproxy-token' $ENV_FILE || fail "rproxy tok
 sudo grep -qx 'RPROXY_API_URL=http://127.0.0.1:8099' $ENV_FILE || fail "rproxy URL not picked up"
 ! systemctl is-active --quiet rproxy-ui || fail "started before it was configured"
 ex=/usr/share/doc/rproxy-ui/examples/keepalived
-[ -x $ex/rproxy-ui-ready.sh ] && [ -x $ex/rproxy-ui-notify.sh ] && [ -f $ex/keepalived.conf.example ] || fail "keepalived examples not installed"
+if [ ! -x $ex/rproxy-ui-ready.sh ] || [ ! -x $ex/rproxy-ui-notify.sh ] || [ ! -f $ex/keepalived.conf.example ]; then fail "keepalived examples not installed"; fi
 secret=$(sudo sed -n 's/^NEXTAUTH_SECRET=//p' $ENV_FILE)
 
 echo "== start"
