@@ -31,7 +31,7 @@ const Sidebar: React.FC<{ open: boolean; onNavigate: () => void }> = ({ open, on
                 href={item.href}
                 aria-current={active ? 'page' : undefined}
                 onClick={onNavigate}
-                className={`block px-4 py-3 lg:py-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                className={`block px-4 py-3 lg:py-2 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-400 ${
                   active ? 'bg-gray-600 text-white font-semibold' : 'text-gray-200 hover:bg-gray-700 hover:text-white'
                 }`}
               >

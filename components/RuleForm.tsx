@@ -172,9 +172,9 @@ const EMPTY_ERRORS: FieldErrors = {
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
 
-const inputClass = 'border border-gray-300 rounded px-2 py-1 w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
-const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
-const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
+const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
+const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded-sm text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
+const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 
 // UDP の sni（DTLS・QUIC のサーバ名での振り分け）の注意（rproxy-api の docs/API.md「UDP のサーバ名での振り分け」）
 export const UDP_SNI_NOTES = [
@@ -613,7 +613,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   };
 
   const tabClass = (tab: TabId): string => {
-    const base = 'shrink-0 whitespace-nowrap px-3 py-2 max-lg:min-h-11 text-sm border-b-2 focus:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-blue-500';
+    const base = 'shrink-0 whitespace-nowrap px-3 py-2 max-lg:min-h-11 text-sm border-b-2 focus:outline-hidden focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-blue-500';
     if (tab === activeTab) return `${base} border-blue-600 text-blue-700 font-semibold bg-white`;
     if (tabDisabled(tab)) return `${base} border-transparent text-gray-400`;
     return `${base} border-transparent text-gray-700 hover:text-gray-900`;
@@ -625,7 +625,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     'aria-labelledby': `rule-tab-${tab}`,
     hidden: activeTab !== tab,
     tabIndex: 0,
-    className: 'pt-4 focus:outline-none',
+    className: 'pt-4 focus:outline-hidden',
   });
 
   const labelClass = 'block text-sm font-medium text-gray-800 mb-1';
@@ -699,7 +699,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               ))}
             </select>
             {profile && (
-              <p className="mt-1 text-xs text-gray-800 bg-yellow-50 border border-yellow-300 rounded px-2 py-1">
+              <p className="mt-1 text-xs text-gray-800 bg-yellow-50 border border-yellow-300 rounded-sm px-2 py-1">
                 {profile.description}
                 <br />
                 アドレスと証明書のパスは環境に合わせて入力してください（ほかのタブの項目も設定されます）。
@@ -851,7 +851,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           </div>
         </div>
         {http3Conflicts.length > 0 && (
-          <p className="-mt-3 mb-4 text-xs rounded border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1" data-testid="http3-conflict">
+          <p className="-mt-3 mb-4 text-xs rounded-sm border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1" data-testid="http3-conflict">
             {protocol === 'udp'
               ? `同じアドレス・ポートで HTTP/3（QUIC）を受ける L7 のルールがあります（${joinList(http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`))}）。UDP の同じポートは併用できないので、rproxy に断られます。L7 のルールの HTTP/3 を外すか、別のポートを選んでください。`
               : `同じアドレス・ポートの UDP のルールがあります（${joinList(http3Conflicts.map((r) => `${r.protocol} ${hostPort(r.srcAddr, r.srcPort)}`))}）。HTTP/3（QUIC）は同じポートの UDP を使うので、HTTP/3 を有効にすると rproxy に断られます。`}
@@ -882,7 +882,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           </div>
         )}
         {l7 ? (
-          <p className="mb-4 text-sm text-gray-900 bg-blue-50 border border-blue-300 rounded px-3 py-2" data-testid="http-rule-note">
+          <p className="mb-4 text-sm text-gray-900 bg-blue-50 border border-blue-300 rounded-sm px-3 py-2" data-testid="http-rule-note">
             このルールは L7（HTTP）のルールです。転送先は「L7 (HTTP)」タブのルートとサービスで決まります。
             <button type="button" className="ml-1 text-blue-700 underline" onClick={() => setActiveTab('http')}>L7 の設定を開く</button>
           </p>
@@ -955,7 +955,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         {l7 && (
           <>
             {caps.features === null && (
-              <p className="mb-3 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1">
+              <p className="mb-3 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-sm px-2 py-1">
                 rproxy から使える L7 の機能（features）を取得できませんでした。すべての項目を出していますが、rproxy が対応していない項目は保存時に断られます。
               </p>
             )}
@@ -987,7 +987,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             <p className="text-xs text-yellow-800 mt-1">WebRTC のメディアには使えません（DTLS-SRTP の鍵がブラウザとメディアサーバの間で結びついているため）。</p>
           )}
           {protocol === 'udp' && tlsMode === 'sni' && (
-            <div className="mt-1 text-xs rounded border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1 space-y-1" data-testid="udp-sni-notes">
+            <div className="mt-1 text-xs rounded-sm border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1 space-y-1" data-testid="udp-sni-notes">
               {UDP_SNI_NOTES.map((n) => <p key={n}>{n}</p>)}
             </div>
           )}
@@ -1017,7 +1017,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
                   className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
                 <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
-                  className="border border-gray-300 rounded px-2 py-1 sm:w-28 max-lg:min-h-11" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
+                  className="border border-gray-300 rounded-sm px-2 py-1 sm:w-28 max-lg:min-h-11" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
                 {tlsMode === 'terminate' && (
                   <label className="flex items-center gap-1 text-sm text-gray-900 whitespace-nowrap">
                     <input type="checkbox" checked={l7 || r.passthrough} disabled={l7}
@@ -1056,7 +1056,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               <legend className={labelClass}>証明書（PEM。複数あれば SNI で選び、一致しなければ先頭を使う）:</legend>
               {certificates.map((c, i) => (c.acme !== undefined ? (
                 // ACME の証明書（v0.3）はフォームでは編集できない。削除はできる
-                <div key={i} className="border border-gray-300 rounded p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
+                <div key={i} className="border border-gray-300 rounded-sm p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
                   <div className="flex justify-between items-center mb-1">
                     <span className="text-sm font-semibold text-gray-800">証明書 {i + 1}（ACME）</span>
                     <button type="button" onClick={() => setCertificates(certificates.filter((_, j) => j !== i))} className={removeButtonClass}
@@ -1067,7 +1067,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                   <p className="mt-1 text-xs text-amber-900" data-testid="acme-note">{ACME_UNSUPPORTED_NOTE}</p>
                 </div>
               ) : (
-                <div key={i} className="border border-gray-300 rounded p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
+                <div key={i} className="border border-gray-300 rounded-sm p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-sm font-semibold text-gray-800">証明書 {i + 1}</span>
                     <button type="button" onClick={() => setCertificates(certificates.filter((_, j) => j !== i))} className={removeButtonClass}
@@ -1241,7 +1241,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             <p
               id="rule-source-ip-hint"
               className={sourceIpHint.kind === 'selected'
-                ? 'text-xs mt-1 rounded border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1'
+                ? 'text-xs mt-1 rounded-sm border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1'
                 : 'text-xs mt-1 text-gray-700'}
             >
               {sourceIpHint.message}

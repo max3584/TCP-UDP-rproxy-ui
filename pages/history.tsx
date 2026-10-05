@@ -6,7 +6,7 @@ import HistoryList from '@/components/HistoryList';
 import { ACTION_LABELS, HISTORY_ACTIONS, HistoryAction, HistoryFilter, historyQuery, isDate } from '@/components/history';
 import type { sessionUser } from '@/components/lib';
 
-const inputClass = 'border border-gray-400 rounded px-2 py-1 text-sm bg-white text-gray-900 max-sm:w-full max-lg:min-h-11';
+const inputClass = 'border border-gray-400 rounded-sm px-2 py-1 text-sm bg-white text-gray-900 max-sm:w-full max-lg:min-h-11';
 
 const HistoryPage: React.FC = () => {
   const { data: session } = useSession();
