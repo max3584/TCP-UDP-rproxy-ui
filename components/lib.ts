@@ -314,7 +314,7 @@ export interface NodesInfo {
   // RPROXY_UI_NODES を使っているか
   configured: boolean;
   nodes: { name: string }[];
-  groups: { name: string; mode: GroupMode; nodes: string[]; vips?: string[] }[];
+  groups: { name: string; mode: GroupMode; nodes: string[]; vips?: string[]; autoResend?: boolean }[];
   // 追加の画面で最初に選ぶノード／グループ。null なら選んでもらう
   defaultTarget: string | null;
   // 利用者が使えるノード／グループ（RPROXY_UI_USER_NODES で絞ったときだけ。admin には付かない）
@@ -335,6 +335,38 @@ export interface DashboardData {
   nodes?: NodeSummary[];
   // vip を設定した active_standby のグループの act
   groups?: GroupHa[];
+  // act/stb の自動の送り直しの状態（#109。active_standby のグループがあるときだけ）
+  haSync?: HaSyncStatus;
+}
+
+// 自動の送り直しで、続けて失敗しているもの
+export interface HaSyncFailure {
+  node: string;
+  target: string;
+  // protocol|addr|port
+  key: string;
+  count: number;
+  error: string;
+  since: string;
+}
+
+export interface HaSyncStatus {
+  // 自動の送り直しの間隔（秒）。0 なら止めている
+  intervalSecs: number;
+  // このプロセスで最後に調べた時刻（ISO 8601）。まだなら null
+  lastRun: string | null;
+  // このプロセスで続けて失敗しているもの（count が多い順）
+  failures: HaSyncFailure[];
+}
+
+// 1 つのノードが昇格してよいか（GET /api/forward/ha/ready と act/stb の画面）
+export interface NodeReadiness {
+  node: string;
+  ready: boolean;
+  // 調べたルールの数（そのノードを含む active_standby のグループのルール）
+  checked: number;
+  // 揃っていないもの（state は missing / drift / unknown（ノードに問い合わせできない））
+  issues: { target: string; key: string; state: 'missing' | 'drift' | 'unknown'; fields?: string[]; error?: string }[];
 }
 
 export interface PageAuthrized {

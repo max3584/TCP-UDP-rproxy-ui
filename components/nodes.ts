@@ -32,6 +32,8 @@ export interface GroupConfig {
   mode: GroupMode;
   // active_standby の VIP（keepalived などが付け外しするアドレス）。空ならルールの待ち受けアドレス（特定のアドレスのとき）で判定する
   vips: string[];
+  // active_standby で、ずれたノードに UI が自動で送り直すか（既定 true。false ならずれの表示だけ。#109）
+  autoResend: boolean;
 }
 
 export interface NodesConfig {
@@ -52,7 +54,7 @@ export class NodesConfigError extends Error {
 
 const TOP_KEYS = ['nodes', 'groups', 'default_target'];
 const NODE_KEYS = ['name', 'url', 'token_file'];
-const GROUP_KEYS = ['name', 'nodes', 'mode', 'vip'];
+const GROUP_KEYS = ['name', 'nodes', 'mode', 'vip', 'auto_resend'];
 
 // IPv6 は rproxy の GET /interfaces と同じ圧縮表記（小文字）に揃える
 export function normalizeIp(addr: string): string {
@@ -147,7 +149,8 @@ export function parseNodesConfig(text: string, readToken: (path: string) => stri
       return normalizeIp(v.trim());
     });
     if (vips.length > 0 && mode !== 'active_standby') throw new NodesConfigError(`${where}.vip は active_standby のグループにだけ書けます。`);
-    return { name: name, nodes: members, mode: mode as GroupMode, vips: vips };
+    if (raw.auto_resend !== undefined && typeof raw.auto_resend !== 'boolean') throw new NodesConfigError(`${where}.auto_resend は true か false にしてください。`);
+    return { name: name, nodes: members, mode: mode as GroupMode, vips: vips, autoResend: raw.auto_resend !== false };
   });
 
   let defaultTarget: string | null = null;
@@ -246,7 +249,10 @@ export function nodesInfo(config: NodesConfig): NodesInfo {
   return {
     configured: config.configured,
     nodes: config.nodes.map((n) => ({ name: n.name })),
-    groups: config.groups.map((g) => ({ name: g.name, mode: g.mode, nodes: [...g.nodes], ...(g.vips.length > 0 ? { vips: [...g.vips] } : {}) })),
+    groups: config.groups.map((g) => ({
+      name: g.name, mode: g.mode, nodes: [...g.nodes], ...(g.vips.length > 0 ? { vips: [...g.vips] } : {}),
+      ...(g.mode === 'active_standby' ? { autoResend: g.autoResend } : {}),
+    })),
     defaultTarget: config.defaultTarget,
   };
 }

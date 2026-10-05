@@ -158,9 +158,11 @@
 - second half of `tests/forward-nodes.test.ts`: drift and act per node, resending (create when missing, PATCH on drift, nothing when equal, RESEND with the node in the history)
 - `tests/overrides.test.ts`: per-node override validation, overlaying, DB rows (JSON_MERGE_PATCH patches), round trip of the export form, the targets field, `RPROXY_UI_USER_NODES`
 - phase 3 of `tests/forward-nodes.test.ts`: overrides (that node only, recreate when the listen address changes, OVERRIDE in the history), group changes sent with each node's overrides applied, bulk pause, copy / move, node-scoped roles, overrides in export / import, last applied time
+- `tests/hasync.test.ts`: whether a node may be promoted (in sync, missing, drift, unreachable), the automatic resend (RESEND recorded by system, auto_resend: false, no history when nothing changed, counting repeated failures, the DB lock, one loop per process), the keepalived endpoints (token, 200 / 503, notify)
 - `tests/e2e-nodes.test.ts` (CI `e2e-nodes`): a group rule is created on both nodes and a node rule on that node only, the views' contents, a restarted rproxy restores only its own rules, pause / resume / delete, undo when one node fails,
   act / stb and the warnings change as the VIP is added to / removed from the containers, drift of a rule changed directly on one node and resending, a rule removed from one node shown as missing and resending,
-  per-node overrides (that node only, not drift, applied by the view and kept across a restart, exported), pausing a node (not restored by a restart), refusing a copy to an overlapping node and moving
+  per-node overrides (that node only, not drift, applied by the view and kept across a restart, exported), pausing a node (not restored by a restart), refusing a copy to an overlapping node and moving,
+  ha/ready returning 503 and back to 200 after the automatic resend (RESEND recorded by system), notify recreating rules on the promoted node at once
 
 ## Not yet tested
 

@@ -145,7 +145,7 @@ describe('nodes and groups (#98)', () => {
     expect(body).toEqual({
       configured: true,
       nodes: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
-      groups: [{ name: 'ha', mode: 'active_standby', nodes: ['a', 'b'] }],
+      groups: [{ name: 'ha', mode: 'active_standby', nodes: ['a', 'b'], autoResend: true }],
       defaultTarget: null,
     });
   });
@@ -531,5 +531,22 @@ describe('nodes and groups (#98)', () => {
     // ノードに読み込むときの overrides は使えない
     const bad = await call('import', { text: text, target: 'c', dryRun: true });
     expect(bad.body.items[0].status).toBe('error');
+  });
+
+  it('GET ha / POST ha-sync are for admins; the dashboard carries the automatic resend status', async () => {
+    expect((await call('ha', undefined, 'GET')).status).toBe(403);
+    expect((await call('ha-sync', { node: 'a' })).status).toBe(403);
+    mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, roles: ['rproxy-admin'] } });
+    pool.query.mockImplementation(async (q: string) => (q.includes('WHERE target IN') ? [row(1, 'ha')] : []));
+    mocks.listRules.mockImplementation(async () => (currentNode()?.name === 'a' ? [status(8001)] : []));
+    const { status: code, body } = await call('ha', undefined, 'GET');
+    expect(code, JSON.stringify(body)).toBe(200);
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0]).toMatchObject({ name: 'ha', autoResend: true });
+    expect(body.groups[0].readiness.map((r: any) => [r.node, r.ready])).toEqual([['a', true], ['b', false]]);
+    expect(body.haSync).toMatchObject({ intervalSecs: 30, failures: [] });
+
+    const dash = await call('dashboard', undefined, 'GET');
+    expect(dash.body.haSync).toMatchObject({ intervalSecs: 30 });
   });
 });

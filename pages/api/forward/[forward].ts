@@ -69,25 +69,10 @@ import { Access, RoleConfig, accessOf, nodesAllowed, portsAllowed, roleConfig } 
 import { toHttpRules, validateHttp } from '@/components/httpspec';
 import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
 import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
+import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
+import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
 
-// MariaDBのコネクションプールを作成
-function createPool() {
-  return mariadb.createPool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT) || 3306,
-    database: process.env.DB_DATABASE,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    connectionLimit: 10,
-  });
-}
-
-// next dev はファイルを変えるたびにこのモジュールを読み直すので、プールを使い回さないと
-// 古いプールの接続が DB に残り続ける（Too many connections になる）
-const globalForPool = globalThis as unknown as { rproxyPool?: ReturnType<typeof createPool> };
-const pool = process.env.NODE_ENV === 'development'
-  ? (globalForPool.rproxyPool ??= createPool())
-  : createPool();
+const pool = getPool();
 
 // RESEND：1 つのノードに DB の内容を送り直した（#98。node 列にそのノード）
 // OVERRIDE：ノードごとの上書きを変えた（node 列にそのノード、内容はそのノードで動かす内容）
@@ -203,10 +188,6 @@ function normalizeAddr(addr: string): string {
 
 function ruleKeyString(protocol: string, addr: string, port: number): string {
   return `${protocol.toLowerCase()}|${normalizeAddr(addr)}|${port}`;
-}
-
-function toKey(rule: ForwardRule): RproxyRuleKey {
-  return { protocol: rule.protocol, listen_addr: rule.srcAddr, listen_port: rule.srcPort };
 }
 
 function isPort(value: unknown): value is number {
@@ -396,22 +377,6 @@ async function lockedExtras(conn: PoolConnection, place: Place, key: { protocol:
   return { id: id, overrides: (await loadOverrides(conn, [id])).get(id) ?? {} };
 }
 
-// ルールの id → ノード → 上書き
-async function loadOverrides(db: Pick<PoolConnection, 'query'>, ids: number[] | null): Promise<Map<number, Overrides>> {
-  const out = new Map<number, Overrides>();
-  if (ids !== null && ids.length === 0) return out;
-  const rows = ids === null
-    ? await db.query('SELECT rule_id, node, src_addr, dist_addr, dist_port, options FROM forward_rule_overrides')
-    : await db.query(`SELECT rule_id, node, src_addr, dist_addr, dist_port, options FROM forward_rule_overrides WHERE rule_id IN (${ids.map(() => '?').join(', ')})`, ids);
-  for (const r of Array.isArray(rows) ? rows : []) {
-    const id = Number(r.rule_id);
-    const map = out.get(id) ?? {};
-    map[String(r.node)] = overrideFromRow(r);
-    out.set(id, map);
-  }
-  return out;
-}
-
 async function writeOverrides(conn: PoolConnection, id: number, overrides: Overrides): Promise<void> {
   for (const [node, ov] of Object.entries(overrides)) {
     const row = overrideRow(ov);
@@ -445,66 +410,8 @@ async function withTransaction(logger: AppLogger, fn: (conn: PoolConnection) => 
   }
 }
 
-// PATCH では tls と allow_from を毎回付けて丸ごと置き換える（allow_from の [] はすべて許可に戻す）。
-// http のルールは http を付けて L7 の設定も丸ごと置き換える。範囲と source_ip は変えられないので送らない。
-// crowdsec は有効なとき、または有効から無効にするとき（wasOn）だけ付ける（古い rproxy は知らない項目を拒否する）。
-// 宛先を複数から単一に戻すとき（wasMulti）は targets: [] も付けて、rproxy の宛先の一覧を外す。
-// 追加の待ち受けアドレスは、あるとき、またはあったものを外すとき（hadExtra）だけ付ける
-function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false, hadExtra = false): RproxyRulePatch {
-  return {
-    ...remoteFields(rule),
-    ...(wasMulti && rule.http === null && rule.targets.length === 0 ? { targets: [] } : {}),
-    ...(rule.protocol === 'udp' ? { udp_idle_secs: rule.udpIdleSecs } : {}),
-    tls: rule.tls,
-    ...starttlsFields(rule),
-    allow_from: rule.allowFrom,
-    ...(rule.crowdsec || wasOn ? { crowdsec: rule.crowdsec } : {}),
-    ...(extraAddrs(rule).length > 0 || hadExtra ? { extra_listen_addrs: extraAddrs(rule) } : {}),
-  };
-}
-
 function options(rule: ForwardRule): string | null {
-  return optionsJson(rule.tls, rule.starttls, rule.starttlsRequired, rule.allowFrom, rule.http, rule.crowdsec, {
-    targets: rule.targets,
-    balance: rule.balance,
-    healthCheck: rule.healthCheck,
-  }, extraAddrs(rule), rule.enabled !== false);
-}
-
-// UI で一時停止中か（DB にだけあり、rproxy には作らない）
-function isPaused(rule: ForwardRule): boolean {
-  return rule.enabled === false;
-}
-
-// forward_rules の行（src_port_end と options を含む）をルールにする。target 列を読んだときは target も付ける
-function fromRow(row: any): ForwardRule {
-  const opts = parseOptions(row.options);
-  return {
-    ...(row.target !== undefined && row.target !== null ? { target: String(row.target) } : {}),
-    protocol: String(row.protocol).toLowerCase() as Protocol,
-    srcAddr: row.src_addr,
-    srcPort: Number(row.src_port),
-    srcPortEnd: row.src_port_end === null || row.src_port_end === undefined ? null : Number(row.src_port_end),
-    distAddr: row.dist_addr,
-    distPort: Number(row.dist_port),
-    sourceIp: row.source_ip,
-    udpIdleSecs: Number(row.udp_idle_secs),
-    tls: opts.tls,
-    starttls: opts.starttls,
-    starttlsRequired: opts.starttlsRequired,
-    allowFrom: opts.allowFrom,
-    http: opts.http,
-    crowdsec: opts.crowdsec,
-    targets: opts.balancing.targets,
-    balance: opts.balancing.balance,
-    healthCheck: opts.balancing.healthCheck,
-    extraListenAddrs: opts.extraListenAddrs,
-    enabled: opts.enabled,
-  };
-}
-
-function isNotFound(err: unknown): boolean {
-  return err instanceof RproxyError && err.code === 'not_found';
+  return ruleOptions(rule);
 }
 
 async function insertLog(conn: PoolConnection, authId: string, place: Place, rule: ForwardRule, action: Action, node?: string): Promise<void> {
@@ -765,6 +672,8 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
     ...(admin ? { admin: true } : {}),
     nodes: [...summaries.values()],
     ...(groups.length > 0 ? { groups: groups } : {}),
+    // act/stb の自動の送り直しの状態（このプロセスのもの。#109）
+    ...(cfg.groups.some((gr) => gr.mode === 'active_standby') ? { haSync: haSyncStatus() } : {}),
   };
 }
 
@@ -1440,38 +1349,6 @@ async function listHistory(actor: Actor, query: NextApiRequest['query']): Promis
 
 // ---- 1 つのノードへの送り直し（#98 の「ずれ」） ----
 
-type ResendResult = 'added' | 'modified' | 'recreated' | 'removed' | 'unchanged';
-
-// そのノード（withNode の中）の実際のルールを DB の内容に合わせる。ずれがなければ何もしない
-async function resendOne(rule: ForwardRule): Promise<ResendResult> {
-  const key = toKey(rule);
-  let live: RproxyRuleStatus | null = null;
-  try {
-    live = await getRule(key);
-  } catch (err) {
-    if (!isNotFound(err)) throw err;
-  }
-  if (live?.origin === 'static') throw staticRuleError();
-  if (isPaused(rule)) {
-    if (!live) return 'unchanged';
-    await deleteRule(key);
-    return 'removed';
-  }
-  if (!live) {
-    await addRule(toRproxyRule(rule));
-    return 'added';
-  }
-  if (ruleDrift(rule, live).length === 0) return 'unchanged';
-  if (needsRecreateOnNode(rule, live)) {
-    await deleteRule(key);
-    await addRule(toRproxyRule(rule));
-    return 'recreated';
-  }
-  const actual = ruleFromStatus(live, 0);
-  await modifyRule(key, toRproxyPatch(rule, actual.crowdsec, actual.targets.length > 0, (actual.extraListenAddrs ?? []).length > 0));
-  return 'modified';
-}
-
 // POST /api/forward/resend {protocol, srcAddr, srcPort, target?, node}：DB の内容を、置き場所のノードのうち 1 台にだけ送り直す。
 // 自分のルール（admin ならだれのでも）だけ。履歴に RESEND（node 列にノード）を残す。
 // 送り直しは DB の内容に揃えるだけなので、COMMIT に失敗しても rproxy は戻さない（そのノードは DB と同じ内容のまま）
@@ -1885,6 +1762,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           .filter((t) => nodesAllowed(access, roles, (targetNodes(cfg, t) ?? []).map((n) => n.name)));
       }
       return res.status(200).json(info);
+    }
+    if (req.method === 'GET' && query === 'ha') {
+      // act/stb の画面（failback の確認。#109）：グループごとの act とノードごとの揃い具合。すべての利用者のルールを見るので admin だけ
+      if (access !== 'admin') return res.status(403).json({ error: 'act/stb の画面は管理者だけが使えます。', code: 'forbidden_admin' });
+      const groups = await haOverview(cfg);
+      return res.status(200).json({ groups: groups, haSync: haSyncStatus() });
+    }
+    if (req.method === 'POST' && query === 'ha-sync') {
+      // 1 つのノードを、そのノードを含む active_standby のグループの DB の定義に揃える（failback の前など。admin だけ。履歴は RESEND）
+      if (access !== 'admin') return res.status(403).json({ error: 'act/stb の画面は管理者だけが使えます。', code: 'forbidden_admin' });
+      const node = typeof req.body?.node === 'string' ? req.body.node : '';
+      if (!cfg.configured || !cfg.nodes.some((n) => n.name === node)) throw new HttpError(400, `ノード ${node} は設定にありません。`, 'unknown_node');
+      const out = await syncNode(cfg, node, { onlyAuto: false, actor: actor.id, logger: logger });
+      return res.status(200).json({ node: node, results: out.results });
     }
     if (req.method === 'GET' && query === 'list') {
       const data = await listForwardingRules(actor, logger, false);

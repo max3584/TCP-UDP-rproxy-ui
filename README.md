@@ -264,6 +264,7 @@ groups:
     nodes: [node1, node2]
     mode: active_standby             # single（既定）か active_standby
     vip: 192.0.2.10                  # active_standby の VIP（省略可。配列も可。下の「act / stb の表示」）
+    auto_resend: true                # ずれた stb に UI が自動で送り直す（既定 true。#109）
 default_target: ha                   # 追加の画面で最初に選ぶもの（省略可。ノードが 1 つなら自動）
 ```
 
@@ -276,6 +277,11 @@ default_target: ha                   # 追加の画面で最初に選ぶもの�
 - **ノードごとの上書き**：グループのルールでも、ルールの詳細のノードのタブ「このノードだけの設定（上書き）」で、待ち受けアドレス（追加の待ち受けアドレスも）・転送先（1 つか複数の宛先）・接続を許可する送信元を変え、このノードだけ一時停止できる（TLS・L7・送信元 IP の扱い・ポート範囲はグループで同じ）。保存するとそのノードにだけすぐ反映し、履歴に「ノードの上書き」（`OVERRIDE`）とノードが残る。ずれの確認と送り直しは上書きを重ねた内容で比べる。ノードごとのビューも上書きを重ねるので、rproxy を再起動しても同じ内容に戻る。エクスポートに `overrides`（UI のエクスポートだけの項目）として入り、グループに読み込むと戻る。
 - **コピー・移動**：ルールの詳細の「コピー・移動」で、ほかのノード／グループに同じルールを作る（移動は元を消す）。ノードが重なる先へのコピーは 409 `target_conflict`、重なる先への移動は元を消してから作る（作れなければ元を戻す）。上書きは先にもあるノードの分だけ引き継ぎ、ノードに置くときはそのノードの上書きをルールの内容にする。履歴は先の追加（移動なら元の削除も）。
 - **ノード単位**：ダッシュボードのノードのタブの「すべて一時停止 / すべて再開」で、そのノードのルールをまとめて止める・再開する（そのノードに置いたルールはルールごと、グループのルールはそのノードだけ）。「エクスポート」の横で範囲（ノード／グループ）を選べる。
+- **act / stb の昇格の前に揃える**（#109）：stb が act（= DB の定義）とずれたまま昇格しないように、
+  - UI が active_standby のグループを `RPROXY_UI_HA_SYNC_SECS`（既定 30 秒、0 で止める）ごとに調べ、ずれ・未登録のルールを自動で送り直す（履歴は「送り直し」、操作者は `system`）。グループに `auto_resend: false` を書くと、ずれの表示だけにする。続けて 3 回失敗したらダッシュボードに注意を出す。UI を複数動かしても、1 回の見回りは DB のロックで 1 つの UI だけが行う。
+  - keepalived と組む口（Keycloak のセッションの代わりに `RPROXY_UI_HA_TOKEN_FILE` のトークン（1 行に 1 つ）を `Authorization: Bearer` で送る。設定しなければ 404）：`GET /api/forward/ha/ready?node=`（揃っていれば 200、揃っていなければ 503 とその中身）と `POST /api/forward/ha/notify?node=&state=MASTER`（昇格した直後に、そのノードへすぐ送り直す）。
+  - スクリプトと設定の例は `contrib/keepalived/`（.deb では `/usr/share/doc/rproxy-ui/examples/keepalived/`）。track_script は 503 のときだけ優先度を下げ、UI に届かないときは何もしない（act が落ちたら、揃っていなくても昇格する）。
+  - 画面の「act / stb」（`/ha`。管理者だけ。ダッシュボードのノードの一覧から開く）で、グループの act と、ノードごとに揃っているかを確かめ、「このノードを揃える」で送り直せる。元の act に戻す（failback）手順の案内もここにある。VIP を動かすのは keepalived。
 - **ノードに限ったロール**：`RPROXY_UI_USER_NODES=node1,node2` で、`rproxy-user` が触れるノードを絞れる（グループはそのノードがすべて入っているときだけ。外は 403 `node_not_allowed`。追加の画面の選択肢も絞る）。`rproxy-admin` は制限されない。既定は制限なし。
 - 同じキー（プロトコル・アドレス・ポート）のルールは、ノードが重ならないノード／グループどうしなら別々に置ける（重なると 409 `target_conflict`）。
 - 使う前に DB に `db/migrations/006_nodes.sql`・`007_log_node.sql`（送り直しの履歴のノード）・`008_overrides.sql`（ノードごとの上書き。適用したらノードごとのビューを作り直す）を適用する（`forward_rules` と `forward_rules_log` に `target` 列、`forward_rule_targets` 表）。既存のルールは `default` に属するので、設定ファイルのノードの名前を `default` にするか、`UPDATE forward_rules SET target = 'node1' WHERE target = 'default'` で付け替える。

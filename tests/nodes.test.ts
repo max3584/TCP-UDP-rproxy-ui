@@ -49,8 +49,8 @@ describe('parseNodesConfig', () => {
       { name: 'c', url: 'https://c.example:8443' },
     ]);
     expect(cfg.groups).toEqual([
-      { name: 'ha', nodes: ['a', 'b'], mode: 'active_standby', vips: [] },
-      { name: 'all', nodes: ['c', 'a'], mode: 'single', vips: [] },
+      { name: 'ha', nodes: ['a', 'b'], mode: 'active_standby', vips: [], autoResend: true },
+      { name: 'all', nodes: ['c', 'a'], mode: 'single', vips: [], autoResend: true },
     ]);
     // ノード・グループがいくつかあれば、既定は選ばない
     expect(cfg.defaultTarget).toBeNull();

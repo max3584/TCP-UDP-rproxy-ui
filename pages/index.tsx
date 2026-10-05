@@ -31,7 +31,7 @@ import {
   summarize,
   targetLabel,
   tlsBreakdown,
-  uptimeSecs, ConfigStatusView, driftedNodes, nodeTotals, projectToNode, targetChoices } from '@/components/dashboard';
+  uptimeSecs, ConfigStatusView, driftedNodes, haSyncWarnings, nodeTotals, projectToNode, targetChoices } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
 import { joinList, localeTag, t, translate } from '@/i18n/core';
 import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
@@ -142,9 +142,10 @@ const ProtocolCard: React.FC<{ summary: ProtocolSummary; reachable: boolean }> =
 };
 
 // ノードごとの状態と通信量（#98。ノードが 2 つ以上のときの「全体」のタブ。act と stb を並べて比べる）
-const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: ForwardRules[] }> = ({ nodes, groups, rules }) => (
+const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: ForwardRules[]; haLink: boolean }> = ({ nodes, groups, rules, haLink }) => (
   <section className="card" aria-labelledby="card-nodes" data-testid="nodes-card">
     <h2 id="card-nodes" className="card-title p-4 pb-2">ノード</h2>
+    {haLink && <p className="px-4 pb-2 text-sm"><Link href="/ha" className="link">act / stb（昇格と failback）の画面</Link></p>}
     {groups.length > 0 && (
       <ul className="px-4 pb-2 text-sm text-gray-900 space-y-1" data-testid="groups-ha">
         {groups.map((g) => (
@@ -568,6 +569,18 @@ const DashboardPage: React.FC = () => {
 
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
       {configStatus?.show && <ConfigStatusNotice status={configStatus} />}
+      {haSyncWarnings(data?.haSync).length > 0 && (
+        // act/stb の自動の送り直しが続けて失敗している（#109）
+        <div role="status" data-testid="ha-sync-warning" className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-4 py-3 text-sm space-y-1">
+          <p className="font-semibold">stb を DB の定義に揃える自動の送り直しが、続けて失敗しています（昇格したときに古い設定で動くおそれがあります）。</p>
+          <ul>
+            {haSyncWarnings(data?.haSync).map((f) => (
+              <li key={`${f.node}|${f.key}`} className="break-all"><span className="font-mono">{f.node}</span> / <span className="font-mono">{f.key}</span>: {f.error}</li>
+            ))}
+          </ul>
+          <Link href="/ha" className="link">act / stb の画面へ</Link>
+        </div>
+      )}
 
       {data !== null && nodeTabs && <Tabs id="dashboard-nodes" label="ノード" tabs={nodeTabs} active={tab} onChange={setTab} />}
 
@@ -638,7 +651,7 @@ const DashboardPage: React.FC = () => {
             </div>
           )}
 
-          {manyNodes && tab === 'all' && <NodesCard nodes={nodes} groups={data.groups ?? []} rules={allRules} />}
+          {manyNodes && tab === 'all' && <NodesCard nodes={nodes} groups={data.groups ?? []} rules={allRules} haLink={data.haSync !== undefined} />}
 
           <AttentionCard rules={attention} showTarget={manyNodes} />
 

@@ -1,0 +1,37 @@
+# rproxy の act / stb（rproxy-ui #109）の keepalived の例。node1 の例（node2 は state BACKUP・priority 100・ノード名を node2 にする）。
+# VIP（192.0.2.10）は rproxy-ui の RPROXY_UI_NODES の groups[].vip と同じにする。
+# UI の URL はこのホストから届くもの（例は UI が別のホストの 10.0.0.5:3000）。トークンは RPROXY_UI_HA_TOKEN_FILE と同じものを置く。
+
+global_defs {
+    script_user root
+    enable_script_security
+}
+
+# このノードが DB の定義に揃っていなければ優先度を 30 下げる（揃っていない stb には VIP が移らない）。
+# UI に届かないときは成功として扱う（スクリプトが 0 を返す）ので、act が落ちれば stb は昇格する
+vrrp_script rproxy_ui_ready {
+    script "/usr/share/doc/rproxy-ui/examples/keepalived/rproxy-ui-ready.sh node1 http://10.0.0.5:3000 /etc/keepalived/rproxy-ui-ha.token"
+    interval 10
+    timeout 5
+    fall 2
+    rise 1
+    weight -30
+}
+
+vrrp_instance rproxy {
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 110
+    advert_int 1
+    # 元の act に自動で戻したくなければ nopreempt（state は両方 BACKUP にする）
+    # nopreempt
+    virtual_ipaddress {
+        192.0.2.10/24
+    }
+    track_script {
+        rproxy_ui_ready
+    }
+    # 昇格した直後に、UI にこのノードへすぐ送り直させる（UI に届かなくても昇格は止めない）
+    notify_master "/usr/share/doc/rproxy-ui/examples/keepalived/rproxy-ui-notify.sh node1 http://10.0.0.5:3000 /etc/keepalived/rproxy-ui-ha.token"
+}

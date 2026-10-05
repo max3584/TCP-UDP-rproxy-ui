@@ -30,6 +30,8 @@ sudo grep -Eq '^NEXTAUTH_SECRET=[0-9a-f]{64}$' $ENV_FILE || fail "NEXTAUTH_SECRE
 sudo grep -qx 'RPROXY_API_TOKEN=from-rproxy-token' $ENV_FILE || fail "rproxy token not picked up"
 sudo grep -qx 'RPROXY_API_URL=http://127.0.0.1:8099' $ENV_FILE || fail "rproxy URL not picked up"
 ! systemctl is-active --quiet rproxy-ui || fail "started before it was configured"
+ex=/usr/share/doc/rproxy-ui/examples/keepalived
+if [ ! -x $ex/rproxy-ui-ready.sh ] || [ ! -x $ex/rproxy-ui-notify.sh ] || [ ! -f $ex/keepalived.conf.example ]; then fail "keepalived examples not installed"; fi
 secret=$(sudo sed -n 's/^NEXTAUTH_SECRET=//p' $ENV_FILE)
 
 echo "== start"
@@ -43,6 +45,9 @@ pid=$(systemctl show -p MainPID --value rproxy-ui)
 [ "$(ps -o user= -p "$pid" | tr -d ' ')" = rproxy-ui ] || fail "not running as rproxy-ui"
 [ "$(code /api/auth/providers)" = 200 ] || fail "NextAuth is not configured"
 [ "$(code /api/forward/capabilities)" = 401 ] || fail "API answered without a session"
+# keepalived の口は RPROXY_UI_HA_TOKEN_FILE がなければ使えない（404）。スクリプトは 503 のときだけ優先度を下げる
+[ "$(code '/api/forward/ha/ready?node=x')" = 404 ] || fail "ha/ready without RPROXY_UI_HA_TOKEN_FILE"
+$ex/rproxy-ui-ready.sh x http://127.0.0.1:3000 /nonexistent || fail "ready script must not fail when the token is missing"
 css=$(curl -s http://127.0.0.1:3000/ | grep -o '/_next/static/[^"]*\.css' | head -n1)
 if [ -z "$css" ] || [ "$(code "$css")" != 200 ]; then fail "static files are not served"; fi
 # listens on 127.0.0.1 only by default
