@@ -45,6 +45,8 @@ jobs:
       - name: debian:trixie-slim with systemd and nodejs ${{ env.NODE_MAJOR }} from NodeSource
         run: |
           docker run --name deb-prep -e NODE_MAJOR -v "$PWD/scripts/install-nodejs.sh:/install-nodejs.sh:ro" debian:trixie-slim sh -ec '
+            # the slim image tells dpkg to skip /usr/share/doc; test-deb.sh checks the files the package puts there
+            rm -f /etc/dpkg/dpkg.cfg.d/*
             apt-get update
             apt-get install -y --no-install-recommends systemd systemd-sysv sudo curl ca-certificates iproute2 procps
             /install-nodejs.sh
