@@ -21,7 +21,16 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [{
+    name: 'chromium',
+    use: {
+      ...devices['Desktop Chrome'],
+      // Playwright は Alpine（musl）向けのブラウザを配らないので、CI（node:24-alpine）では apk の chromium を使う
+      ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+        ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } }
+        : {}),
+    },
+  }],
   webServer: {
     command: `npx next start -p ${port} -H 127.0.0.1`,
     url: `${baseURL}/api/auth/providers`,

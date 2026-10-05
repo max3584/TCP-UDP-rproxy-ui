@@ -13,7 +13,7 @@ PR のブランチに追加で push する前に、その PR がまだ開いて�
 
 `scripts/build-deb.sh` が `next build`（`output: 'standalone'`、`images.unoptimized`）の結果から `rproxy-ui_<version>-1_all.deb` を作る（`packaging/debian/` にユニット・設定・maintainer scripts）。
 CPU ごとのネイティブなモジュール（`.node`）が入ると `all` にできないので、build-deb.sh が見つけたら止める。依存を足すときに気をつける。
-CI の `Debian package` ジョブ（`scripts/test-deb.sh`、NodeSource の nodejs で実際に入れる）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の `release.yml` を `ui_tag` で手動実行すると apt リポジトリに載る（docs/RELEASING.md）。
+CI の `Debian package` ジョブ（systemd を init にした debian:trixie-slim のコンテナで作り、`scripts/test-deb.sh` で実際に入れる。nodejs は `scripts/install-nodejs.sh` で NodeSource の 24）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の `release.yml` を `ui_tag` で手動実行すると apt リポジトリに載る（docs/RELEASING.md）。
 
 ## ドキュメント（日本語と英語）
 
@@ -38,6 +38,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 - react-hooks v7 の規則（`set-state-in-effect` など）が有効。選べなくなった値を既定に戻す処理は、エフェクトではなく描画中に条件つきで `setState` する（React の「props が変わったときに state を直す」の書き方）。初回の取得（`await` の後でだけ state を変える）はコメントを付けて規則を外している。
 - DB の接続プールは `globalThis` に置いて使い回す（`components/ruledb.ts` の `getPool`。読み直しのたびにプールが増えて Too many connections になるのを防ぎ、instrumentation の自動の送り直しと API route で 1 つにする）。
 
+- CI の実行環境は Alpine（`node:24-alpine`。Node.js のメジャー版はイメージのタグで指定する）。Debian・Ubuntu のイメージは使わない。例外は .deb を作る・入れて確かめるところ（CI の `deb`、`release.yml`）だけで、`debian:trixie-slim` に NodeSource の nodejs をメジャー版を指定して入れる（ディストリの nodejs は使わない）。MariaDB は Alpine の mariadb パッケージを同じコンテナで動かし（`scripts/ci-mariadb.sh`）、rproxy-api は rustup の stable（musl）でビルドし、Playwright は apk の chromium を `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` で使う（Playwright は musl 向けのブラウザを配らない）。
 - パッケージマネージャは npm だけ（`package-lock.json`）。CI・.deb の作成・Renovate もこれを使う。ほかのロックファイル（`pnpm-lock.yaml` など）は足さない（Renovate が「複数の npm のロックファイル」の警告を出す）。
 - TypeScript は 7（`@typescript/native` = `npm:typescript@^7`、`npx tsc` はこれ）と 6 の API（`typescript` = `npm:@typescript/typescript6`、コマンドは `tsc6`）を並べて入れている。TypeScript 7 には JavaScript の API がなく、typescript-eslint（eslint-config-next が使う）と `i18n/extract.mjs` は `typescript` の API を読むため（TypeScript 7.0 の告知の「Running side-by-side with TypeScript 6.0」の書き方）。`next build` の型チェックは `typescript` の CLI（tsc6）を使う。typescript-eslint が TypeScript 7.1 の API に対応したら（typescript-eslint/typescript-eslint#10940）`typescript` を 7 に戻す。
 - 必要な環境変数（`.env.local`）は README に記載がある：`NEXTAUTH_*`、`DB_HOST/PORT/DATABASE/USER/PASSWORD`、`KEYCLOAK_CLIENT_ID/CLIENT_SECRET/ISSUER`、`RPROXY_API_URL`、`RPROXY_API_TOKEN`（複数の rproxy なら代わりに `RPROXY_UI_NODES`）。

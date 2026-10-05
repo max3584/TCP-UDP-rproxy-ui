@@ -12,56 +12,58 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 実行環境は Alpine のコンテナ。Node.js は公式の node:24-alpine（メジャー版を指定する。README の NODE_MAJOR=24 と同じ）。
+# Debian を使うのは .deb を作って入れて確かめる deb ジョブだけ（debian:trixie-slim、nodejs は NodeSource の 24）。
+
 jobs:
   check:
     name: typecheck + lint + unit tests + build
     runs-on: ubuntu-latest
+    container: node:24-alpine
     steps:
+      - run: apk add --no-cache git shellcheck
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run lint
+      - name: shellcheck
+        run: shellcheck scripts/*.sh contrib/keepalived/*.sh packaging/debian/postinst packaging/debian/prerm packaging/debian/postrm
       - run: npm test
       - run: npm run build
 
+  # .deb の作成と確かめは Debian が対象そのものなので、debian:trixie-slim（Debian 13）で動かす。
+  # test-deb.sh は systemd（systemctl enable --now、journalctl）が要り、ジョブのコンテナでは systemd を PID 1 にできないので、
+  # ランナーの docker で systemd を init にしたコンテナを起こし、その中で作って入れる。
+  # nodejs はディストリのもの（Debian 13 は 20）ではなく、README と同じ手順で NodeSource の 24 を入れる（scripts/install-nodejs.sh）。
   deb:
     name: Debian package (install, start, purge)
     runs-on: ubuntu-latest
+    env:
+      NODE_MAJOR: 24
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - name: shellcheck
-        run: shellcheck scripts/*.sh contrib/keepalived/*.sh packaging/debian/postinst packaging/debian/prerm packaging/debian/postrm
-      # the package depends on nodejs (>= 22.19.0); Ubuntu 24.04 ships 18, so use NodeSource as users would
-      - name: nodejs from NodeSource
+      - name: debian:trixie-slim with systemd and nodejs ${{ env.NODE_MAJOR }} from NodeSource
         run: |
-          curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-          sudo apt-get install -y nodejs
-      - run: scripts/build-deb.sh dist
+          docker run --name deb-prep -e NODE_MAJOR -v "$PWD/scripts/install-nodejs.sh:/install-nodejs.sh:ro" debian:trixie-slim sh -ec '
+            # undo what the image does for image builds, so the package behaves as on an installed system:
+            # dpkg skipping /usr/share/doc (test-deb.sh checks files there) and policy-rc.d refusing to start or stop services
+            rm -f /etc/dpkg/dpkg.cfg.d/* /usr/sbin/policy-rc.d
+            apt-get update
+            apt-get install -y --no-install-recommends systemd systemd-sysv sudo curl ca-certificates iproute2 procps
+            /install-nodejs.sh
+            apt-get clean'
+          docker commit --change 'CMD ["/sbin/init"]' deb-prep rproxy-deb-test
+          docker run -d --name deb --privileged --cgroupns=private -e container=docker -v "$PWD:/src" -w /src rproxy-deb-test
+          docker exec deb sh -c 'systemctl is-system-running --wait || true'
+      - name: scripts/build-deb.sh
+        run: docker exec deb sh -ec 'npm ci; scripts/build-deb.sh dist'
       - name: scripts/test-deb.sh
-        run: scripts/test-deb.sh dist/*.deb
+        run: docker exec deb sh -ec 'scripts/test-deb.sh dist/*.deb'
 
   e2e:
     name: e2e (MariaDB + rproxy-api)
     runs-on: ubuntu-latest
-    services:
-      mariadb:
-        image: mariadb:13.0
-        env:
-          MARIADB_ROOT_PASSWORD: root
-          MARIADB_DATABASE: rproxy_e2e
-        ports: ["3306:3306"]
-        options: >-
-          --health-cmd="healthcheck.sh --connect --innodb_initialized"
-          --health-interval=5s --health-timeout=5s --health-retries=20
+    container: node:24-alpine
     env:
       DB_HOST: 127.0.0.1
       DB_PORT: 3306
@@ -72,6 +74,8 @@ jobs:
       RPROXY_API_TOKEN: e2e-token
       E2E_BACKEND_PORT: 19001
     steps:
+      # build-base・rustup は rproxy-api のビルド、chromium は Playwright（Alpine の musl 向けのブラウザは Playwright が配らない）
+      - run: apk add --no-cache git bash curl build-base rustup mariadb mariadb-client chromium
       - uses: actions/checkout@v7
 
       # rproxy-api と同じ名前のブランチがあればそれを、なければ既定ブランチを使う
@@ -89,28 +93,24 @@ jobs:
           repository: max3584/rproxy-api
           ref: ${{ steps.rproxy.outputs.ref }}
           path: rproxy-api
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust (stable, musl)
+        run: |
+          rustup-init -y --profile minimal --default-toolchain stable --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rproxy-api
       - name: build rproxy-api (${{ steps.rproxy.outputs.ref }})
         run: cargo build --manifest-path rproxy-api/Cargo.toml
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
+      # MariaDB は Alpine のパッケージを同じコンテナで動かす（公式の mariadb イメージは Ubuntu が元）
+      - name: MariaDB
+        run: scripts/ci-mariadb.sh "$DB_DATABASE" "$DB_PASSWORD"
+
       - run: npm ci
 
       - name: create tables from db/schema.sql
-        run: |
-          node -e "
-            const fs = require('fs');
-            require('mariadb').createConnection({
-              host: process.env.DB_HOST, port: +process.env.DB_PORT, database: process.env.DB_DATABASE,
-              user: process.env.DB_USER, password: process.env.DB_PASSWORD, multipleStatements: true,
-            }).then(async (c) => { await c.query(fs.readFileSync('db/schema.sql', 'utf8')); await c.end(); });
-          "
+        run: mariadb -uroot -p"$DB_PASSWORD" "$DB_DATABASE" < db/schema.sql
 
       - name: start rproxy-api
         run: |
@@ -124,12 +124,10 @@ jobs:
       - name: e2e tests
         run: RUN_E2E=1 npx vitest run tests/e2e.test.ts
 
-      # 画面操作（tests/ui）: 同じ MariaDB と rproxy-api を使う
-      - name: Playwright browser
-        run: npx playwright install --with-deps chromium
+      # 画面操作（tests/ui）: 同じ MariaDB と rproxy-api を使う。ブラウザは Alpine の chromium（playwright.config.ts）
       - run: npm run build
       - name: UI tests (Playwright)
-        run: npx playwright test
+        run: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$(command -v chromium-browser || command -v chromium)" npx playwright test
       - name: Playwright report
         if: failure()
         uses: actions/upload-artifact@v7
@@ -144,27 +142,25 @@ jobs:
         run: cat "$RUNNER_TEMP/rproxy.log" || true
 
   # 複数のノード（#98）：rproxy-api を 2 台（それぞれ別のコンテナ。同じ待ち受けを両方で使えるように）動かし、
-  # ノードごとのデータベースのビュー（db/node-view.mjs）から起動時に自分のルールだけを戻すことを確かめる
+  # ノードごとのデータベースのビュー（db/node-view.mjs）から起動時に自分のルールだけを戻すことを確かめる。
+  # ノードのコンテナはランナーの docker（ジョブのコンテナに docker.sock が渡る）で、ジョブと同じネットワークに起こす。
+  # ソケットと rproxy-api の実行ファイルは、ランナーとジョブのコンテナで同じパスになる /tmp/rproxy-e2e でやりとりする
   e2e-nodes:
     name: e2e (two rproxy nodes + group)
     runs-on: ubuntu-latest
-    services:
-      mariadb:
-        image: mariadb:13.0
-        env:
-          MARIADB_ROOT_PASSWORD: root
-          MARIADB_DATABASE: rproxy_e2e
-        ports: ["3306:3306"]
-        options: >-
-          --health-cmd="healthcheck.sh --connect --innodb_initialized"
-          --health-interval=5s --health-timeout=5s --health-retries=20
+    container:
+      image: node:24-alpine
+      volumes:
+        - /tmp/rproxy-e2e:/tmp/rproxy-e2e
     env:
       DB_HOST: 127.0.0.1
       DB_PORT: 3306
       DB_DATABASE: rproxy_e2e
       DB_USER: root
       DB_PASSWORD: root
+      E2E_DIR: /tmp/rproxy-e2e
     steps:
+      - run: apk add --no-cache git bash curl build-base rustup mariadb mariadb-client docker-cli
       - uses: actions/checkout@v7
 
       - name: pick rproxy-api ref
@@ -181,58 +177,67 @@ jobs:
           repository: max3584/rproxy-api
           ref: ${{ steps.rproxy.outputs.ref }}
           path: rproxy-api
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust (stable, musl)
+        run: |
+          rustup-init -y --profile minimal --default-toolchain stable --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rproxy-api
       - name: build rproxy-api (${{ steps.rproxy.outputs.ref }})
         run: cargo build --manifest-path rproxy-api/Cargo.toml
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
+      - name: MariaDB
+        run: scripts/ci-mariadb.sh "$DB_DATABASE" "$DB_PASSWORD"
+
       - run: npm ci
 
       - name: create tables from db/schema.sql
-        run: docker exec -i ${{ job.services.mariadb.id }} mariadb -uroot -proot rproxy_e2e < db/schema.sql
+        run: mariadb -uroot -p"$DB_PASSWORD" "$DB_DATABASE" < db/schema.sql
 
       - name: create the per-node databases and views (db/node-view.mjs)
         run: |
           for n in n1 n2; do
             node db/node-view.mjs "$n" --database rproxy_e2e --host '%' --password "pw-$n"
-          done | tee /dev/stderr | docker exec -i ${{ job.services.mariadb.id }} mariadb -uroot -proot
+          done | tee /dev/stderr | mariadb -uroot -p"$DB_PASSWORD"
 
+      # ノードのコンテナは node:24-alpine（ジョブのイメージで、ランナーに取ってある）に iproute2（VIP の付け外し）を足したもの。
+      # VIP を付け外しするので NET_ADMIN を与える。MariaDB にはジョブのコンテナのアドレスでつなぐ
       - name: start two rproxy-api nodes (Unix sockets)
         run: |
+          docker run --name rproxy-node-prep node:24-alpine apk add --no-cache iproute2
+          docker commit --change 'ENTRYPOINT []' rproxy-node-prep rproxy-e2e-node
+          docker rm rproxy-node-prep
+          db_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${{ job.container.id }}")
+          install -m 0755 rproxy-api/target/debug/rproxy-api "$E2E_DIR/rproxy-api"
           for n in n1 n2; do
-            mkdir -p "$RUNNER_TEMP/$n"
-            echo "token-$n" > "$RUNNER_TEMP/$n/tokens"
-            docker run -d --name "rproxy-$n" --user "$(id -u):$(id -g)" --add-host=host.docker.internal:host-gateway \
-              -v "$PWD/rproxy-api/target/debug/rproxy-api:/usr/local/bin/rproxy-api:ro" -v "$RUNNER_TEMP/$n:/run/rproxy" \
+            mkdir -p "$E2E_DIR/$n"
+            echo "token-$n" > "$E2E_DIR/$n/tokens"
+            docker run -d --name "rproxy-$n" --network "${{ job.container.network }}" --cap-add NET_ADMIN \
+              -v "$E2E_DIR/rproxy-api:/usr/local/bin/rproxy-api:ro" -v "$E2E_DIR/$n:/run/rproxy" \
               -e RPROXY_API_PORT=0 -e RPROXY_API_SOCKET=/run/rproxy/api.sock -e RPROXY_TOKEN_FILE=/run/rproxy/tokens \
-              -e RPROXY_DATABASE_URL="mysql://rproxy_$n:pw-$n@host.docker.internal:3306/rproxy_node_$n" \
-              ubuntu:24.04 rproxy-api
+              -e RPROXY_DATABASE_URL="mysql://rproxy_$n:pw-$n@$db_ip:3306/rproxy_node_$n" \
+              rproxy-e2e-node rproxy-api
           done
-          cat > "$RUNNER_TEMP/nodes.yaml" <<YAML
+          cat > "$E2E_DIR/nodes.yaml" <<YAML
           nodes:
             - name: n1
-              url: unix:$RUNNER_TEMP/n1/api.sock
-              token_file: $RUNNER_TEMP/n1/tokens
+              url: unix:$E2E_DIR/n1/api.sock
+              token_file: $E2E_DIR/n1/tokens
             - name: n2
-              url: unix:$RUNNER_TEMP/n2/api.sock
-              token_file: $RUNNER_TEMP/n2/tokens
+              url: unix:$E2E_DIR/n2/api.sock
+              token_file: $E2E_DIR/n2/tokens
           groups:
             - name: ha
               nodes: [n1, n2]
               mode: active_standby
               vip: 10.99.0.10
           YAML
-          echo "RPROXY_UI_NODES=$RUNNER_TEMP/nodes.yaml" >> "$GITHUB_ENV"
+          echo "RPROXY_UI_NODES=$E2E_DIR/nodes.yaml" >> "$GITHUB_ENV"
           for n in n1 n2; do
             ok=
             for i in $(seq 1 30); do
-              if curl -sf --unix-socket "$RUNNER_TEMP/$n/api.sock" http://localhost/healthz; then ok=1; break; fi
+              if curl -sf --unix-socket "$E2E_DIR/$n/api.sock" http://localhost/healthz; then ok=1; break; fi
               sleep 1
             done
             if [ -z "$ok" ]; then docker logs "rproxy-$n"; exit 1; fi

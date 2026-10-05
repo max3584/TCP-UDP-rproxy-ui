@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# rproxy-ui の .deb をこの機械に実際に入れて確かめる（sudo と systemd が要る。GitHub の Ubuntu ランナー用）。
+# rproxy-ui の .deb をこの機械に実際に入れて確かめる（sudo と systemd が要る。CI では systemd を init にした debian:trixie-slim のコンテナで動かす）。
 #
 #   scripts/test-deb.sh dist/rproxy-ui_<version>-1_all.deb
 #
-# nodejs (>= 22.19.0) を apt で入れられること（Ubuntu 24.04 なら NodeSource）が前提。
+# nodejs (>= 22.19.0) を apt で入れられること（NodeSource。scripts/install-nodejs.sh）が前提。
 # rproxy-ui を本番で動かしている機械では実行しない。
 set -euo pipefail
 

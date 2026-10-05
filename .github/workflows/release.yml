@@ -15,19 +15,20 @@ permissions:
   contents: write
 
 jobs:
+  # .deb を作るので Debian（debian:trixie-slim）。nodejs は NodeSource の 24（scripts/install-nodejs.sh。README と同じ手順）
   deb:
     runs-on: ubuntu-latest
+    container: debian:trixie-slim
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
+      NODE_MAJOR: 24
     steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git gh
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
+      - run: scripts/install-nodejs.sh
       - name: Tag and package.json agree
         run: |
           version=$(node -p "require('./package.json').version")
@@ -38,4 +39,4 @@ jobs:
       - run: npm ci
       - run: scripts/build-deb.sh dist
       - name: Attach to the release
-        run: gh release upload "$TAG" dist/*.deb --clobber
+        run: gh release upload "$TAG" dist/*.deb --clobber -R "$GITHUB_REPOSITORY"
