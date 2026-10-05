@@ -128,8 +128,8 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect(json.reachable).toBe(true);
     expect(json.rproxyError).toBeNull();
     expect(json.nodes).toEqual([
-      { name: 'n1', reachable: true, error: null, rules: 2, failed: 0 },
-      { name: 'n2', reachable: true, error: null, rules: 2, failed: 0 },
+      { name: 'n1', reachable: true, error: null, rules: 2, failed: 0, drifted: 0 },
+      { name: 'n2', reachable: true, error: null, rules: 2, failed: 0, drifted: 0 },
     ]);
     const group = json.rules.find((r: any) => r.srcPort === GROUP_PORT);
     expect(group.target).toBe('ha');
