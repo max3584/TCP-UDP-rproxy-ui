@@ -1,10 +1,11 @@
 // ダッシュボードと詳細画面で共通の小さな部品（状態のバッジ、エラーのバナー、確認ダイアログ、自動更新）
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { CertState, ForwardRule, ForwardRules, NodeLiveState, NodesInfo, RuleState } from './lib';
+import type { CertState, DriftField, ForwardRule, ForwardRules, HaStatus, NodeLiveState, NodeRole, NodesInfo, RuleState } from './lib';
+import { DRIFT_LABELS } from './drift';
 import { RuleKey, STATE_LABELS, ruleApiUrl, tlsLabel } from './dashboard';
 import { explainError } from './messages';
-import { localeTag } from '@/i18n/core';
+import { joinList, localeTag } from '@/i18n/core';
 
 const STATE_BADGE: Record<RuleState, string> = {
   running: 'bg-green-100 text-green-800 border border-green-300',
@@ -62,12 +63,48 @@ export const NodeStates: React.FC<{ nodes: NodeLiveState[] | undefined }> = ({ n
       {nodes.map((n) => (
         <li key={n.node} className="inline-flex items-center gap-1 text-xs text-gray-800" title={n.error ?? undefined}>
           <span className="font-mono">{n.node}</span>
+          <RoleBadge role={n.role} />
           <StateBadge state={n.state} />
+          <DriftBadge drift={n.drift} />
         </li>
       ))}
     </ul>
   )
 );
+
+// active_standby の役割（VIP を持つノードが act）
+export const RoleBadge: React.FC<{ role: NodeRole | undefined }> = ({ role }) => (
+  role === undefined ? null : role === 'active'
+    ? <span className="badge bg-green-700 text-white" title="VIP を持っています（act）">act</span>
+    : <span className="badge bg-gray-200 text-gray-800" title="VIP を持っていません（stb）">stb</span>
+);
+
+// VIP をだれも持っていない・複数が持っている
+export const HaWarning: React.FC<{ ha: HaStatus | undefined }> = ({ ha }) => (
+  !ha || ha.warning === null ? null : (
+    <span className="badge bg-red-100 text-red-900 border border-red-300" data-testid="ha-warning"
+      title={`VIP: ${ha.addrs.join(', ')}`}>
+      {ha.warning === 'none' ? 'VIP を持つノードがありません' : `VIP を複数のノードが持っています（${ha.active.join(', ')}）`}
+    </span>
+  )
+);
+
+// UI の定義とノードの実際のルールのずれ
+export const DriftBadge: React.FC<{ drift: DriftField[] | undefined }> = ({ drift }) => (
+  !drift || drift.length === 0 ? null : (
+    <span className="badge bg-amber-100 text-amber-900 border border-amber-300" data-testid="drift-badge"
+      title={joinList(drift.map((f) => DRIFT_LABELS[f]))}>ずれ</span>
+  )
+);
+
+// ルールのどこかのノードでずれている（一覧の行。どのノードかはマウスを乗せたときと詳細画面）
+export const RuleDriftBadge: React.FC<{ rule: Pick<ForwardRules, 'nodes'> }> = ({ rule }) => {
+  const drifted = (rule.nodes ?? []).filter((n) => (n.drift ?? []).length > 0).map((n) => n.node);
+  return drifted.length === 0 ? null : (
+    <span className="badge bg-amber-100 text-amber-900 border border-amber-300" data-testid="drift-badge"
+      title={`UI の定義とずれているノード: ${drifted.join(', ')}`}>ずれ</span>
+  );
+};
 
 // GET /api/forward/nodes（ノードとグループ）。読めなければ null（1 台として扱う）
 export function useNodes(): NodesInfo | null {
@@ -218,7 +255,7 @@ export function goBack(router: { back: () => void; push: (url: string) => unknow
 // 画面から API へルールを送る。失敗したら表示用のメッセージで Error を投げる
 // L7 の設定（http）は送らない（API は受け取らず、変更では DB の値を保つ。UI #34 まで）
 // http は L7 のルールのときだけ送る（null を送ると、変更では L7 の設定を外す指定になる）
-export async function postRule(action: 'add' | 'modify' | 'delete' | 'pause' | 'resume', rule: unknown): Promise<void> {
+export async function postRule(action: 'add' | 'modify' | 'delete' | 'pause' | 'resume' | 'resend', rule: unknown): Promise<void> {
   const body = typeof rule === 'object' && rule !== null && 'http' in rule && (rule as { http: unknown }).http === null
     ? Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'http'))
     : rule;

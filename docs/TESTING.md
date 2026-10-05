@@ -153,8 +153,11 @@ English: [en/TESTING.md](en/TESTING.md)
 - `tests/nodeview.test.ts`：`db/node-view.mjs` が出す SQL（ビューの列が rproxy の読む列と同じ、絞り込み、読み取りだけの GRANT、名前の検査）
 - `tests/fanout.test.ts`：グループの全ノードへの送信、1 台が失敗したときに成功したノードを戻すこと、ノードごとの結果
 - `tests/forward-nodes.test.ts`：API route（グループへの追加・失敗時の取り消しと ROLLBACK・COMMIT 失敗時の取り消し・target の必須と検査・重なりの 409・ノードごとの状態の集計・履歴の target）
-- `tests/nodestate.test.ts`：状態の集計（悪いほう）、stats の合計、URL の `?target=`
-- `tests/e2e-nodes.test.ts`（CI の `e2e-nodes`）：グループのルールが両方に、ノードのルールがそのノードだけに作られること、ビューの中身、rproxy を再起動すると自分のルールだけが戻ること、停止・再開・削除、片方で失敗したときの取り消し
+- `tests/nodestate.test.ts`：状態の集計（悪いほう）、stats の合計、URL の `?target=`、ノードのタブ（`projectRule`・`nodeTotals`）、全ノードの設定ファイルの注意のまとめ
+- `tests/drift.test.ts`：ずれの比べ方（既定値・稼働情報は無視、違う項目のコード、停止中なのに動いている、作り直しが要る違い）と act / stb の判定（VIP・待ち受けアドレス、だれも持たない・複数が持つ警告）
+- `tests/forward-nodes.test.ts` の後半：ノードごとのずれと act、送り直し（未登録なら作る・ずれなら PATCH・同じなら何もしない・履歴の RESEND とノード）
+- `tests/e2e-nodes.test.ts`（CI の `e2e-nodes`）：グループのルールが両方に、ノードのルールがそのノードだけに作られること、ビューの中身、rproxy を再起動すると自分のルールだけが戻ること、停止・再開・削除、片方で失敗したときの取り消し、
+  コンテナに VIP を付け外しして act / stb と警告が変わること、片方のノードで直接変えたルールのずれと送り直し、片方から消したルールの未登録と送り直し
 
 ## まだテストしていないこと
 

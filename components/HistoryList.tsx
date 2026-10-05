@@ -123,7 +123,7 @@ const HistoryList: React.FC<{
                         {manyNodes && e.target !== undefined && <span className="ml-1 font-sans"><TargetBadge target={e.target} /></span>}
                       </td>
                     )}
-                    <td className="whitespace-nowrap">{ACTION_LABELS[e.action] ?? e.action}</td>
+                    <td className="whitespace-nowrap">{ACTION_LABELS[e.action] ?? e.action}{e.node !== undefined && <span className="ml-1 font-mono text-xs text-gray-700" title="送り直したノード">{e.node}</span>}</td>
                     <td className="font-mono break-all">{e.actor ?? '-'}</td>
                     <td>
                       {e.rule === null ? (

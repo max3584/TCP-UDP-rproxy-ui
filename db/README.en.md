@@ -13,6 +13,7 @@ Definitions of the tables shared by the UI and rproxy-api.
 | `migrations/004_log_auth_id.sql` | Adds a column for the user who performed the operation (`auth_id`) to `forward_rules_log` |
 | `migrations/005_ranges_and_tls.sql` | Adds to both tables a column for the end of the port range (`src_port_end`) and one for the TLS / STARTTLS settings (`options`) |
 | `migrations/006_nodes.sql` | Several rproxy instances (#98): adds a `target` column to both tables, makes the key `(target, protocol, src_addr, src_port)` and adds the `forward_rule_targets` table. A single-node setup without `RPROXY_UI_NODES` works without it |
+| `migrations/007_log_node.sql` | Several rproxy instances (#98): adds the column for the node a rule was resent to (`node`) to `forward_rules_log`. Needed with `RPROXY_UI_NODES` |
 | `node-view.mjs` | Prints the SQL for a per-node database with a `forward_rules` view and a read-only DB user (see "Several rproxy instances (a view per node)" below) |
 
 On existing environments, apply them in order starting from `002`. When you change `schema.sql`, also add a migration that makes the same change.
@@ -43,7 +44,7 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
   Each row holds the rule's contents after the operation (for `DELETE`, the contents before deletion), so the UI's "Change history" shows the difference from the previous version from these rows, and "Revert to this version" restores those contents (import and revert operations are recorded in the same way).
 
 - `forward_rule_targets`: node → the `target`s that node reads (the node itself and the groups containing it). The UI rewrites it to match `RPROXY_UI_NODES` (only when it is set). The per-node views filter through it.
-  `forward_rules_log` has a `target` column too.
+  `forward_rules_log` has a `target` column too. A resend to one node has `update_action` `RESEND` and records that node in `node` (007); the contents are the rule that was sent.
 
 ## DB users
 

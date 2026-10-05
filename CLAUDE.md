@@ -63,6 +63,9 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/cidr.ts` | allow_from の CIDR / 単一 IP の検証と正規化（rproxy の `src/cidr.rs` と同じ規則。Node の `net` を使わないので画面でも使える） |
 | `components/lib.ts` | 共通の型（`ForwardRule`、`TlsSpec`、`ForwardRules`、`RuleStats`、`DashboardData`、`sessionUser` など）と pino ロガー |
 | `components/nodes.ts` | 複数の rproxy（#98）の設定。`RPROXY_UI_NODES`（YAML / JSON）の `nodes`（name・url・token_file）と `groups`（name・nodes・mode: single / active_standby）、`default_target` を読んで確かめる（`parseNodesConfig`、誤りは `NodesConfigError`）。なければ `RPROXY_API_URL` / `RPROXY_API_TOKEN` の 1 台（`implicitConfig`、名前 `default`、`configured: false`）。グループのノード（`targetNodes`）、重なり（`targetsOverlap`）、`forward_rule_targets` の行（`membership`）、1 台に聞く問い合わせの相手（`probeNode`） |
+| `components/drift.ts` | UI の定義と各ノードの実際のルールの「ずれ」（`ruleDrift`：`ruleFromStatus` で画面の形に揃え、`canon` で既定値・空の値を省いて項目ごとに比べる。結果は項目のコード `DriftField`、名前は `DRIFT_LABELS`）と、送り直しで作り直しが要るか（`needsRecreateOnNode`） |
+| `components/ha.ts` | active_standby の act の判定（`vipAddrs`：グループの `vip`、なければルールの特定の待ち受けアドレス。`haStatus`：各ノードの `GET /interfaces` に VIP があれば act、だれも・複数が持てば警告 none / split） |
+| `components/Tabs.tsx` | WAI-ARIA のタブの並び（矢印キー / Home / End）と `tabPanelProps`。ダッシュボードとルールの詳細の「全体 / ノードごと」 |
 | `components/fanout.ts` | グループの変更を全ノードに送る `applyToNodes`（`withNode` でノードごとに実行。1 台でも失敗したら成功したノードの undo を実行して `FanoutError`（ノードごとの結果 `results`）。ノードが 1 つなら例外をそのまま投げる） |
 | `db/node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけのユーザーの SQL を出す（依存のない JS。`npm run db:node-view -- <ノード>`。.deb の db/ からも動く） |
 | `instrumentation.ts` | 起動時に `RPROXY_UI_NODES` を確かめ、誤りなら理由を出して終了する |
@@ -123,7 +126,11 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 
    - 複数のノード：全ノードに `GET /rules` を聞き、各ルールに `target` とノードごとの状態 `nodes`（`NodeLiveState[]`）を付け、上の `state` などはその集計（`aggregateNodeStates`：state は悪いほう、接続数・stats は合計）。`dashboard` には `nodes`（`NodeSummary`：つながるか・ルール数・失敗数）、`reachable` はどれか 1 台に聞けたか、`rproxyError` は聞けなかったノード。固定ルールはノードごと（`target` がそのノード）。
      画面は `useNodes()`（`GET /api/forward/nodes`）でノードが 2 つ以上のときだけ、フォームの「ノード／グループ」・一覧と詳細のノード／グループ・ダッシュボードのノードの一覧を出す（1 つなら今と同じ見た目）。詳細・変更の URL は `?target=` を付ける（`ruleHref`）。
-     ノードごとのタブ・ずれの検出と送り直し・ノードごとの上書き・コピー／移動・ノード単位の停止とエクスポート・ノードに限ったロールは後の段階（#98）。
+     各ノードの状態には `drift`（UI の定義との違いのコード）と、active_standby のグループでは `role`（act / stb）、ルールには `ha`（判定に使った VIP・act のノード・警告）を付ける（act の判定のため、active_standby のグループがあるときだけ `GET /interfaces` も聞く）。`dashboard` の `nodes` に `drifted`、`groups` に vip を書いたグループの act。
+     画面はノードが 2 つ以上なら「全体 / ノードごと」のタブ（`projectRule` / `projectToNode` でそのノードの値に置き換えて同じ部品で出す）。「全体」はノードごとの比較の表。ルールの詳細のノードのタブに「UI の定義との違い」と「このノードに送り直す」。
+   - `resend`（POST `{protocol, srcAddr, srcPort, target, node}`）：DB の内容を 1 つのノードにだけ送る（未登録なら POST、PATCH で直せる違いは PATCH、直せない違いは削除して作り直し、停止中なのに動いていれば削除、同じなら何もしない）。自分のルール（admin はだれのでも）だけ。履歴は `RESEND` で `node` 列（migration 007）にノード。DB の内容に揃えるだけなので COMMIT の失敗では戻さない。
+   - 設定ファイルの注意（`config`）は全ノードに聞いてまとめる（`mergeConfigStatusViews`）。
+     ノードごとの上書き・コピー／移動・ノード単位の停止とエクスポートの画面・ノードに限ったロールは後の段階（#98）。
 
 HTTP の取り決めは `../rproxy-api/docs/API.md` が正。変更するときは両方のリポジトリを揃えること。
 rproxy は起動時に `forward_rules` を読んでルールを復元する（読む列は `db/README.md` を参照）。複数のノードでは、各 rproxy はノードごとのデータベースの `forward_rules` ビュー（`db/node-view.mjs`。`forward_rule_targets` で自分とグループの行に絞る）を読む。rproxy-api は変えない。
