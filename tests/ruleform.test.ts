@@ -2,10 +2,11 @@
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import RuleForm, { ALLOW_FROM_HELP, CHAIN_HELP, UDP_SNI_NOTES } from '@/components/RuleForm';
+import RuleForm, { ALLOW_FROM_HELP, CHAIN_HELP, UDP_SNI_NOTES, UDP_SNI_VERSION_NOTE, udpSniSupport } from '@/components/RuleForm';
+import { explainError, UDP_SNI_OLD_RPROXY } from '@/components/messages';
 import { PROFILES } from '@/components/profiles';
 import { DEFAULT_MAX_RANGE_PORTS, ForwardRule } from '@/components/lib';
-import { checkTls, portCount } from '@/components/tls';
+import { CIPHER_SUITES, TlsError, checkTls, normalizeTls, portCount } from '@/components/tls';
 
 const render = (initialData?: ForwardRule, submitting = false) =>
   renderToStaticMarkup(createElement(RuleForm, { onCancel: () => undefined, onSubmit: () => undefined, initialData, submitting }));
@@ -138,6 +139,9 @@ describe('RuleForm: allow_from and unmatched', () => {
     expect(tls).not.toContain('終端しない（passthrough）');
     expect(tls).toContain('data-testid="udp-sni-notes"');
     for (const note of UDP_SNI_NOTES) expect(tls).toContain(note);
+    // 版が分からない（capabilities を取る前・v0.3.18 より前の rproxy）ときは、v0.3.8 以降が要ることを知らせる
+    expect(tls).toContain('data-testid="udp-sni-version-note"');
+    expect(tls).toContain(UDP_SNI_VERSION_NOTE);
     expect(UDP_SNI_NOTES.join('')).toMatch(/IKE（IPsec）・WireGuard/);
     expect(UDP_SNI_NOTES.join('')).toContain('HTTP/3（QUIC）を受ける L7 のルール');
     // DTLS の終端（terminate）では名前で振り分けないので注意も「一致しないとき」も出さない
@@ -213,7 +217,7 @@ describe('RuleForm: v0.3 settings the form cannot edit yet', () => {
     expect(render(terminateRule)).not.toContain('http-rule-note');
   });
 
-  it('shows ACME certificates and TLS options read-only', () => {
+  it('shows ACME certificates read-only, and TLS options read-only when rproxy does not report features.tls_options', () => {
     const html = render(httpRule);
     expect(html).toContain('証明書 1（ACME）');
     expect(html).toContain('letsencrypt');
@@ -224,6 +228,52 @@ describe('RuleForm: v0.3 settings the form cannot edit yet', () => {
     expect(html).toContain('ACME は rproxy に内蔵していません');
     expect(html).toContain('data-testid="tls-options-note"');
     expect(html).toContain('最小バージョン 1.3');
+  });
+});
+
+describe('TLS options (tls.options)', () => {
+  const tcp = (options: unknown) => {
+    const spec = normalizeTls({ mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], options });
+    checkTls('tcp', spec, null, 1);
+    return spec;
+  };
+  const code = (f: () => unknown) => {
+    try {
+      f();
+      return 'ok';
+    } catch (err) {
+      return err instanceof TlsError ? err.code : String(err);
+    }
+  };
+
+  it('accepts the rustls (ring) suite names and drops empty options', () => {
+    expect(CIPHER_SUITES).toHaveLength(9);
+    expect(tcp({ min_version: '1.3', cipher_suites: ['TLS13_AES_128_GCM_SHA256'] }).options).toEqual({ min_version: '1.3', cipher_suites: ['TLS13_AES_128_GCM_SHA256'] });
+    expect(tcp({ cipher_suites: ['TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'] }).options).toEqual({ cipher_suites: ['TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'] });
+    expect(tcp({}).options).toBeUndefined();
+  });
+
+  it('refuses unknown names, min_version 1.3 without a TLS 1.3 suite, and UDP like rproxy', () => {
+    expect(code(() => tcp({ cipher_suites: ['TLS_RSA_WITH_RC4_128_SHA'] }))).toBe('tls_config');
+    expect(code(() => tcp({ min_version: '1.3', cipher_suites: ['TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'] }))).toBe('tls_config');
+    expect(code(() => tcp({ min_version: '1.1' }))).toBe('tls_config');
+    const spec = normalizeTls({ mode: 'terminate', certificates: [{ cert_file: '/c', key_file: '/k' }], options: { min_version: '1.3' } });
+    expect(code(() => checkTls('udp', spec, null, 1))).toBe('unsupported');
+  });
+});
+
+describe('UDP sni and the rproxy version', () => {
+  it('needs rproxy v0.3.8; unknown when rproxy does not report its version', () => {
+    expect(udpSniSupport('0.3.7')).toBe(false);
+    expect(udpSniSupport('0.3.8')).toBe(true);
+    expect(udpSniSupport('v0.3.19')).toBe(true);
+    expect(udpSniSupport(null)).toBeNull();
+  });
+
+  it('explains the refusal of an old rproxy', () => {
+    const text = explainError('unsupported', 'sni routing is supported for tcp only; use terminate for DTLS');
+    expect(text.startsWith(UDP_SNI_OLD_RPROXY)).toBe(true);
+    expect(text).toContain('v0.3.8');
   });
 });
 

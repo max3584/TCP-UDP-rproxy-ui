@@ -39,6 +39,40 @@ export class TlsError extends Error {
 
 export const DEFAULT_TLS: TlsSpec = { mode: 'passthrough' };
 
+// tls.options.cipher_suites に書ける名前（rproxy の rustls（ring）の暗号スイート。rproxy の src/tls/config.rs の suite_name）。
+// TLS 1.3 のものは TLS13_ で始まる。rproxy は知らない名前を tls_config で断る
+export const TLS13_CIPHER_SUITES = [
+  'TLS13_AES_256_GCM_SHA384',
+  'TLS13_AES_128_GCM_SHA256',
+  'TLS13_CHACHA20_POLY1305_SHA256',
+] as const;
+export const TLS12_CIPHER_SUITES = [
+  'TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384',
+  'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256',
+  'TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256',
+  'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384',
+  'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256',
+  'TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256',
+] as const;
+export const CIPHER_SUITES: readonly string[] = [...TLS13_CIPHER_SUITES, ...TLS12_CIPHER_SUITES];
+export const isTls13Suite = (name: string): boolean => name.startsWith('TLS13_');
+
+// tls.options の組み合わせ（rproxy の server_crypto と同じ規則）。TCP の終端だけで使える
+export function checkTlsOptions(protocol: Protocol, options: TlsOptions | undefined): void {
+  if (!options) return;
+  if (protocol === 'udp') {
+    throw new TlsError('TLS のオプション（最小バージョン・暗号スイート）は TCP でだけ使えます（DTLS では使えません）。', 'unsupported');
+  }
+  const suites = options.cipher_suites ?? [];
+  const unknown = suites.filter((s) => !CIPHER_SUITES.includes(s));
+  if (unknown.length > 0) {
+    throw new TlsError(`知らない暗号スイートです: ${unknown.join(', ')}（使えるもの: ${CIPHER_SUITES.join(', ')}）`, 'tls_config');
+  }
+  if (options.min_version === '1.3' && suites.length > 0 && !suites.some(isTls13Suite)) {
+    throw new TlsError('最小バージョンを 1.3 にするときは、TLS 1.3 の暗号スイート（TLS13_…）を 1 つ以上選んでください。', 'tls_config');
+  }
+}
+
 const HOSTNAME_PATTERN = /^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
 const IPV4_PATTERN = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/;
 const IPV6_CHARS = /^[0-9A-Fa-f:.]+$/;
@@ -280,6 +314,7 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
   if (tls.mode !== 'terminate' && tls.options) {
     throw new TlsError('TLS のオプションは終端（terminate）でのみ使えます。', 'tls_config');
   }
+  checkTlsOptions(protocol, tls.options);
   if (tls.client_auth && tls.client_auth.mode !== 'none' && !tls.client_auth.ca_file) {
     throw new TlsError('クライアント証明書を検証するには CA ファイル（ルート CA）を指定してください。', 'tls_config');
   }
