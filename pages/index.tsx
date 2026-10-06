@@ -33,9 +33,10 @@ import {
   tlsBreakdown,
   uptimeSecs, ConfigStatusView, driftedNodes, haSyncWarnings, nodeTotals, projectToNode, targetChoices } from '@/components/dashboard';
 import { ruleErrorText } from '@/components/messages';
+import { acmeProblem, worstAcmeState } from '@/components/acme';
 import { NodeVersionCell, VersionNotice, VersionsCard } from '@/components/VersionInfo';
-import { joinList, localeTag, t, translate } from '@/i18n/core';
-import { AllowFromBadge, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
+import { joinList, joinSentences, localeTag, t, translate } from '@/i18n/core';
+import { AcmeBadge, AllowFromBadge, acmeBadgeShown, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
 
 function formatAt(iso: string): string {
   const d = new Date(iso);
@@ -254,11 +255,17 @@ const TlsCard: React.FC<{ rules: ForwardRules[] }> = ({ rules }) => {
   );
 };
 
+// 証明書の期限と ACME の問題（どちらもなければ null）
+const certIssueText = (r: ForwardRules): string | null => {
+  const parts = [certProblem(r), acmeProblem(r)].filter((p): p is string => p !== null);
+  return parts.length === 0 ? null : joinSentences(parts);
+};
+
 const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = ({ rules, showTarget }) => (
   <section className="card p-4" aria-labelledby="card-attention">
     <h2 id="card-attention" className="card-title mb-3">要確認のルール</h2>
     {rules.length === 0 ? (
-      <p className="text-sm text-gray-700">失敗・未登録・証明書の期限が近いルールはありません。</p>
+      <p className="text-sm text-gray-700">失敗・未登録・証明書に問題のあるルールはありません。</p>
     ) : (
       <ul className="divide-y divide-gray-100">
         {rules.map((r) => (
@@ -268,6 +275,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = 
               <span className="badge bg-gray-100 text-gray-800 uppercase">{r.protocol}</span>
               {r.origin === 'static' && <StaticBadge />}
               <CertBadge state={worstCertState(r)} />
+              <AcmeBadge state={worstAcmeState(r)} />
               {showTarget && <TargetBadge target={r.target} />}
             </div>
             <div className="min-w-0 flex-1 text-sm">
@@ -277,7 +285,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = 
               <span className="text-gray-600"> → </span>
               <TargetName rule={r} />
               <p className="text-xs text-red-800 break-all mt-0.5">
-                {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certProblem(r) ?? nodeIssueText(r))}
+                {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certIssueText(r) ?? nodeIssueText(r))}
               </p>
             </div>
           </li>
@@ -387,11 +395,12 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; showTarget: boo
                     <Link href={href} className="link" title={listenLabel(r)} onClick={(e) => e.stopPropagation()}>
                       {listenPortLabel(r)}
                     </Link>
-                    {(r.origin === 'static' || r.allowFrom.length > 0) && (
-                      <div className="mt-0.5 flex gap-1 font-sans">
+                    {(r.origin === 'static' || r.allowFrom.length > 0 || acmeBadgeShown(worstAcmeState(r))) && (
+                      <div className="mt-0.5 flex flex-wrap gap-1 font-sans">
                         {r.origin === 'static' && <StaticBadge />}
                         <AllowFromBadge allowFrom={r.allowFrom} />
                         <CertBadge state={worstCertState(r)} />
+                        <AcmeBadge state={worstAcmeState(r)} />
                       </div>
                     )}
                     {showTarget && r.target !== undefined && (

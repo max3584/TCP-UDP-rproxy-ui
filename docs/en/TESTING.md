@@ -175,6 +175,20 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 - `settings.spec.ts`: TLS options (minimum version 1.3 without a TLS 1.3 suite is refused before sending; once saved, TLS 1.2 clients are refused; the edit page shows the current values), basic_auth realm, user_header and keep_authorization (the 401 `WWW-Authenticate` and the user name the backend receives), and UDP sni offered without the version note. The self-signed certificate is made with openssl (apk's openssl in CI)
 - `i18n.spec.ts`: switching to English and the cookie, the space before a parenthetical that is a separate child
 - `responsive.spec.ts`, `contrast.spec.ts`, `version.spec.ts`: no overflow at 375px / 768px, no white text on white, the version display
+- `acme.spec.ts` (only with `UI_E2E_ACME=1`): ACME (rproxy-api v0.3.21). When rproxy-api has `docs/ACME.md`, CI runs apk's pebble (the ACME test CA) in the same container, and `scripts/ci-pebble.sh` makes Pebble's HTTPS certificate (openssl), the names in `/etc/hosts` and rproxy's settings file (`global.acme` in `RPROXY_CONFIG`).
+  The form offers the resolvers and refuses wildcards (dns-01 only) and names outside `allowed_names` before saving; for the saved rule rproxy obtains a certificate from Pebble (http-01, `http01_listen`), the details show "valid" and Pebble's certificate is actually served; the edit page shows the resolver and the names.
+  rproxy refuses names outside the allowlist with `400 invalid`. With a resolver whose CA cannot be reached, the details show "failed" and the stand-in (`rproxy ACME placeholder` is actually served), and the dashboard's attention list shows "ACME failed" (no overflow at 375px, no white text on white)
+
+## Unit tests: ACME (`tests/acme.test.ts`)
+
+| Test | What it checks |
+|---|---|
+| names | Normalizing and validating names, `*.` / `**.` in `allowed_names` (the same examples as rproxy's `src/acme/config.rs` tests), the resolver, wildcards and dns-01, names outside the account's and the DNS provider's allowlists, the number of names |
+| GET /acme, /api/forward/acme | Only names, challenges and allowed names are passed on; contact, directory, eab and zones are not. rproxy's 404 becomes `configured: false`; unreachable is 502 |
+| status | Matching certificates to their state (rproxy sorts the names), the stand-in, the attention text (failures, renewals failing close to expiry, pending while held back by rate_limit), the worst node for a group, the badges |
+| rule detail, form | `AcmeStatus` (the stand-in while pending, expiry, renewal time, next attempt, last error, the note for an older rproxy), `AcmeCertificateEditor` (resolvers with their challenge, allowed names, errors while typing) |
+| explainError | Explanations of rproxy's refusals (names outside the allowlist, wildcards, resolvers, no `global.acme`, udp, an older rproxy, `acme:write`) |
+| TLS, export / import | Normalizing names, ACME on udp is `tls_config`, ACME certificates are the same after export and import |
 
 ## Not yet tested
 

@@ -6,6 +6,8 @@ import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 import { hostsOfMatch } from './httpspec';
 import { effectiveRule } from './overrides';
+import { acmeProblem, acmeStatusField } from './acme';
+import type { AcmeCertStatus } from './acme';
 import { joinList, joinSentences, t, translate } from '@/i18n/core';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
@@ -186,6 +188,7 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     startedAt: status.started_at ?? null,
     resolved: status.resolved ?? [],
     ...(Array.isArray(status.cert_status) ? { certStatus: status.cert_status } : {}),
+    ...acmeStatusField(status.acme),
   };
 }
 
@@ -259,10 +262,12 @@ export function certProblem(rule: Pick<ForwardRules, 'certStatus'>): string | nu
 }
 
 // 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール。それぞれ元の順番のまま）
+// （ACME の証明書を取れない・更新できないルールは証明書の期限と同じ扱い。acmeProblem）
 export function needsAttention(rules: ForwardRules[]): ForwardRules[] {
-  const certs = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certProblem(r) !== null);
+  const certIssue = (r: ForwardRules) => certProblem(r) !== null || acmeProblem(r) !== null;
+  const certs = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certIssue(r));
   // 複数のノード：UI の定義とずれているノードがある・act の判定に警告があるルール（#98）
-  const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certProblem(r) === null
+  const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && !certIssue(r)
     && (driftedNodes(r).length > 0 || (r.ha?.warning ?? null) !== null));
   return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs, ...nodeIssues];
 }
@@ -612,6 +617,7 @@ export interface AggregatedState {
   startedAt: number | null;
   resolved: string[];
   certStatus?: CertStatus[];
+  acmeStatus?: AcmeCertStatus[];
 }
 
 // グループのルールの、ノードごとの稼働情報をまとめる（一覧・ダッシュボードの 1 行に出す値）。
@@ -626,6 +632,9 @@ export function aggregateNodeStates(nodes: NodeLiveState[]): AggregatedState {
   const conns = nodes.map((n) => n.connections).filter((c): c is number => c !== null);
   const starts = nodes.map((n) => n.startedAt).filter((t): t is number => t !== null);
   const cert = nodes.find((n) => Array.isArray(n.certStatus))?.certStatus;
+  // ACME の状態はノードごとに違う（ノードごとに取る）。いちばん悪いノードの値を出す
+  const acme = nodes.filter((n) => Array.isArray(n.acmeStatus))
+    .sort((a, b) => acmeRank(b.acmeStatus) - acmeRank(a.acmeStatus))[0]?.acmeStatus;
   return {
     state: state,
     error: error,
@@ -634,7 +643,14 @@ export function aggregateNodeStates(nodes: NodeLiveState[]): AggregatedState {
     startedAt: starts.length === 0 ? null : Math.min(...starts),
     resolved: [...new Set(nodes.flatMap((n) => n.resolved))],
     ...(cert ? { certStatus: cert } : {}),
+    ...(acme ? { acmeStatus: acme } : {}),
   };
+}
+
+// ノードの ACME の状態の悪さ（失敗 > 取得待ち > 更新中 > 有効）
+function acmeRank(list: AcmeCertStatus[] | undefined): number {
+  const order = ['valid', 'renewing', 'pending', 'error'];
+  return Math.max(-1, ...(list ?? []).map((s) => order.indexOf(s.state)));
 }
 
 // 画面に出すノード／グループの名前の一覧（追加の画面の選択肢）。グループは「名前（ノード a, b）」
@@ -771,8 +787,9 @@ export function projectRule(rule: ForwardRules, node: string): ForwardRules | nu
   const n = rule.nodes?.find((x) => x.node === node);
   if (!n) return null;
   // そのノードの上書き（待ち受けアドレス・転送先・allow_from）を重ねた内容で出す
-  const { certStatus: _omit, ...rest } = effectiveRule(rule, rule.overrides?.[node]);
+  const { certStatus: _omit, acmeStatus: _omitAcme, ...rest } = effectiveRule(rule, rule.overrides?.[node]);
   void _omit;
+  void _omitAcme;
   return {
     ...rest,
     state: n.state,
@@ -782,6 +799,7 @@ export function projectRule(rule: ForwardRules, node: string): ForwardRules | nu
     startedAt: n.startedAt,
     resolved: n.resolved,
     ...(n.certStatus ? { certStatus: n.certStatus } : {}),
+    ...(n.acmeStatus ? { acmeStatus: n.acmeStatus } : {}),
     nodes: [n],
   };
 }

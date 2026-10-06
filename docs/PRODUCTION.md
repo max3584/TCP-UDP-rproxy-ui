@@ -141,7 +141,7 @@ UI を別のホストに置く場合は、制御 API を loopback 以外で待�
 ]
 ```
 
-証明書と鍵は `root:rproxy` 640 で `/etc/rproxy/tls/` に置く。rproxy は ACME を内蔵していないので、証明書は certbot・acme.sh などで取得する（Kubernetes なら cert-manager の Secret をマウントする）。
+証明書と鍵は `root:rproxy` 640 で `/etc/rproxy/tls/` に置く。rproxy-api v0.3.21 からは rproxy 自身が ACME で取って更新することもできる（rproxy の設定ファイルの `global.acme`。rproxy-api の docs/ACME.md と、README の「ACME で証明書を取る」）。ファイルを使う場合は certbot・acme.sh などで取得する（Kubernetes なら cert-manager の Secret をマウントする）。
 rproxy はファイルの大きさ・更新時刻・inode を 60 秒ごと（`RPROXY_CERT_CHECK_SECS`。`0` で止める）に確かめ、変わった証明書だけを自動で読み直す（シンボリックリンクの差し替えも検知する）。すぐに反映したいときは `sudo systemctl reload rproxy-api`。
 
 certbot の http-01 で取る場合は、80 番の L7（`http`）のルールで `/.well-known/acme-challenge/` を certbot の standalone（例 `--http-01-port 8888`）か webroot を配るサーバへ振り分ける（ほかのパスは HTTPS へリダイレクトする）:

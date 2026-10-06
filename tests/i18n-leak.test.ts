@@ -13,6 +13,7 @@ import { listenOptions } from '@/components/listen';
 import { checkMatch } from '@/components/httpspec';
 import { proxyProtocolHint, transparentHint } from '@/components/sourceip';
 import { explainError } from '@/components/messages';
+import { AcmeCertStatus, acmeProblem, checkAcmeNames } from '@/components/acme';
 
 const JA = /[぀-ヿ一-鿿]/;
 
@@ -92,6 +93,26 @@ describe('英語の画面に日本語が残らない', () => {
   it('証明書の期限の文は文ごとに訳して空白でつなぐ', () => {
     setLocale('en');
     expect(certProblem(certs)).toBe('Server certificate (/a.pem): expires in 12 days. Client-auth CA (/b.pem): expired (3 days ago).');
+  });
+
+  it('ACME の問題の文と rproxy の断りの説明を英語で組み立てる', () => {
+    setLocale('en');
+    const now = Date.parse('2026-10-06T00:00:00Z');
+    const acme = (s: Partial<AcmeCertStatus>) => ({ acmeStatus: [{ resolver: 'le', domains: ['a.example.com', 'b.example.com'], state: 'error', ...s } as AcmeCertStatus] });
+    for (const r of [acme({ error: 'boom', next_attempt: '2026-10-06T01:00:00Z' }), acme({ not_after: '2026-10-09T00:00:00Z', error: 'x' }),
+      acme({ not_after: '2027-10-09T00:00:00Z' }), acme({ state: 'pending', next_attempt: '2026-10-06T01:00:00Z' })]) {
+      const text = acmeProblem(r, now);
+      expect(text).not.toBeNull();
+      expect(text).not.toMatch(JA);
+    }
+    expect(acmeProblem(acme({ error: 'boom' }), now)).toBe('ACME certificate (a.example.com, b.example.com): not issued yet, so a self-signed stand-in is being served. Reason: boom');
+    for (const detail of ['acme domains: "x.example" is not in allowed_names of account "le"', 'acme domains: the wildcard "*.a.b" needs a resolver with challenge dns-01',
+      'rules with acme certificates need the acme:write scope', 'acme resolver "z" is not defined in global.acme.resolvers']) {
+      expect(translate(explainError('invalid', detail))).not.toMatch(JA);
+    }
+    const info = { configured: true, resolvers: [{ name: 'h', account: 'le', challenge: 'http-01', dns_provider: null }],
+      accounts: [{ name: 'le', allowed_names: ['example.com'], registered: true }], dnsProviders: [], certificates: [], rateLimit: null };
+    for (const names of [['*.example.com'], ['x.example.org'], ['bad name']]) expect(translate(checkAcmeNames(info, 'h', names) ?? '')).not.toMatch(JA);
   });
 
   it('日本語の画面の文言は変わらない', () => {

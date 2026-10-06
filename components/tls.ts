@@ -188,8 +188,11 @@ export function normalizeTls(input: unknown): TlsSpec {
     if (acme !== undefined) {
       const hasFiles = [c.cert_file, c.chain_file, c.key_file].some((f) => optionalString(f, '証明書のファイル') !== undefined);
       if (hasFiles) throw new TlsError('ACME の証明書には証明書・中間 CA・秘密鍵のファイルを指定できません。', 'tls_config');
-      const domains = list(c.domains, 'tls.certificates.domains').map((d) => requiredString(d, 'ACME の証明書の名前').toLowerCase());
+      // CA が見る形（小文字、末尾の . なし。rproxy の normalize_name）にして、重なりを除く
+      const domains = [...new Set(list(c.domains, 'tls.certificates.domains')
+        .map((d) => requiredString(d, 'ACME の証明書の名前').replace(/\.+$/, '').toLowerCase()))];
       if (domains.length === 0) throw new TlsError('ACME の証明書には名前（domains）を 1 つ以上指定してください。', 'tls_config');
+      if (domains.length > 100) throw invalid('ACME の証明書に入れられる名前は 100 個までです。');
       // キーの順番は rproxy の応答（acme, domains）に揃える
       return { acme: acme, domains: domains };
     }
@@ -315,6 +318,10 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
     throw new TlsError('TLS のオプションは終端（terminate）でのみ使えます。', 'tls_config');
   }
   checkTlsOptions(protocol, tls.options);
+  // ACME の証明書は tcp の terminate だけ（rproxy も udp は tls_config で断る）
+  if (protocol === 'udp' && certificates.some((c) => c.acme !== undefined)) {
+    throw new TlsError('ACME の証明書は TCP のルールでだけ使えます（DTLS では証明書のファイルを指定してください）。', 'tls_config');
+  }
   if (tls.client_auth && tls.client_auth.mode !== 'none' && !tls.client_auth.ca_file) {
     throw new TlsError('クライアント証明書を検証するには CA ファイル（ルート CA）を指定してください。', 'tls_config');
   }

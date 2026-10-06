@@ -175,6 +175,20 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 - `settings.spec.ts`：TLS のオプション（最小バージョン 1.3 で TLS 1.3 のスイートがないと送る前に断る・保存すると TLS 1.2 のクライアントを断る・編集画面に今の値）、basic_auth の realm・user_header・keep_authorization（401 の `WWW-Authenticate`、転送先に届く利用者の名前）、UDP の sni が版の注意なしで選べること。自己署名の証明書は openssl で作る（CI では apk の openssl）
 - `i18n.spec.ts`：英語への切り替えと cookie、別の子になった括弧の前の空白
 - `responsive.spec.ts`・`contrast.spec.ts`・`version.spec.ts`：375px / 768px ではみ出さないこと、白地に白文字がないこと、版の表示
+- `acme.spec.ts`（`UI_E2E_ACME=1` のときだけ）：ACME（rproxy-api v0.3.21）。CI は rproxy-api に `docs/ACME.md` があれば、apk の pebble（ACME の試験用の CA）を同じコンテナで動かし、`scripts/ci-pebble.sh` が Pebble の HTTPS の証明書（openssl）・`/etc/hosts` の名前・rproxy の設定ファイル（`RPROXY_CONFIG` の `global.acme`）を作る。
+  フォームで resolver を選び、ワイルドカード（dns-01 だけ）と `allowed_names` の外の名前を保存の前に断ること、保存したルールに rproxy が Pebble から証明書を取り（http-01、`http01_listen`）、詳細画面が「有効」になって実際に Pebble の証明書を返すこと、編集画面に resolver と名前が入っていること。
+  rproxy が許可の外の名前を `400 invalid` で断ること。届かない CA の resolver では、詳細画面に「失敗」と仮の証明書（実際に `rproxy ACME placeholder` を返す）、ダッシュボードの要確認に「ACME 失敗」が出ること（375px でもはみ出さない・白地に白文字がない）
+
+## 単体テスト：ACME（`tests/acme.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| names | 名前の正規化・検証・`allowed_names` の `*.` / `**.`（rproxy の `src/acme/config.rs` のテストと同じ例）、resolver・ワイルドカードと dns-01・アカウントと DNS のプロバイダの許可の外・名前の数 |
+| GET /acme・/api/forward/acme | 名前・challenge・許可する名前だけを渡し、contact・directory・eab・zones を渡さない。rproxy の 404 は `configured: false`、届かなければ 502 |
+| status | 証明書と状態の対応（rproxy は名前を並べ替える）、仮の証明書、要確認の文（失敗・更新できないまま期限が近い・rate_limit で待つ取得待ち）、グループではいちばん悪いノード、バッジ |
+| rule detail・form | `AcmeStatus`（取得待ちの仮の証明書、期限・更新の予定・次の試み・最後の誤り、古い rproxy の注意）、`AcmeCertificateEditor`（challenge つきの resolver、許可する名前、入力中の誤り） |
+| explainError | rproxy の断り（許可の外の名前・ワイルドカード・resolver・`global.acme` がない・udp・古い rproxy・`acme:write`）の説明 |
+| TLS・export / import | 名前の正規化、udp の ACME は `tls_config`、ACME の証明書が書き出して読み込んでも同じ |
 
 ## まだテストしていないこと
 

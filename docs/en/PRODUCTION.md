@@ -141,7 +141,7 @@ If the UI is on a different host, the control API has to listen on something oth
 ]
 ```
 
-Put the certificate and key in `/etc/rproxy/tls/` with `root:rproxy` 640. rproxy has no built-in ACME, so obtain certificates with certbot, acme.sh or similar (on Kubernetes, mount cert-manager's Secret).
+Put the certificate and key in `/etc/rproxy/tls/` with `root:rproxy` 640. From rproxy-api v0.3.21, rproxy can also obtain and renew certificates itself with ACME (`global.acme` in rproxy's settings file; see rproxy-api's docs/en/ACME.md and "Obtaining certificates with ACME" in the README). For files, obtain certificates with certbot, acme.sh or similar (on Kubernetes, mount cert-manager's Secret).
 rproxy checks the files' size, modification time and inode every 60 seconds (`RPROXY_CERT_CHECK_SECS`; `0` disables it) and automatically reloads only the certificates that changed (replacing a symbolic link is also detected). To apply a change immediately, run `sudo systemctl reload rproxy-api`.
 
 To obtain certificates with certbot's http-01, use an L7 (`http`) rule on port 80 to route `/.well-known/acme-challenge/` to certbot's standalone server (e.g. `--http-01-port 8888`) or a server that serves the webroot (other paths are redirected to HTTPS):

@@ -38,7 +38,9 @@ import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBann
 import Tabs, { tabPanelProps } from '@/components/Tabs';
 import { DRIFT_LABELS } from '@/components/drift';
 import type { NodeLiveState } from '@/components/lib';
-import { ACME_UNSUPPORTED_NOTE, STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
+import { STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
+import AcmeStatus from '@/components/AcmeStatus';
+import { acmeStatusFor } from '@/components/acme';
 import HttpSummary from '@/components/HttpSummary';
 import HistoryList from '@/components/HistoryList';
 import { translate } from '@/i18n/core';
@@ -235,12 +237,12 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
             <tbody>
               {tls.certificates.map((c, i) => (
                 c.acme !== undefined ? (
-                  // ACME の証明書（v0.3）はファイルを持たない
-                  <tr key={i}>
+                  // ACME の証明書（rproxy v0.3.21）はファイルを持たない。状態は rproxy のルールの acme
+                  <tr key={i} data-testid="acme-certificate">
                     <td>{i + 1}</td>
                     <td colSpan={3} className="break-all">
                       ACME（resolver: <Mono>{c.acme}</Mono>）: <Mono>{(c.domains ?? []).join(', ')}</Mono>
-                      <p className="mt-1 text-xs text-amber-900" data-testid="acme-note">{ACME_UNSUPPORTED_NOTE}</p>
+                      <AcmeStatus status={acmeStatusFor(rule.acmeStatus, c)} reported={rule.acmeStatus !== undefined} ruleState={rule.state} />
                     </td>
                   </tr>
                 ) : (

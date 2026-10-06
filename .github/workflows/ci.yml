@@ -74,8 +74,9 @@ jobs:
       RPROXY_API_TOKEN: e2e-token
       E2E_BACKEND_PORT: 19001
     steps:
-      # build-base・rustup は rproxy-api のビルド、chromium は Playwright（Alpine の musl 向けのブラウザは Playwright が配らない）、openssl は TLS を終端するテストの自己署名の証明書
-      - run: apk add --no-cache git bash curl build-base rustup mariadb mariadb-client chromium openssl
+      # build-base・rustup は rproxy-api のビルド、chromium は Playwright（Alpine の musl 向けのブラウザは Playwright が配らない）、openssl は TLS を終端するテストの自己署名の証明書、
+      # pebble は ACME の試験用の CA（tests/ui/acme.spec.ts。scripts/ci-pebble.sh）
+      - run: apk add --no-cache git bash curl build-base rustup mariadb mariadb-client chromium openssl pebble
       - uses: actions/checkout@v7
 
       # rproxy-api と同じ名前のブランチがあればそれを、なければ既定ブランチを使う
@@ -112,6 +113,17 @@ jobs:
       - name: create tables from db/schema.sql
         run: mariadb -uroot -p"$DB_PASSWORD" "$DB_DATABASE" < db/schema.sql
 
+      # ACME（rproxy-api v0.3.21。docs/ACME.md がある版だけ）：Pebble を動かし、rproxy の設定ファイルに global.acme を書く
+      - name: Pebble (ACME test CA) and global.acme
+        run: |
+          if [ -f rproxy-api/docs/ACME.md ]; then
+            config=$(scripts/ci-pebble.sh "$RUNNER_TEMP/pebble")
+            echo "RPROXY_CONFIG=$config" >> "$GITHUB_ENV"
+            echo "UI_E2E_ACME=1" >> "$GITHUB_ENV"
+          else
+            echo "rproxy-api has no ACME; skipping tests/ui/acme.spec.ts"
+          fi
+
       - name: start rproxy-api
         run: |
           echo "$RPROXY_API_TOKEN" > "$RUNNER_TEMP/tokens"
@@ -140,6 +152,10 @@ jobs:
       - name: rproxy-api log
         if: always()
         run: cat "$RUNNER_TEMP/rproxy.log" || true
+
+      - name: Pebble log
+        if: always()
+        run: cat "$RUNNER_TEMP/pebble/pebble.log" 2>/dev/null || true
 
   # 複数のノード（#98）：rproxy-api を 2 台（それぞれ別のコンテナ。同じ待ち受けを両方で使えるように）動かし、
   # ノードごとのデータベースのビュー（db/node-view.mjs）から起動時に自分のルールだけを戻すことを確かめる。
