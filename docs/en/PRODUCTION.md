@@ -205,7 +205,7 @@ tail -f /var/log/rproxy/rproxy.*.log      # rproxy-api (JSON Lines; if there is 
 
 - Open `https://dashboard.example.com`, sign in with Keycloak, and check that the dashboard appears and shows that rproxy is reachable.
 - Check that the static rule (443) appears in the list marked "Static".
-- Check that connections from outside the `allow_from` range are not possible (the dashboard's "Denied" count increases).
+- Check that connections from outside the `allow_from` range are not possible (the dashboard's "Refused" count increases).
 
 ## 7. Updates
 

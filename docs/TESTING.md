@@ -96,7 +96,7 @@ CI のジョブは Alpine のコンテナ（`node:24-alpine`）で動く。Maria
 
 | テスト | 確かめること |
 |---|---|
-| parseCidr: normalizes …（18 パターン） | rproxy の `src/cidr.rs` と同じ正規化（単一 IP は /32・/128、ホスト部を落とす、IPv6 の圧縮表記、IPv4-mapped は IPv4、`[ ]` を無視、埋め込み IPv4） |
+| parseCidr: normalizes …（18 パターン） | rproxy の `src/net/cidr.rs` と同じ正規化（単一 IP は /32・/128、ホスト部を落とす、IPv6 の圧縮表記、IPv4-mapped は IPv4、`[ ]` を無視、埋め込み IPv4） |
 | parseCidr: rejects …（19 パターン） | 空、ホスト名、/33・/129、数字でないプレフィックス、255 を超えるオクテット、先頭の 0、グループ数の誤り、`::` が 2 つ、ゾーン ID、IPv4-mapped に /104 |
 | explains a too long prefix separately / formats IPv6 like RFC 5952 | エラーメッセージ、`::` にする 0 の並びの選び方 |
 | allow_from lists | 1 行に 1 件（空行は無視）、64 件まで、最初の誤りを返す、`normalizeAllowFrom` は `invalid` |
@@ -167,12 +167,20 @@ CI のジョブは Alpine のコンテナ（`node:24-alpine`）で動く。Maria
   ノードごとの上書き（そのノードだけ・ずれにならない・ビューが重ねて再起動後も同じ・エクスポート）、ノード単位の停止（再起動しても戻らない）、重なる先へのコピーの拒否と移動、
   ha/ready の 503 と自動の送り直しで 200 に戻ること（RESEND を system で記録）、notify で昇格したノードにすぐ作り直すこと
 
+## 画面操作の E2E（`tests/ui`、Playwright）
+
+CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
+
+- `rules.spec.ts`：TCP と L7（HTTP）のルールを画面から追加・変更・削除し、実際に転送されること。サインインしていなければフォームを出さないこと
+- `settings.spec.ts`：TLS のオプション（最小バージョン 1.3 で TLS 1.3 のスイートがないと送る前に断る・保存すると TLS 1.2 のクライアントを断る・編集画面に今の値）、basic_auth の realm・user_header・keep_authorization（401 の `WWW-Authenticate`、転送先に届く利用者の名前）、UDP の sni が版の注意なしで選べること。自己署名の証明書は openssl で作る（CI では apk の openssl）
+- `i18n.spec.ts`：英語への切り替えと cookie、別の子になった括弧の前の空白
+- `responsive.spec.ts`・`contrast.spec.ts`・`version.spec.ts`：375px / 768px ではみ出さないこと、白地に白文字がないこと、版の表示
+
 ## まだテストしていないこと
 
-- 画面の操作（ブラウザでの E2E）。見た目の確認はスクリーンショットで手動で行った（1280px と 768px。フォームは HTML の描画結果だけを見ている）。
-  ダッシュボード・詳細・変更画面のページ自体（データの取得と自動更新）は単体テストがない（集計と整形は `components/dashboard.ts` で確かめている）
+- ダッシュボード・詳細・変更画面のページ自体（データの取得と自動更新）は単体テストがない（集計と整形は `components/dashboard.ts` で確かめている）
 - 中間 CA を使う TLS の終端は E2E にない。3 階層（ルート → 中間 2 つ → サーバ証明書）の証明書で、UI から追加したルールが中間 CA を送り、ルートだけを信頼するクライアントで検証が通ることを手動で確認した
-- 証明書を使う TLS の終端・STARTTLS・DTLS の実際の通信（E2E には証明書がない。rproxy 側のテストで確認している）。
+- STARTTLS・DTLS の実際の通信（rproxy 側のテストで確認している。TLS の終端は openssl の自己署名の証明書で `settings.spec.ts` と `tests/e2e.test.ts` が確かめる）。
   UI が書いた `options` を rproxy が再起動時に読めることは手動で確認した
 - Keycloak との実際のログイン（手動では確認済み）
 - 固定ルール（`--static-rules`）は E2E にない（CI の rproxy は固定ルールなしで起動する。固定ルールがあると E2E の `dashboard` の件数の確認が合わなくなる）。
