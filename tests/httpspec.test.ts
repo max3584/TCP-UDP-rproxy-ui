@@ -135,6 +135,19 @@ describe('HttpEditor and the L7 parts of RuleForm', () => {
     expect(html).not.toContain('（headers）');
   });
 
+  it('edits realm, user_header and keep_authorization of basic_auth with their own fields', () => {
+    const value = toHttpRules({
+      routes: [{ match: 'PathPrefix(`/`)', to: 'http://10.0.0.1' }],
+      middlewares: { auth: { basic_auth: { users_file: '/etc/rproxy/htpasswd', realm: 'staff', keep_authorization: true, user_header: 'X-Forwarded-User' } } },
+    } as never);
+    const html = renderToStaticMarkup(createElement(HttpEditor, { value, onChange: () => undefined, middlewares: ['basic_auth'], serviceOptions: [], http3: false }));
+    expect(html).toMatch(/id="http-mw-0-users_file"[^>]*value="\/etc\/rproxy\/htpasswd"/);
+    expect(html).toMatch(/id="http-mw-0-realm"[^>]*value="staff"/);
+    expect(html).toMatch(/id="http-mw-0-user_header"[^>]*value="X-Forwarded-User"/);
+    expect(html).toMatch(/id="http-mw-0-keep_authorization"[^>]*checked=""/);
+    expect(html).not.toContain('id="http-mw-0-json"');
+  });
+
   it('labels every input of the L7 tab and keeps the settings of an http rule', () => {
     const html = renderToStaticMarkup(createElement(RuleForm, { onCancel: () => undefined, onSubmit: () => undefined, initialData: httpRule }));
     const ids = Array.from(html.matchAll(/<(?:input|select|textarea)[^>]*\sid="([^"]+)"/g)).map((m) => m[1]);

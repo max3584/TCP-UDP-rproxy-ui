@@ -134,7 +134,7 @@ Keycloak roles decide who can do what (the API routes check on every request).
 With rproxy-api v0.3.1 or later (`features.http` in `GET /capabilities` is true), choosing "Route by L7 (HTTP)" in the "Basic" tab of a TCP rule
 lets you edit, in the "L7 (HTTP)" tab, the routes (`match` expressions as in Traefik; common conditions can be assembled by selection), services (targets and weights), middlewares (redirect, rate limit, CrowdSec, etc.; only the kinds rproxy supports) and the response when nothing matches.
 The profiles "HTTPS reverse proxy (L7)" and "HTTP→HTTPS redirect (port 80, L7)" serve as templates. Switching between L4 and L7 is only possible at creation (rproxy cannot switch it with PATCH).
-"Block clients by CrowdSec decisions (L4)" in the "Advanced" tab can be used when the rproxy settings file has `global.crowdsec` (rproxy-api v0.3.2 or later).
+"Block sources banned by CrowdSec (L4)" in the "Advanced" tab can be used when the rproxy settings file has `global.crowdsec` (rproxy-api v0.3.2 or later).
 
 For building a production environment (apt, DB users and privileges, Keycloak, publishing over HTTPS, updates and backups), see [docs/en/PRODUCTION.md](docs/en/PRODUCTION.md).
 
@@ -143,9 +143,9 @@ The HTTP API contract with rproxy-api is `../rproxy-api/docs/API.md`.
 
 ## Multiple targets
 
-"Add target" in the "Basic" tab lets a rule have multiple targets, with a choice of balancing method (rproxy-api v0.3.3 or later; L4 TCP / UDP rules).
+"Add backend" in the "Basic" tab lets a rule have multiple backends, with a choice of "Load balancing" (rproxy-api v0.3.3 or later; L4 TCP / UDP rules).
 
-| Balancing method | Behavior |
+| Load balancing | Behavior |
 |---|---|
 | Round robin | Rotates in turn in proportion to the weights |
 | Least connections | Sends to the target with the smallest current connections (sessions for UDP) ÷ weight |
@@ -154,7 +154,7 @@ The HTTP API contract with rproxy-api is `../rproxy-api/docs/API.md`.
 - Targets marked "Backup" are used only when all non-backup targets are down.
 - A health check (checked by a TCP connection; interval, timeout, port) can be added. For UDP rules, the TCP port to check is required. Even without a health check, rproxy takes a target that failed to connect out of rotation for a while.
 - The details screen shows the state of each target (up / down, connections) when rproxy returns it.
-- For L7 rules, the same three can be chosen as the service's "Balancing method" (failover goes through the servers from the top).
+- For L7 rules, the same three can be chosen as the service's "Load balancing" (failover goes through the servers from the top).
 
 ## Listening on IPv4 and IPv6 at the same time
 
@@ -163,17 +163,17 @@ You can list a representative IPv4 address together with a GUA IPv6 address, or 
 
 ## Passing some server names through without termination (SNI passthrough)
 
-In a rule that terminates TLS (including L7 rules), names set to "Do not terminate" under "Targets by server name" in the TLS tab are not terminated by rproxy; the connection is passed to the target as is, ClientHello included (the target's certificate is used; rproxy-api v0.3.3 or later).
+In a rule that terminates TLS (including L7 rules), names set to "Do not terminate" under "Backends per server name" in the TLS tab are not terminated by rproxy; the connection is passed to the target as is, ClientHello included (the target's certificate is used; rproxy-api v0.3.3 or later).
 For example, on `:443` rproxy can terminate cdn and gitlab and route them at L7, while passing registry and `**.tenant.example.com` straight to Kubernetes (with cert-manager certificates).
 
 - One line can hold several server names separated by commas (rproxy's `server_names`).
 - `*.example.com` matches exactly one level, `**.example.com` matches any number of levels (neither matches `example.com` itself). When several match, the order is: exact match → `*.` → `**.` (longer first) → the line higher up.
-- In L7 rules, only "Do not terminate" lines can be used (other names are routed by L7 routes). "Drop unmatched connections" cannot be used either.
+- In L7 rules, only "Do not terminate" lines can be used (other names are routed by L7 routes). "Disconnect" under "Connections matching no server name" cannot be used either.
 - `allow_from`, CrowdSec and statistics also apply to passthrough connections.
 
 ## Routing UDP by server name (DTLS, QUIC)
 
-UDP rules can also choose the target by the server name in the first packet when the TLS tab's mode is set to "sni" (from rproxy v0.3.8). Nothing is terminated, so no certificate is needed (the target has it). You can start from the profiles "Route HTTP/3 (QUIC) by server name (UDP 443)" and "Route TURN DTLS by server name (UDP 5349)".
+UDP rules can also choose the target by the server name in the first packet when the TLS tab's mode is set to "sni" (from rproxy v0.3.8). rproxy v0.3.18 or later reports its version, so "sni" is not offered when it is older than v0.3.8 (an older rproxy that does not report its version still gets the choice, with a note that v0.3.7 or earlier refuses it when you save). Nothing is terminated, so no certificate is needed (the target has it). You can start from the profiles "Route HTTP/3 (QUIC) by server name (UDP 443)" and "Route TURN DTLS by server name (UDP 5349)".
 
 - Only DTLS and QUIC (HTTP/3, etc.) can be routed. UDP whose packets carry no server name, such as IKE (IPsec), WireGuard, RTP and games, gets the "when nothing matches" handling (send to the basic target / drop).
 - It cannot be combined with an L7 rule that accepts HTTP/3 (http3) on the same address and port (the form warns about this).
@@ -191,7 +191,7 @@ UDP rules can also choose the target by the server name in the first packet when
 | Change history (`/history`) | History of adding, changing and deleting rules, and reverting to an earlier version (see "Change history and revert" below). The rule details screen also shows the history of that rule |
 
 rx is the number of bytes from the client to the target, tx from the target to the client (cumulative since rproxy started the rule; reset to 0 when rproxy restarts).
-"Denied" is the number of connections dropped because they were outside the allowed sources (allow_from), or because of the setting that drops connections matching no server name (unmatched: reject).
+"Refused" is the number of connections dropped because they were outside the allowed sources (allow_from), or because of the setting that drops connections matching no server name (unmatched: reject).
 
 Static rules are the rules in the file rproxy loads at startup (`RPROXY_STATIC_RULES` / `--static-rules`; "Static rules" in `../rproxy-api/docs/API.md`) and are not stored in the DB.
 They are shown on the dashboard and details screens to anyone who is signed in, but cannot be changed or deleted from the screens (edit the file and restart rproxy).
@@ -201,7 +201,8 @@ The form is divided into tabs.
 | Tab | Contents |
 |---|---|
 | Basic | Profile (templates by use case), protocol, listen address, port (the end of a range is optional), target |
-| TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), targets by server name and the handling of connections matching no server name (send to the basic target / drop), certificates, client certificate verification (mTLS), ALPN, re-encryption to the target |
+| L7 (HTTP) | Routes, services, middlewares and "When no route matches" (L7 rules; TCP, when rproxy supports L7) |
+| TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), backends per server name and "Connections matching no server name" (Send to the default backend / Disconnect), certificates, TLS options (minimum version and cipher suites; TCP terminate), client certificate verification (mTLS), ALPN, re-encryption to the backend |
 | Mail (STARTTLS) | STARTTLS for SMTP / IMAP / POP3 (only for TCP with "terminate") |
 | Advanced | Source IP handling (source_ip), UDP idle timeout, allowed sources (allow_from) |
 
@@ -215,7 +216,7 @@ The form is divided into tabs.
 - WebRTC media cannot connect if DTLS is terminated. Use a passthrough range rule.
 - Allowed sources (allow_from) take one entry per line, a CIDR (`172.16.0.0/16`, `fd00::/8`) or a single IP (up to 64). If empty, everything is allowed.
   TCP connections from outside the range are dropped before TLS or the PROXY header, and for UDP, datagrams from sources outside the range are discarded. On save they are normalized, e.g. `10.0.0.5` → `10.0.0.5/32`.
-- "Connections matching no server name" can be chosen only for TCP sni / terminate with targets by server name. "Drop" drops connections with an unmatched name or without SNI (with terminate, they are dropped without completing the handshake).
+- "Connections matching no server name" can be chosen only for sni (TCP / UDP) or TCP terminate with backends per server name. "Disconnect" drops connections with an unmatched name or without SNI (with terminate, they are dropped without completing the handshake).
 
 ## Pausing a rule
 
@@ -224,7 +225,7 @@ The form is divided into tabs.
 - Pausing keeps the rule in the DB and removes it from rproxy (the listener closes and existing connections are cut). Paused rules are not created even when rproxy restarts (from rproxy-api v0.3.5; it reads `"enabled": false` in the DB's `options` and skips them).
 - Paused rules can still be edited (only the DB changes, and the rule is created with those contents on resume). Deleting also touches only the DB.
 - The list, details and dashboard show "Paused" and count them separately.
-- Pause and resume are recorded in the history as "Change" (the difference shows whether it is paused).
+- Pause and resume are recorded in the history as "Changed" (the difference shows whether it is paused).
 - Exports add `enabled: false` to paused rules (importing restores them as paused). This field is only valid within the UI's export format.
 - "Replace" on import and reverting from the history keep the current paused / running state (only the contents change). Reverting a deleted rule recreates it in the state of that version (paused if it was paused).
 
@@ -254,7 +255,7 @@ The form is divided into tabs.
 
 ## Change history and revert
 
-"Change history" (`/history`) shows the history of adding, changing and deleting rules (when, who, what). Changes show the difference from the previous version (target, TLS mode, allowed sources, etc.).
+"History" (`/history`) shows the history of adding, changing and deleting rules (when, who, what). Changes show the difference from the previous version (target, TLS mode, allowed sources, etc.).
 You can filter by protocol, listen address, port, operation and period (`rproxy-admin` can also filter by the user who performed the operation). The rule details screen also shows the history of that rule.
 
 - What you can see: users see the history they performed and the history of the rules they currently own. `rproxy-admin` sees everything.

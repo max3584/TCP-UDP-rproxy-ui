@@ -19,6 +19,10 @@ test('switch the UI to English', async ({ page, context }) => {
   await expect(page.getByRole('button', { name: 'Add rule' })).toBeVisible();
   await expect(page.getByText('Listen port:', { exact: true })).toBeVisible();
   await expect(page.getByRole('tab', { name: /Basic/ })).toBeVisible();
+  // JSX で別の子になった括弧の前に空白が入る（"Backend port(first of the range)" にならない）
+  await page.locator('#rule-src-port').fill('19500');
+  await page.locator('#rule-src-port-end').fill('19501');
+  await expect(page.locator('label[for="rule-dist-port"]')).toHaveText('Backend port (first of the range):');
 
   // 読み込み直しても（SSR でも）英語
   await page.reload();

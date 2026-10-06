@@ -21,6 +21,7 @@ import {
   TlsUnmatched,
   routeNames,
 } from './lib';
+import { CIPHER_SUITES, TLS12_CIPHER_SUITES, TLS13_CIPHER_SUITES, isTls13Suite } from './tls';
 import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
@@ -34,6 +35,7 @@ import { Balancing, NO_BALANCING } from './tls';
 import { hostPort, http3PortConflicts, multiNode, targetChoices } from './dashboard';
 import { useNodes } from './ui';
 import { joinList } from '@/i18n/core';
+import { compareVersions, parseVersion } from './version';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -104,11 +106,15 @@ interface Caps {
   // GET /capabilities の transparent / transparent_ipv6（取得できなかったときは null）
   transparent: boolean | null;
   transparentIpv6: boolean | null;
+  // GET /capabilities の version（v0.3.18 より前の rproxy は返さないので null）
+  version: string | null;
   // GET /capabilities の features（v0.3。古い rproxy は返さないので null）
   features: {
     http: boolean;
     http3: boolean;
     middlewares: string[];
+    // tls.options（最小バージョン・暗号スイート）
+    tlsOptions: boolean;
     // 実装済みのサービスの項目（health_check / sticky）。返さない rproxy では null
     services: string[] | null;
   } | null;
@@ -123,6 +129,7 @@ const FALLBACK_CAPS: Caps = {
   maxRangePorts: DEFAULT_MAX_RANGE_PORTS,
   transparent: null,
   transparentIpv6: null,
+  version: null,
   features: null,
 };
 
@@ -184,6 +191,16 @@ export const UDP_SNI_NOTES = [
   'QUIC の接続の移動（クライアントのアドレスやポートが変わる）は追いかけません。ECH を使う接続では本当のサーバ名は読めません（外側の名前で振り分けます）。',
 ];
 
+// UDP の sni（rproxy v0.3.8 から）を rproxy が受け付けるか。版が分からなければ null
+export const UDP_SNI_MIN_VERSION = '0.3.8';
+export function udpSniSupport(version: string | null): boolean | null {
+  const v = parseVersion(version);
+  if (!v) return null;
+  return compareVersions(v, parseVersion(UDP_SNI_MIN_VERSION)!) >= 0;
+}
+export const UDP_SNI_VERSION_NOTE =
+  'UDP の sni には rproxy v0.3.8 以降が必要です。この rproxy は版を返さない（v0.3.18 より前）ので確かめられません。v0.3.7 以前の rproxy では保存するときに断られます。';
+
 const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
   const [profileId, setProfileId] = useState('');
@@ -221,8 +238,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [upstreamChain, setUpstreamChain] = useState(tls.upstream?.chain_file ?? '');
   const [upstreamKey, setUpstreamKey] = useState(tls.upstream?.key_file ?? '');
   const [unmatched, setUnmatched] = useState<TlsUnmatched>(tls.unmatched ?? 'default');
-  // TLS のオプション（v0.3）はフォームでは編集できないので、終端のままならそのまま送る
+  // TLS のオプション（v0.3。features.tls_options）。rproxy が対応していなければ編集させず、終端のままならそのまま送る
   const tlsOptions = tls.options;
+  const [minVersion, setMinVersion] = useState<'' | '1.2' | '1.3'>(tls.options?.min_version ?? '');
+  const [cipherSuites, setCipherSuites] = useState<string[]>(tls.options?.cipher_suites ?? []);
   // 1 行に 1 件
   const [allowFromText, setAllowFromText] = useState((initialData?.allowFrom ?? []).join('\n'));
   const [starttls, setStarttls] = useState<StartTls | ''>(initialData?.starttls ?? '');
@@ -262,10 +281,12 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           transparent: typeof data.transparent === 'boolean' ? data.transparent : null,
           // 古い rproxy は transparent_ipv6 を返さない（IPv4 だけ）
           transparentIpv6: typeof data.transparent_ipv6 === 'boolean' ? data.transparent_ipv6 : false,
+          version: typeof data.version === 'string' ? data.version : null,
           features: typeof data.features === 'object' && data.features !== null ? {
             http: data.features.http === true,
             http3: data.features.http3 === true,
             middlewares: Array.isArray(data.features.middlewares) ? data.features.middlewares : [],
+            tlsOptions: data.features.tls_options === true,
             services: Array.isArray(data.features.services) ? data.features.services : null,
           } : null,
         });
@@ -344,18 +365,22 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     return true;
   }), [caps.sourceIps, caps.transparentIpv6, protocol, srcAddr]);
 
+  // UDP の sni は rproxy v0.3.8 から（それより前は unsupported で断る）。capabilities では見分けられないので、版で判断する。
+  // 版を返さない rproxy（v0.3.18 より前）では分からない（null）ので選ばせて、注意を出す
+  const udpSni = udpSniSupport(caps.version);
   // UDP の sni は DTLS・QUIC のサーバ名での振り分け（rproxy v0.3.8 から）。UDP の terminate は DTLS（rproxy が対応しているときだけ）。
   // 編集中のルールのモードは常に選べる
   const availableTlsModes = useMemo(() => {
     const modes = caps.tlsModes.filter((m) => {
       if (protocol === 'udp' && m === 'terminate' && !caps.dtls) return false;
+      if (protocol === 'udp' && m === 'sni' && udpSni === false) return false;
       return true;
     });
     const current = initialData?.tls.mode;
     if (current && !modes.includes(current)) modes.push(current);
     if (!modes.includes('passthrough')) modes.unshift('passthrough');
     return modes;
-  }, [caps.tlsModes, caps.dtls, protocol, initialData]);
+  }, [caps.tlsModes, caps.dtls, protocol, initialData, udpSni]);
 
   const availableStartTls = useMemo(() => {
     const list = [...caps.starttls];
@@ -376,6 +401,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const l7Available = protocol === 'tcp' && (caps.features?.http === true || (editMode && l7));
   if (l7 && !editMode && protocol !== 'tcp') setL7(false);
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate' && !l7;
+  // TLS のオプションは tcp の終端で、rproxy が features.tls_options を返すときだけ編集できる
+  const tlsOptionsEditable = protocol === 'tcp' && tlsMode === 'terminate' && caps.features?.tlsOptions === true;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
   const showUnmatched = ((protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate')) || (protocol === 'udp' && tlsMode === 'sni'))
@@ -467,7 +494,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       spec.certificates = certificates.map((c) => (c.acme !== undefined
         ? { acme: c.acme, domains: c.domains ?? [] }
         : { cert_file: c.cert_file ?? '', chain_file: c.chain_file ?? '', key_file: c.key_file ?? '' }));
-      if (tlsOptions) spec.options = tlsOptions;
+      if (tlsOptionsEditable) {
+        spec.options = {
+          ...(minVersion !== '' ? { min_version: minVersion } : {}),
+          ...(cipherSuites.length > 0 ? { cipher_suites: cipherSuites } : {}),
+        };
+      } else if (tlsOptions) {
+        spec.options = tlsOptions;
+      }
       // none のときは CA も中間 CA も送らない（欄は隠れている）
       spec.client_auth = clientAuthMode === 'none'
         ? { mode: 'none' }
@@ -989,6 +1023,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           {protocol === 'udp' && tlsMode === 'sni' && (
             <div className="mt-1 text-xs rounded-sm border border-amber-300 bg-amber-50 text-amber-900 px-2 py-1 space-y-1" data-testid="udp-sni-notes">
               {UDP_SNI_NOTES.map((n) => <p key={n}>{n}</p>)}
+              {udpSni === null && <p data-testid="udp-sni-version-note">{UDP_SNI_VERSION_NOTE}</p>}
             </div>
           )}
           {capabilitiesError && <p className="text-yellow-800 text-xs mt-1">{capabilitiesError}</p>}
@@ -1090,12 +1125,50 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               </button>
               <p className={helpClass}>サーバ証明書のファイルにチェーンを連結してある場合は、中間 CA は空欄のままで構いません。</p>
               {protocol === 'udp' && <p className={helpClass}>DTLS の秘密鍵は PKCS#8（-----BEGIN PRIVATE KEY-----）に限ります。</p>}
-              {tlsOptions && (
+              {tlsOptions && !tlsOptionsEditable && (
                 <p className={helpClass} data-testid="tls-options-note">
                   TLS のオプション（{joinList([tlsOptions.min_version && `最小バージョン ${tlsOptions.min_version}`, tlsOptions.cipher_suites && `暗号スイート ${tlsOptions.cipher_suites.length} 件`].filter((s): s is string => Boolean(s)))}）はこのフォームでは編集できません（そのまま保たれます）。
                 </p>
               )}
             </fieldset>
+
+            {tlsOptionsEditable && (
+              <fieldset className="mb-4" data-testid="tls-options">
+                <legend className={labelClass}>TLS のオプション（任意）:</legend>
+                <label htmlFor="rule-tls-min-version" className="block text-xs font-medium text-gray-800">最小バージョン</label>
+                <select id="rule-tls-min-version" className={`${inputClass} mb-2`} value={minVersion}
+                  onChange={(e) => setMinVersion(e.target.value as '' | '1.2' | '1.3')}>
+                  <option value="">既定（TLS 1.2 と 1.3）</option>
+                  <option value="1.2">TLS 1.2 以上</option>
+                  <option value="1.3">TLS 1.3 だけ（TLS 1.2 のクライアントを断る）</option>
+                </select>
+                <p className="block text-xs font-medium text-gray-800">暗号スイート</p>
+                <p className={helpClass} id="rule-tls-ciphers-help">
+                  選ばなければ rproxy の既定（すべて）。選んだスイートがない版は提示しません（TLS 1.3 のものだけを選べば TLS 1.3 だけになります）。
+                </p>
+                {[
+                  { label: 'TLS 1.3', names: TLS13_CIPHER_SUITES as readonly string[] },
+                  { label: 'TLS 1.2', names: TLS12_CIPHER_SUITES as readonly string[] },
+                  { label: 'この UI が知らない名前', names: cipherSuites.filter((c) => !CIPHER_SUITES.includes(c)) },
+                ].filter((g) => g.names.length > 0).map((g) => (
+                  <div key={g.label} className="mt-1">
+                    <p className="text-xs text-gray-700">{g.label}</p>
+                    {g.names.map((name) => (
+                      <label key={name} className="flex items-center gap-2 text-xs font-mono text-gray-900 break-all">
+                        <input type="checkbox" checked={cipherSuites.includes(name)} aria-describedby="rule-tls-ciphers-help"
+                          onChange={(e) => setCipherSuites(e.target.checked ? [...cipherSuites, name] : cipherSuites.filter((c) => c !== name))} />
+                        {name}
+                      </label>
+                    ))}
+                  </div>
+                ))}
+                {l7 && httpRules.http3 && cipherSuites.length > 0 && !cipherSuites.some(isTls13Suite) && (
+                  <p className="mt-1 text-xs text-yellow-800" data-testid="tls-options-quic-note">
+                    HTTP/3（QUIC）は TLS 1.3 だけなので、TLS 1.3 の暗号スイートがないと HTTP/3 を受けられません。
+                  </p>
+                )}
+              </fieldset>
+            )}
 
             <div className="mb-4">
               <label htmlFor="rule-client-auth" className={labelClass}>クライアント証明書の検証（mTLS）:</label>

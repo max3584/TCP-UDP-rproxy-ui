@@ -96,7 +96,7 @@ Only `deb` (Debian package), which builds, installs and checks the .deb, runs in
 
 | Test | What it checks |
 |---|---|
-| parseCidr: normalizes … (18 cases) | The same normalization as rproxy's `src/cidr.rs` (a single IP is /32 or /128, host bits dropped, IPv6 compressed form, IPv4-mapped becomes IPv4, `[ ]` ignored, embedded IPv4) |
+| parseCidr: normalizes … (18 cases) | The same normalization as rproxy's `src/net/cidr.rs` (a single IP is /32 or /128, host bits dropped, IPv6 compressed form, IPv4-mapped becomes IPv4, `[ ]` ignored, embedded IPv4) |
 | parseCidr: rejects … (19 cases) | Empty, host name, /33 and /129, non-numeric prefix, octet over 255, leading 0, wrong number of groups, two `::`, zone ID, /104 on IPv4-mapped |
 | explains a too long prefix separately / formats IPv6 like RFC 5952 | Error messages, choice of which run of zeros becomes `::` |
 | allow_from lists | One entry per line (blank lines ignored), up to 64 entries, returns the first error, `normalizeAllowFrom` gives `invalid` |
@@ -167,12 +167,20 @@ Only `deb` (Debian package), which builds, installs and checks the .deb, runs in
   per-node overrides (that node only, not drift, applied by the view and kept across a restart, exported), pausing a node (not restored by a restart), refusing a copy to an overlapping node and moving,
   ha/ready returning 503 and back to 200 after the automatic resend (RESEND recorded by system), notify recreating rules on the promoted node at once
 
+## Screen E2E (`tests/ui`, Playwright)
+
+Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
+
+- `rules.spec.ts`: adds, changes and deletes TCP and L7 (HTTP) rules from the screen and checks that traffic is forwarded; signed-out visitors do not get the form
+- `settings.spec.ts`: TLS options (minimum version 1.3 without a TLS 1.3 suite is refused before sending; once saved, TLS 1.2 clients are refused; the edit page shows the current values), basic_auth realm, user_header and keep_authorization (the 401 `WWW-Authenticate` and the user name the backend receives), and UDP sni offered without the version note. The self-signed certificate is made with openssl (apk's openssl in CI)
+- `i18n.spec.ts`: switching to English and the cookie, the space before a parenthetical that is a separate child
+- `responsive.spec.ts`, `contrast.spec.ts`, `version.spec.ts`: no overflow at 375px / 768px, no white text on white, the version display
+
 ## Not yet tested
 
-- Screen interaction (E2E in a browser). The appearance was checked manually with screenshots (1280px and 768px; for the form, only the rendered HTML was looked at).
-  The dashboard, details and change pages themselves (data fetching and auto refresh) have no unit tests (the aggregation and formatting are checked in `components/dashboard.ts`)
+- The dashboard, details and change pages themselves (data fetching and auto refresh) have no unit tests (the aggregation and formatting are checked in `components/dashboard.ts`)
 - TLS termination with intermediate CAs is not in the E2E tests. With a three-level certificate chain (root → two intermediates → server certificate), it was checked manually that a rule added from the UI sends the intermediate CAs and that verification passes for a client that trusts only the root
-- Actual traffic with certificate-based TLS termination, STARTTLS and DTLS (the E2E tests have no certificates; checked by the rproxy-side tests).
+- Actual traffic with STARTTLS and DTLS (checked by the rproxy-side tests; TLS termination is checked by `settings.spec.ts` and `tests/e2e.test.ts` with a self-signed certificate from openssl).
   That rproxy can read the `options` written by the UI on restart was checked manually
 - Actual sign-in with Keycloak (checked manually)
 - Static rules (`--static-rules`) are not in the E2E tests (the CI rproxy starts without static rules; with static rules, the E2E checks of the `dashboard` counts would not match).

@@ -74,8 +74,8 @@ jobs:
       RPROXY_API_TOKEN: e2e-token
       E2E_BACKEND_PORT: 19001
     steps:
-      # build-base・rustup は rproxy-api のビルド、chromium は Playwright（Alpine の musl 向けのブラウザは Playwright が配らない）
-      - run: apk add --no-cache git bash curl build-base rustup mariadb mariadb-client chromium
+      # build-base・rustup は rproxy-api のビルド、chromium は Playwright（Alpine の musl 向けのブラウザは Playwright が配らない）、openssl は TLS を終端するテストの自己署名の証明書
+      - run: apk add --no-cache git bash curl build-base rustup mariadb mariadb-client chromium openssl
       - uses: actions/checkout@v7
 
       # rproxy-api と同じ名前のブランチがあればそれを、なければ既定ブランチを使う

@@ -83,7 +83,12 @@ const FIELDS: Record<string, FieldDef[]> = {
     { key: 'window', label: '集計の期間（例 10s）', type: 'text' },
     { key: 'recovery', label: '回復を試すまで（例 30s）', type: 'text' },
   ],
-  basic_auth: [{ key: 'users_file', label: '利用者のファイル（htpasswd）', type: 'text' }],
+  basic_auth: [
+    { key: 'users_file', label: '利用者のファイル（htpasswd）', type: 'text', placeholder: '/etc/rproxy/htpasswd' },
+    { key: 'realm', label: 'realm（省略時 rproxy）', type: 'text', placeholder: 'rproxy' },
+    { key: 'user_header', label: '利用者の名前を渡すヘッダ（任意）', type: 'text', placeholder: 'X-Forwarded-User' },
+    { key: 'keep_authorization', label: 'Authorization を転送先に渡す', type: 'bool' },
+  ],
 };
 
 // 名前の付け替え（順番を保つ）
