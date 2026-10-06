@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { joinList, joinSentences, setLocale, tc, translate } from '@/i18n/core';
 import { translateProps } from '@/i18n/props';
+import { Fragment, jsx } from '@/i18n/jsx-runtime';
 import { DEFAULT_BALANCE, ForwardRule, SOURCE_IPS } from '@/components/lib';
 import { ruleChanges } from '@/components/history';
 import { CERT_STATE_LABELS, certProblem, countsDescription, emptyCounts } from '@/components/dashboard';
@@ -115,6 +116,41 @@ describe('JSX の文と文の間', () => {
 
   it('日本語ではそのまま', () => {
     const children = ['ルールの追加・変更・削除の履歴です。', 'すべての利用者の履歴を表示しています。'];
+    expect(translateProps({ children }).children).toBe(children);
+  });
+});
+
+describe('JSX の後ろに付く括弧', () => {
+  // 子の配列を英語の文字列にする（要素は中の文字をつなぐ）
+  const text = (c: unknown): string => {
+    if (Array.isArray(c)) return c.map(text).join('');
+    if (typeof c === 'string' || typeof c === 'number') return String(c);
+    if (c && typeof c === 'object' && 'props' in c) return text((c as { props: { children?: unknown } }).props.children);
+    return '';
+  };
+  const render = (children: unknown[]) => text(translateProps({ children }).children);
+
+  it('英語では、別の子になった「（…）」の前に空白を入れる', () => {
+    setLocale('en');
+    expect(render(['宛先', '（ポートは範囲の先頭）', ':'])).toBe('Backends (the port is the first of the range):');
+    expect(render(['転送先ポート', '（範囲の先頭）', ':'])).toMatch(/ \(first of the range\):$/);
+    // 文字列の「（」と値と「）」
+    expect(render(['レート制限', '（', 'rate_limit', '）'])).toBe('Rate limit (rate_limit)');
+    // 要素の中の括弧（数・要素の後ろ）
+    expect(render([3, jsx('span', { children: '（既定）' })])).toBe('3 (default)');
+    expect(render([jsx('span', { children: 'k' }), '（', jsx('span', { children: 'n1' }), '）:'])).toBe('k (n1):');
+    expect(render(['rproxy の設定ファイル', jsx(Fragment, { children: ['（', jsx('span', { children: '/etc/x' }), '）'] })])).toMatch(/file \(\/etc\/x\)$/);
+  });
+
+  it('前が空白・訳に空白があるときは足さない', () => {
+    setLocale('en');
+    expect(render(['HTTP ', '（5xx', ' 3', '）'])).toBe('HTTP (5xx 3)');
+    expect(render(['（必須）'])).toBe('(required)');
+    expect(render(['CrowdSec で禁止された接続元を、TLS より前（allow_from と同じところ）で切ります', '（UDP はデータグラムを捨てます）'])).not.toMatch(/ {2}\(/);
+  });
+
+  it('日本語ではそのまま', () => {
+    const children = ['宛先', '（ポートは範囲の先頭）', ':'];
     expect(translateProps({ children }).children).toBe(children);
   });
 });
