@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CertState, DriftField, ForwardRule, ForwardRules, HaStatus, NodeLiveState, NodeRole, NodesInfo, RuleState } from './lib';
+import type { AcmeState } from './acme';
 import { DRIFT_LABELS } from './drift';
 import { RuleKey, STATE_LABELS, ruleApiUrl, tlsLabel } from './dashboard';
 import { explainError } from './messages';
@@ -44,6 +45,14 @@ export const StaticBadge: React.FC = () => (
 export const CertBadge: React.FC<{ state: CertState | null }> = ({ state }) => {
   if (state === 'expired') return <span className="badge bg-red-100 text-red-900" title="期限切れの証明書があります">証明書 期限切れ</span>;
   if (state === 'expiring') return <span className="badge bg-amber-100 text-amber-900" title="期限が近い証明書があります">証明書 期限間近</span>;
+  return null;
+};
+
+// ACME の証明書の状態（rproxy の acme）。取れていない（仮の証明書）・失敗のときだけ出す
+export const acmeBadgeShown = (state: AcmeState | null): boolean => state === 'error' || state === 'pending';
+export const AcmeBadge: React.FC<{ state: AcmeState | null }> = ({ state }) => {
+  if (state === 'error') return <span className="badge bg-red-100 text-red-900" title="ACME で証明書を取得・更新できていません">ACME 失敗</span>;
+  if (state === 'pending') return <span className="badge bg-amber-100 text-amber-900" title="ACME の証明書をまだ取れていません（自己署名の仮の証明書を返しています）">ACME 取得待ち</span>;
   return null;
 };
 

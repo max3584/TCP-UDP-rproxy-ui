@@ -49,6 +49,8 @@ export interface RproxyRuleStatus extends Omit<RproxyRule, 'listen_port_end' | '
   origin?: RuleOrigin;
   // 証明書の期限（rproxy v0.3.5 以降。証明書がないルールでは省かれる）
   cert_status?: CertStatus[];
+  // ACME の証明書の状態（rproxy v0.3.21 以降。ACME の証明書がないルールでは省かれる。components/acme.ts）
+  acme?: unknown[];
 }
 
 export interface RproxyRuleKey {
@@ -243,6 +245,11 @@ export interface RproxyConfigStatus {
 
 export function getConfigStatus(): Promise<RproxyConfigStatus> {
   return request<RproxyConfigStatus>('GET', '/config');
+}
+
+// ACME の状態（GET /acme。rules:read のスコープ）。global.acme がなければ 404。秘密は rproxy も返さない
+export function getAcme(): Promise<unknown> {
+  return request<unknown>('GET', '/acme');
 }
 
 export function listRules(): Promise<RproxyRuleStatus[]> {

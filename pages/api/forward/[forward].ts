@@ -56,6 +56,7 @@ import {
   withNode,
 } from '@/components/rproxy';
 import { aggregateNodeStates, mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
+import { acmeStatusField } from '@/components/acme';
 import { NodesConfig, NodesConfigError, groupOf, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode } from '@/components/nodes';
 import { needsRecreateOnNode, ruleDrift } from '@/components/drift';
 import { NodeOverride, Overrides, effectiveRule, normalizeOverride, overrideFromRow, overrideRow, sameOverrides, settingsOverridesToBody } from '@/components/overrides';
@@ -484,6 +485,7 @@ function withLiveState(id: number, rule: ForwardRule, live: boolean, status: Rpr
     startedAt: status?.started_at ?? null,
     resolved: status?.resolved ?? [],
     ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
+    ...acmeStatusField(status?.acme),
   };
 }
 
@@ -524,6 +526,7 @@ function nodeLiveState(node: string, rule: ForwardRule, live: boolean, status: R
     startedAt: status?.started_at ?? null,
     resolved: status?.resolved ?? [],
     ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
+    ...acmeStatusField(status?.acme),
     // UI の定義との違い（rproxy にあるときだけ。停止中なのに動いていれば enabled）
     ...(status ? { drift: ruleDrift(rule, status) } : {}),
   };
@@ -572,6 +575,7 @@ function withNodeStates(id: number, rule: ForwardRule, nodes: NodeLiveState[], o
     startedAt: agg.startedAt,
     resolved: agg.resolved,
     ...(agg.certStatus ? { certStatus: agg.certStatus } : {}),
+    ...(agg.acmeStatus ? { acmeStatus: agg.acmeStatus } : {}),
     nodes: nodes,
     ...(ha ? { ha: ha } : {}),
   };

@@ -26,7 +26,9 @@ import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normali
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 import { SOURCE_IP_DOC_URL, proxyProtocolHint, transparentHint } from './sourceip';
-import { ACME_UNSUPPORTED_NOTE } from './messages';
+import { ACME_NOT_CONFIGURED_NOTE, ACME_UNSUPPORTED_NOTE } from './messages';
+import { AcmeInfo, splitAcmeDomains } from './acme';
+import AcmeCertificateEditor, { acmeRowProblem } from './AcmeCertificateEditor';
 import HttpEditor from './HttpEditor';
 import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHttp } from './httpspec';
 import TargetsEditor from './TargetsEditor';
@@ -93,6 +95,13 @@ interface RouteRow {
   passthrough: boolean;
 }
 
+// 証明書の 1 行。ACME の証明書（acme がある）は名前の欄の文字を domainsText に持つ
+type CertRow = TlsCertificate & { domainsText?: string };
+
+function certRow(c: TlsCertificate): CertRow {
+  return c.acme !== undefined ? { ...c, domainsText: (c.domains ?? []).join(', ') } : c;
+}
+
 function routeRow(r: TlsRoute): RouteRow {
   return { names: routeNames(r).join(', '), remote_addr: r.remote_addr, remote_port: r.remote_port, passthrough: r.passthrough === true };
 }
@@ -115,6 +124,8 @@ interface Caps {
     middlewares: string[];
     // tls.options（最小バージョン・暗号スイート）
     tlsOptions: boolean;
+    // ACME の証明書（rproxy v0.3.21。使うには rproxy の設定ファイルの global.acme も要る）
+    acme: boolean;
     // 実装済みのサービスの項目（health_check / sticky）。返さない rproxy では null
     services: string[] | null;
   } | null;
@@ -225,7 +236,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [udpIdleSecs, setUdpIdleSecs] = useState<number | ''>(initialData?.udpIdleSecs || DEFAULT_UDP_IDLE_SECS);
   const [tlsMode, setTlsMode] = useState<TlsMode>(tls.mode);
   const [routes, setRoutes] = useState<RouteRow[]>((tls.routes ?? []).map(routeRow));
-  const [certificates, setCertificates] = useState<TlsCertificate[]>(tls.certificates ?? []);
+  // ACME の証明書の行は、名前の欄の文字（domainsText）も持つ
+  const [certificates, setCertificates] = useState<CertRow[]>((tls.certificates ?? []).map(certRow));
   const [clientAuthMode, setClientAuthMode] = useState<ClientAuthMode>(tls.client_auth?.mode ?? 'none');
   const [clientAuthCa, setClientAuthCa] = useState(tls.client_auth?.ca_file ?? '');
   const [clientAuthChain, setClientAuthChain] = useState(tls.client_auth?.chain_file ?? '');
@@ -287,6 +299,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             http3: data.features.http3 === true,
             middlewares: Array.isArray(data.features.middlewares) ? data.features.middlewares : [],
             tlsOptions: data.features.tls_options === true,
+            acme: data.features.acme === true,
             services: Array.isArray(data.features.services) ? data.features.services : null,
           } : null,
         });
@@ -296,6 +309,30 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     };
     getCapabilities();
   }, [probeQuery]);
+
+  // ACME の resolver の一覧（rproxy が features.acme を返すときだけ聞く。名前と許可する名前だけで、秘密は含まない）
+  const acmeFeature = caps.features?.acme === true;
+  const [acmeInfo, setAcmeInfo] = useState<AcmeInfo | null>(null);
+  const [acmeInfoError, setAcmeInfoError] = useState('');
+  useEffect(() => {
+    if (!acmeFeature) return;
+    const getAcme = async () => {
+      try {
+        const res = await fetch(`/api/forward/acme${probeQuery}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setAcmeInfo(data as AcmeInfo);
+        setAcmeInfoError('');
+      } catch (err) {
+        setAcmeInfoError(`rproxy の ACME の設定を取得できませんでした（ACME の証明書は rproxy が保存するときに確かめます）: ${err instanceof Error ? err.message : err}`);
+      }
+    };
+    getAcme();
+  }, [acmeFeature, probeQuery]);
+  // ACME の証明書を編集できる：tcp で、rproxy が ACME に対応し、設定ファイルに global.acme がある
+  // （一覧を取れなかったときも、rproxy が保存するときに確かめるので編集はさせる）
+  const acmeEditable = protocol === 'tcp' && acmeFeature && (acmeInfo?.configured === true || (acmeInfo === null && acmeInfoError !== ''));
+  const acmeInfoForCheck: AcmeInfo = acmeInfo ?? { configured: false, resolvers: [], accounts: [], dnsProviders: [], certificates: [], rateLimit: null, helper: false };
 
   useEffect(() => {
     if (editMode) return;
@@ -490,9 +527,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       if (showUnmatched) spec.unmatched = unmatched;
     }
     if (tlsMode === 'terminate') {
-      // ACME の証明書（v0.3）はフォームでは編集できないので、そのまま送る
+      // ACME の証明書は、編集できないとき（古い rproxy・global.acme がない）はそのまま送る
       spec.certificates = certificates.map((c) => (c.acme !== undefined
-        ? { acme: c.acme, domains: c.domains ?? [] }
+        ? { acme: c.acme, domains: acmeEditable ? splitAcmeDomains(c.domainsText ?? '') : c.domains ?? [] }
         : { cert_file: c.cert_file ?? '', chain_file: c.chain_file ?? '', key_file: c.key_file ?? '' }));
       if (tlsOptionsEditable) {
         spec.options = {
@@ -573,6 +610,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     const starttlsValue = showStartTls && starttls !== '' ? starttls : null;
     let tlsSpec: TlsSpec = { mode: 'passthrough' };
     try {
+      // ACME の証明書の resolver と名前を、rproxy の resolver の challenge と allowed_names で先に確かめる
+      if (tlsMode === 'terminate' && acmeEditable) {
+        certificates.forEach((c, i) => {
+          if (c.acme === undefined) return;
+          const problem = acmeRowProblem(acmeInfoForCheck, { acme: c.acme, domainsText: c.domainsText ?? '' });
+          if (problem) throw new Error(`証明書 ${i + 1}（ACME）: ${problem}`);
+        });
+      }
       tlsSpec = normalizeTls(buildTls());
       const count = newErrors.srcPortEnd || newErrors.srcPort || newErrors.distPort || l7
         ? 1 : portCount(Number(srcPort), end, multi ? 0 : Number(distPort));
@@ -617,7 +662,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
   const updateRoute = (index: number, patch: Partial<RouteRow>) =>
     setRoutes(routes.map((r, i) => (i === index ? { ...r, ...patch } : r)));
-  const updateCertificate = (index: number, patch: Partial<TlsCertificate>) =>
+  const updateCertificate = (index: number, patch: Partial<CertRow>) =>
     setCertificates(certificates.map((c, i) => (i === index ? { ...c, ...patch } : c)));
 
   const tabLabel = (tab: TabId): string => {
@@ -1089,8 +1134,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           <>
             <fieldset className="mb-4">
               <legend className={labelClass}>証明書（PEM。複数あれば SNI で選び、一致しなければ先頭を使う）:</legend>
-              {certificates.map((c, i) => (c.acme !== undefined ? (
-                // ACME の証明書（v0.3）はフォームでは編集できない。削除はできる
+              {certificates.map((c, i) => (c.acme !== undefined && acmeEditable ? (
+                <AcmeCertificateEditor key={i} index={i} info={acmeInfoForCheck}
+                  row={{ acme: c.acme, domainsText: c.domainsText ?? '' }}
+                  onChange={(patch) => updateCertificate(i, patch)}
+                  onRemove={() => setCertificates(certificates.filter((_, j) => j !== i))} />
+              ) : c.acme !== undefined ? (
+                // ACME の証明書を編集できない（古い rproxy・global.acme がない・UDP）。削除はできる
                 <div key={i} className="border border-gray-300 rounded-sm p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
                   <div className="flex justify-between items-center mb-1">
                     <span className="text-sm font-semibold text-gray-800">証明書 {i + 1}（ACME）</span>
@@ -1099,7 +1149,12 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                   </div>
                   <p className="text-sm break-all">resolver: <span className="font-mono">{c.acme}</span> / 名前: <span className="font-mono">{(c.domains ?? []).join(', ')}</span></p>
                   <p className={helpClass}>ACME の証明書はこのフォームでは編集できません（そのまま保たれます）。</p>
-                  <p className="mt-1 text-xs text-amber-900" data-testid="acme-note">{ACME_UNSUPPORTED_NOTE}</p>
+                  <p className="mt-1 text-xs text-amber-900" data-testid="acme-note">
+                    {protocol === 'udp'
+                      ? 'ACME の証明書は TCP のルールでだけ使えます（DTLS では証明書のファイルを指定してください）。'
+                      : !acmeFeature ? ACME_UNSUPPORTED_NOTE
+                        : acmeInfo === null ? 'rproxy の ACME の設定を読み込んでいます…' : ACME_NOT_CONFIGURED_NOTE}
+                  </p>
                 </div>
               ) : (
                 <div key={i} className="border border-gray-300 rounded-sm p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
@@ -1120,9 +1175,21 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                     className={inputClass} placeholder="例: /etc/rproxy/certs/example.key" />
                 </div>
               )))}
-              <button type="button" onClick={() => setCertificates([...certificates, { cert_file: '', chain_file: '', key_file: '' }])} className={smallButtonClass}>
-                ＋ 証明書を追加
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => setCertificates([...certificates, { cert_file: '', chain_file: '', key_file: '' }])} className={smallButtonClass}>
+                  ＋ 証明書を追加
+                </button>
+                {acmeEditable && (
+                  <button type="button" onClick={() => setCertificates([...certificates, { acme: acmeInfo?.resolvers.length === 1 ? acmeInfo.resolvers[0].name : '', domains: [], domainsText: '' }])}
+                    className={smallButtonClass}>
+                    ＋ ACME の証明書を追加
+                  </button>
+                )}
+              </div>
+              {acmeEditable && acmeInfoError && <p className="mt-1 text-xs text-amber-900">{acmeInfoError}</p>}
+              {protocol === 'tcp' && acmeFeature && acmeInfo?.configured === false && (
+                <p className={helpClass} data-testid="acme-not-configured">{ACME_NOT_CONFIGURED_NOTE}</p>
+              )}
               <p className={helpClass}>サーバ証明書のファイルにチェーンを連結してある場合は、中間 CA は空欄のままで構いません。</p>
               {protocol === 'udp' && <p className={helpClass}>DTLS の秘密鍵は PKCS#8（-----BEGIN PRIVATE KEY-----）に限ります。</p>}
               {tlsOptions && !tlsOptionsEditable && (

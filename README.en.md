@@ -79,6 +79,7 @@ Required information:
   + If the rproxy tokens have permissions (YAML), the UI's token needs the scopes `rules:read` (list and details) and `rules:write` (add, change and delete). `metrics:read` is not used (`GET /capabilities` can be read with any token).
     With `allow_listen_ports`, rules whose listen ports are outside that range cannot be created, changed or deleted from the UI.
     If a scope is missing, the screen shows "The rproxy token used by the UI does not have permission for this operation" (it is also logged by the UI).
+    Creating or changing rules with ACME certificates from the UI also needs `acme:write` (see "Obtaining certificates with ACME" below).
 
 Environment:
 ```.env.local
@@ -179,6 +180,21 @@ UDP rules can also choose the target by the server name in the first packet when
 - It cannot be combined with an L7 rule that accepts HTTP/3 (http3) on the same address and port (the form warns about this).
 - QUIC connection migration (changes of the client's address) is not followed, and for ECH connections the real server name cannot be read.
 
+## Obtaining certificates with ACME
+
+From rproxy-api v0.3.21, rproxy can obtain certificates with ACME (Let's Encrypt and others) and renew them itself before they expire (`../rproxy-api/docs/en/ACME.md`).
+On the TLS / DTLS tab, choose "terminate", then "+ Add ACME certificate" and give the resolver and the names (separated by commas or spaces). ACME certificates can sit next to file certificates.
+
+- Accounts, DNS providers, resolvers, the names they may obtain (`allowed_names`) and the secrets (DNS API keys and so on) are written only in `global.acme` of rproxy's settings file (`RPROXY_CONFIG`).
+  The screen reads only the resolver names, their challenges and the allowed names from rproxy's `GET /acme` (rproxy does not return secrets either) and lets you choose. Creating or deactivating accounts and renewing right away (`POST /acme/...`) are not on the screen (use rproxy's Unix socket).
+- They can be chosen only for TCP termination, when rproxy supports ACME (`features.acme` of `GET /capabilities`) and its settings file has `global.acme`. With an older rproxy, ACME certificates are kept read-only and the screen says "This rproxy does not support ACME".
+- Before saving, the names are checked with rproxy's rules: wildcards (`*.example.com`) only with a `dns-01` resolver, and names only within the `allowed_names` of the resolver's account (and DNS provider). When rproxy refuses (`400 invalid`), the reason is explained on the screen too.
+- The UI's token needs the `acme:write` scope (without it rproxy refuses with 403, and the screen says so).
+- Until the certificate is issued, rproxy serves a self-signed stand-in (`rproxy ACME placeholder`). The certificate section of the rule details shows the state (pending, valid, renewing, failed), the expiry, the renewal time (and the CA's renewal window (ARI) when it gives one), the next attempt, the last error, and whether the stand-in is being served.
+- For dns-01 resolvers, the form shows the DNS provider type (PowerDNS, generic REST, RFC 2136, acme-dns; unknown types are shown by name) and a note (with acme-dns a new name is not issued until its CNAME is created). When a helper process (`rproxy-api acme-helper`) holds the secrets, the form says so (the secrets themselves are never shown).
+- Certificates that cannot be obtained or keep failing to renew are listed under "Needs attention" on the dashboard (the reason and the next attempt; the days left when renewals keep failing within 14 days of expiry). The list shows "ACME failed" / "ACME pending" badges.
+- Export and import write and read ACME certificates (`{"acme": "<resolver>", "domains": [...]}`) as they are.
+
 ## Usage
 
 | Screen | Contents |
@@ -208,8 +224,8 @@ The form is divided into tabs.
 
 - A profile only fills the form with the recommended settings from `../rproxy-api/docs/PROFILES.md`. Enter the addresses and certificate paths for your environment.
 - The certificate, private key and CA paths are paths on the rproxy-api server. If they cannot be read, you get a `tls_config` error.
-- Specify certificate files obtained with certbot, cert-manager or similar (rproxy has no built-in ACME. If the settings file contains an ACME certificate, the screen shows "a setting this rproxy cannot use").
-  rproxy checks whether the files changed every 60 seconds (rproxy's `RPROXY_CERT_CHECK_SECS`) and reloads renewed certificates automatically, so you do not need to edit the rule on every renewal.
+- Specify certificates as files (obtained with certbot, cert-manager or similar) or with ACME (from rproxy-api v0.3.21; see "Obtaining certificates with ACME" below).
+  For files, rproxy checks whether the files changed every 60 seconds (rproxy's `RPROXY_CERT_CHECK_SECS`) and reloads renewed certificates automatically, so you do not need to edit the rule on every renewal.
 - Intermediate CAs (optional) go in one PEM file, ordered from the CA that issued the server certificate toward the root (the root is not needed). If the order is wrong, rproxy rejects it with `tls_config`.
   For client certificate verification, specify the root CA (trust anchor) in the CA file and the intermediate CA that issued the client certificates as the intermediate CA. Intermediate CAs can also be specified for the client certificate sent to the target.
 - A port range (e.g. `8000-8001`) forwards each port in turn starting from the target port. The upper limit is rproxy's `max_range_ports` (default 20000). The range and the source IP handling cannot be changed after creation (TLS settings can be changed).

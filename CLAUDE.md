@@ -45,6 +45,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 - import のパスエイリアスは `@/`（リポジトリのルート）。vitest でも `vitest.config.mts` で同じエイリアスを設定している。
 - テストは MariaDB・rproxy・NextAuth をすべてモックする（`tests/forward.test.ts`）。実際の DB や rproxy は不要。
 - 複数のノードの E2E（`tests/e2e-nodes.test.ts`、CI の `e2e-nodes`）は rproxy-api を 2 台、別々のコンテナ（同じ待ち受けを両方で使うため。制御 API は Unix ソケット）で動かし、ノードごとのビューから戻すことまで確かめる。
+- ACME の E2E（`tests/ui/acme.spec.ts`。`UI_E2E_ACME=1` のときだけ）：CI の e2e ジョブは rproxy-api に `docs/ACME.md` があれば、apk の pebble（ACME の試験用の CA）を同じコンテナで動かし、`scripts/ci-pebble.sh` が WFE の証明書・`/etc/hosts` の名前（`*.acme-e2e.test` → 127.0.0.1）・rproxy の設定ファイル（`RPROXY_CONFIG` の `global.acme`。resolver は pebble-http（http-01、`http01_listen` 127.0.0.1:5002）・pebble-dns（dns-01。届かない PowerDNS）・offline（届かない CA））を作る。フォームで作ったルールに Pebble の証明書が実際に付くこと、届かない CA で仮の証明書と失敗が詳細とダッシュボードに出ることを確かめる。
 - 画面操作の E2E（`tests/ui`、Playwright）は CI の e2e ジョブで本物の MariaDB と rproxy-api を相手に動く。サインインは Keycloak を通さず、テスト用の `NEXTAUTH_SECRET` で作ったセッションのクッキー（`tests/ui/global-setup.ts`）。ライト・ダークで白地に白文字がないことも確かめる。画面の文言やボタン名を変えたら `tests/ui` も直す。
 - README のスクリーンショット（`scripts/screenshots/`、`npm run screenshots`）は通常の E2E とは別の Playwright の設定で、3197 番（`SCREENSHOTS_PORT`）で `next start` し、画面が呼ぶ `/api/forward/*` をブラウザの中で `sample-data.ts` のデータに差し替える（本番のコードにモックは入れない。DB・rproxy・Keycloak は不要）。データは文書用のアドレス（192.0.2.0/24・198.51.100.0/24・2001:db8::/32）と example.com だけ。PNG は next が入れる sharp があれば 256 色に減らす。画面を大きく変えたら撮り直し、画像を目で確かめる。
 
@@ -52,7 +53,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 
 | パス | 役割 |
 |---|---|
-| `pages/index.tsx` | ダッシュボード（Traefik 風）。rproxy に接続できるか、件数（固定ルールを含む）、TCP / UDP のカード（状態のドーナツ、接続数、累計、rx / tx、TLS 失敗、拒否）、TLS の内訳、要確認のルール（failed / missing）、絞り込みつきの全ルールの表（固定ルールには「固定」、allow_from のあるルールには「IP 制限」のバッジ）。5 秒ごとに自動更新（切り替えられる。タブが隠れている間は止める） |
+| `pages/index.tsx` | ダッシュボード（Traefik 風）。rproxy に接続できるか、件数（固定ルールを含む）、TCP / UDP のカード（状態のドーナツ、接続数、累計、rx / tx、TLS 失敗、拒否）、TLS の内訳、要確認のルール（failed / missing、証明書の期限、ACME の失敗）、絞り込みつきの全ルールの表（固定ルールには「固定」、allow_from のあるルールには「IP 制限」のバッジ）。5 秒ごとに自動更新（切り替えられる。タブが隠れている間は止める） |
 | `pages/rules/new.tsx` | ルールの追加画面。保存したら詳細画面へ、キャンセルは前の画面へ |
 | `pages/rules/[protocol]/[listenAddr]/[listenPort]/index.tsx` | ルールの詳細（概要・待ち受け・転送先と解決したアドレス・TLS（routes と unmatched、証明書と中間 CA、クライアント認証、ALPN、upstream）・STARTTLS・詳細（allow_from を含む）・統計（拒否を含む）・L7 のルールでは HTTP のリクエスト（状態コード別、ルートごと、制限・遮断の数））。編集ボタンと、確認ダイアログつきの削除ボタン。固定ルールでは両方を出さず「固定ルール（rproxy の設定ファイルで管理）」と出す。`listenAddr` は URL エンコードする（IPv6 の `:` を含むため） |
 | `pages/rules/[protocol]/[listenAddr]/[listenPort]/edit.tsx` | ルールの変更画面。保存したら詳細画面へ。固定ルールではフォームを出さない |
@@ -85,6 +86,9 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `pages/api/auth/[...nextauth].ts` | Keycloak の設定。サインイン時にアクセストークンのロール（既定 `realm_access.roles`）を読んで JWT に保存し、セッションに `roles` と `access`（admin / user / none。画面の表示用）を入れる |
 | `pages/api/forward/[forward].ts` | `nodes` / `list` / `dashboard` / `rule` / `export` / `history`(GET)、`add` / `modify` / `delete` / `import` / `revert` / `pause` / `resume`(POST) のエンドポイント |
 | `pages/api/forward/capabilities.ts` | rproxy の `GET /capabilities` をそのまま返す |
+| `pages/api/forward/acme.ts` | rproxy の `GET /acme` から、resolver（名前・account・challenge・dns_provider）・アカウントと DNS のプロバイダの名前と `allowed_names`・証明書の状態だけを返す（`acmeInfoFromRproxy`。contact・directory・eab・zones は渡さない）。404（`global.acme` がない・古い rproxy）は 200 の `configured: false`。`?target=` でノードを選ぶ |
+| `components/acme.ts` | ACME（rproxy-api v0.3.21）：`GET /acme` の形、名前の検証（rproxy の `src/acme/config.rs` と同じ `normalizeAcmeName`・`validAcmeName`・`acmeNameAllowed`、`checkAcmeNames`：resolver・ワイルドカードは dns-01・アカウントと DNS のプロバイダの allowed_names）、ルールの `acme` の状態（`acmeStatusFor`・仮の証明書 `servesStandIn`・要確認の `acmeProblem`・`worstAcmeState`）。React に依存しない |
+| `components/AcmeCertificateEditor.tsx` / `components/AcmeStatus.tsx` | フォームの ACME の証明書の 1 件（resolver の選択・名前・challenge の説明・許可する名前・入力中の誤り）と、詳細画面の状態（取得待ち・有効・更新中・失敗、期限・更新の予定・次の試み・最後の誤り、仮の証明書） |
 | `pages/api/forward/config.ts` | rproxy の設定ファイルの状態（`GET /config`）を、ダッシュボードの注意（誤り・再起動が要る変更）の形で返す（`configStatusView`）。読めない（403 / 404 / 届かない）ときは何も出さない |
 | `pages/api/forward/interfaces.ts` | rproxy の `GET /interfaces`（待ち受けアドレスの候補と、制御 API が使う予約済みのアドレス）を返す |
 | `components/sourceip.ts` | source_ip の欄に出す説明（transparent が使えない理由、IPv4 だけであること、選んだときのルーティングの前提）。`GET /capabilities` の `transparent` を使う |
@@ -159,9 +163,14 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
 - v0.3 の形（rproxy-api の docs/API.md「v0.3 の設定」）：ルールの `http`（L7）、`tls.certificates[]` の ACME（`acme` / `domains`）、`tls.options`（`min_version` / `cipher_suites`）、`GET /capabilities` の `features`。
   L7 はフォームの「L7 (HTTP)」タブで作成・編集できる（`HttpEditor`。tcp で `features.http` が true のとき）。API route は `validateHttp` で形を確かめてから保存して rproxy に渡す（細かい検証は rproxy）。L4 と L7 の切り替えは作成時だけ（rproxy が PATCH で切り替えられないので `modify` は 400 `unsupported`）。`modify` の body に `http` がなければ DB の値を保つ。
   `http` のあるルールは転送先を持たない（DB の `dist_addr` は `''`、`dist_port` は `0`。rproxy への POST / PATCH では `remote_addr` / `remote_port` を送らずに `http` を送る）。一覧・詳細では転送先の代わりに「L7 (HTTP)」とルートの数を出す（`targetLabel`）。
-  ACME は rproxy に内蔵しない方針（rproxy-api#17）なので、ACME の証明書は詳細画面とフォームに「この rproxy では使えない設定」と出す（`ACME_UNSUPPORTED_NOTE`。設定は消さずに保つ）。証明書は certbot / cert-manager で取ったファイルで、rproxy が変更を検知して読み直す（`RPROXY_CERT_CHECK_SECS`）。
-  rproxy の 403 `forbidden`（UI のトークンのスコープ・`allow_listen_ports` の不足）は 502 で `code: forbidden` を返し、画面は `FORBIDDEN_MESSAGE` で説明する。UI のトークンに要るスコープは `rules:read` と `rules:write`。
-  フォームは ACME の証明書を読み取り専用で残して送る。`tls.options` は `checkTls`（`checkTlsOptions`）が rproxy と同じ規則で確かめる：名前は rproxy の rustls（ring）の暗号スイート（`CIPHER_SUITES`）だけ、`min_version: "1.3"` なら TLS 1.3 のスイートが 1 つは要る、UDP（DTLS）では `unsupported`。
+  ACME（rproxy-api v0.3.21、rproxy-api#212、`../rproxy-api/docs/ACME.md`）：`tls.certificates[]` の `{acme: <resolver>, domains}`。フォームの TLS タブの「＋ ACME の証明書を追加」で resolver（`/api/forward/acme` の一覧）と名前を選ぶ（`AcmeCertificateEditor`）。
+  編集できるのは tcp で、`features.acme` が true で、`GET /acme` があるとき（`global.acme` がある）だけ。そうでなければ ACME の証明書は読み取り専用で残して送り、古い rproxy には `ACME_UNSUPPORTED_NOTE`、`global.acme` がなければ `ACME_NOT_CONFIGURED_NOTE` を出す。
+  保存の前に `checkAcmeNames`（rproxy の `check_names` と同じ順と規則）で確かめ、rproxy の断り（`400 invalid` の `acme domains: ... is not in allowed_names of account ...` など、403 の `acme:write`）は `explainAcme` / `explainError` が画面の言葉にする。`normalizeTls` は名前を小文字・末尾の `.` なし・重なりなしにし、`checkTls` は udp の ACME を `tls_config` で断る（rproxy と同じ）。
+  DNS のプロバイダの種類（`powerdns`・`http`・`rfc2136`・`acme_dns`、知らない種類はそのまま。`providerTypeLabel` / `providerTypeHelp`）と、`GET /acme` の `helper`（秘密を補助プロセスが持つ）をフォームの dns-01 の resolver の下に出す。アカウント・DNS のプロバイダ・resolver・秘密は rproxy の設定ファイルにだけあり、作成・無効化・今すぐの更新・失効（`POST /acme/...`。既定で Unix ソケットだけ）の画面は作らない。秘密を扱う欄も作らない。
+  ルールの状態の `acme`（`state`: pending / valid / renewing / error、`not_after`・`renew_at`・`next_attempt`・`error`、CA の更新の窓 `ari`（`start`・`end`。ARI があるときだけ。詳細画面の「更新の予定」の隣））は `acmeStatus` として持つ（`withLiveState`・`nodeLiveState`・`ruleFromStatus`。グループでは `aggregateNodeStates` がいちばん悪いノードの値）。詳細画面の証明書の欄に `AcmeStatus`（取れていない・保存した証明書が切れているときは仮の証明書 `rproxy ACME placeholder` を返していると出す）、ダッシュボードの「要確認」に失敗（`acmeProblem`。取れていなければ仮の証明書、更新できないまま 14 日以内なら残りの日数）と `rate_limit` で待っている取得待ち、一覧に `AcmeBadge`。rproxy は失敗の回数を返さないので「続けて失敗」は `error` の状態で見る。
+  ファイルの証明書は certbot / cert-manager で取ったもので、rproxy が変更を検知して読み直す（`RPROXY_CERT_CHECK_SECS`）。
+  rproxy の 403 `forbidden`（UI のトークンのスコープ・`allow_listen_ports` の不足）は 502 で `code: forbidden` を返し、画面は `FORBIDDEN_MESSAGE` で説明する。UI のトークンに要るスコープは `rules:read` と `rules:write`（ACME の証明書を使うルールの作成・変更には `acme:write` も。足りなければ `ACME_SCOPE_MESSAGE`）。
+  `tls.options` は `checkTls`（`checkTlsOptions`）が rproxy と同じ規則で確かめる：名前は rproxy の rustls（ring）の暗号スイート（`CIPHER_SUITES`）だけ、`min_version: "1.3"` なら TLS 1.3 のスイートが 1 つは要る、UDP（DTLS）では `unsupported`。
   宛先を複数にしたルール（rproxy v0.3.3 の `targets` / `balance` / `health_check`）は、`options` に `targets` があるときだけ書き、DB の `dist_addr` は `''`、`dist_port` は `0`。rproxy へは `remote_addr` / `remote_port` の代わりに送る（PATCH では宛先の一覧・振り分け方・ヘルスチェックを丸ごと置き換え、単一に戻すときは `remote_addr` と `targets: []`）。`modify` の body に `targets` がなければ DB の値を保つ。
   ルールの `crowdsec`（L4 の CrowdSec。rproxy v0.3.2 から）は `options` に true のときだけ保存し、rproxy へも true のとき（PATCH では有効から無効にするときも）だけ送る（古い rproxy は知らない項目を拒否する）。
   追加の待ち受けアドレス（`extraListenAddrs`、rproxy の `extra_listen_addrs`。v0.3.3）は IP アドレスだけで最大 16 件（`normalizeExtraListenAddrs`）。rproxy へは空でないとき（PATCH では空にするときも）だけ送る。`modify` の body になければ DB の値を保つ。

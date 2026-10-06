@@ -5,9 +5,52 @@ export const STATIC_RULE_MESSAGE = '固定ルールは rproxy の設定ファイ
 // 詳細画面で、編集・削除のボタンの代わりに出す
 export const STATIC_RULE_NOTE = '固定ルール（rproxy の設定ファイルで管理）';
 
-// ACME の証明書（tls.certificates[].acme）。rproxy は ACME を内蔵しない方針にしたので、常に unsupported で動かない
+// ACME の証明書（tls.certificates[].acme）を、ACME に対応していない rproxy（GET /capabilities の features.acme が false。v0.3.21 より前）で見たとき
 export const ACME_UNSUPPORTED_NOTE =
-  'この rproxy では使えない設定です（ACME は rproxy に内蔵していません）。certbot や cert-manager で取得した証明書のファイルを指定してください。ファイルが更新されると rproxy が自動で読み直します。';
+  'この rproxy は ACME に対応していないため、この証明書は使えません（rproxy-api v0.3.21 以降が必要です）。設定はそのまま保たれます。rproxy を上げるか、certbot などで取得した証明書のファイルを指定してください。';
+
+// rproxy は ACME に対応しているが、設定ファイルに global.acme がない（GET /acme が 404）
+export const ACME_NOT_CONFIGURED_NOTE =
+  'この rproxy の設定ファイル（RPROXY_CONFIG）に global.acme がないため、ACME の証明書は使えません。アカウント・resolver・取ってよい名前（allowed_names）は rproxy の設定ファイルにだけ書けます（画面からは作れません）。';
+
+// ACME の証明書を使うルールの作成・変更に、UI のトークンの acme:write のスコープが足りない（rproxy の 403）
+export const ACME_SCOPE_MESSAGE =
+  'UI が使う rproxy のトークンに acme:write のスコープがありません。ACME の証明書を使うルールの作成・変更には、rules:write に加えて acme:write が要ります。rproxy のトークンファイルで UI のトークンに acme:write を足してください。';
+
+// rproxy が ACME の証明書の設定を断った理由（rproxy の src/acme/config.rs・registry.rs の文）を、利用者向けの説明にする。
+// 当てはまらなければ null
+export function explainAcme(detail: string): string | null {
+  let m: RegExpExecArray | null;
+  if (/acme:write/.test(detail)) return ACME_SCOPE_MESSAGE;
+  if ((m = /acme domains: "([^"]+)" is not in allowed_names of account "([^"]+)"/.exec(detail))) {
+    return `名前 ${m[1]} は、ACME のアカウント ${m[2]} で取ってよい名前（rproxy の設定ファイルの global.acme の allowed_names）に含まれていません。名前を直すか、rproxy の管理者に allowed_names へ足してもらってください。`;
+  }
+  if ((m = /acme domains: "([^"]+)" is not in allowed_names of dns provider "([^"]+)"/.exec(detail))) {
+    return `名前 ${m[1]} は、DNS のプロバイダ ${m[2]} で証明してよい名前（rproxy の設定ファイルの global.acme の allowed_names）に含まれていません。名前を直すか、rproxy の管理者に allowed_names へ足してもらってください。`;
+  }
+  if ((m = /acme domains: the wildcard "([^"]+)" needs a resolver with challenge dns-01/.exec(detail))) {
+    return `ワイルドカード ${m[1]} は、challenge が dns-01 の resolver でだけ取れます。dns-01 の resolver を選んでください。`;
+  }
+  if ((m = /acme domains: "([^"]+)" is not a host name/.exec(detail))) {
+    return `${m[1]} は証明書に入れられるホスト名ではありません（例: www.example.com、*.example.com）。`;
+  }
+  if ((m = /acme resolver "([^"]+)": global\.acme is not configured/.exec(detail))) {
+    return ACME_NOT_CONFIGURED_NOTE;
+  }
+  if ((m = /acme resolver "([^"]+)" is not defined/.exec(detail))) {
+    return `resolver ${m[1]} は rproxy の設定ファイル（global.acme.resolvers）にありません。`;
+  }
+  if (/acme certificates are for tcp rules/.test(detail)) {
+    return 'ACME の証明書は TCP のルールでだけ使えます（DTLS では証明書のファイルを指定してください）。';
+  }
+  if (/an acme certificate holds at most/.test(detail)) {
+    return 'ACME の証明書に入れられる名前は 100 個までです。';
+  }
+  if (/an acme certificate needs at least one name/.test(detail)) {
+    return 'ACME の証明書には名前を 1 つ以上指定してください。';
+  }
+  return null;
+}
 
 // rproxy が UI のトークンを 403 forbidden で断ったとき（トークンのスコープか、変更できる待ち受けポートの範囲の外）
 export const FORBIDDEN_MESSAGE =
@@ -57,6 +100,12 @@ export function ruleErrorText(error: string): string {
 export function explainError(code: string | undefined, detail: string): string {
   if (/certificate expired/i.test(detail)) {
     return `${CERT_EXPIRED_MESSAGE}（詳細: ${detail}）`;
+  }
+  // ACME の証明書の許可の外の名前・resolver・スコープ（rproxy の 400 invalid / tls_config、403 forbidden）
+  if (/acme/i.test(detail)) {
+    if (code === 'unsupported') return `${ACME_UNSUPPORTED_NOTE}（詳細: ${detail}）`;
+    const acme = explainAcme(detail);
+    if (acme) return `${acme}（詳細: ${detail}）`;
   }
   // v0.3.7 以前の rproxy は UDP の sni を断る（"sni routing is supported for tcp only; use terminate for DTLS"）
   if (code === 'unsupported' && /sni routing is supported for tcp only/i.test(detail)) {

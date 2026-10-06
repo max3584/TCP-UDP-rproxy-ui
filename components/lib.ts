@@ -1,6 +1,7 @@
 import { DefaultSession, ISODateString } from 'next-auth';
 import pino from 'pino';
 import type { Access } from './roles';
+import type { AcmeCertStatus } from './acme';
 
 
 export const Logger = (level : string, {...propaty}: any) => {
@@ -247,6 +248,8 @@ export interface ForwardRules extends ForwardRule {
   owner?: string;
   // 証明書の期限（rproxy の cert_status）。証明書がないルールと古い rproxy では付かない
   certStatus?: CertStatus[];
+  // ACME の証明書の状態（rproxy の acme。v0.3.21）。ACME の証明書がないルールと古い rproxy では付かない
+  acmeStatus?: AcmeCertStatus[];
   // ノードごとの稼働情報（RPROXY_UI_NODES でノードを設定したときだけ。グループのルールでは全員分）。
   // 上の state などはその集計（state は悪いほう、接続数と stats は合計）
   nodes?: NodeLiveState[];
@@ -264,6 +267,7 @@ export interface NodeLiveState {
   startedAt: number | null;
   resolved: string[];
   certStatus?: CertStatus[];
+  acmeStatus?: AcmeCertStatus[];
   // UI の定義とこのノードの実際のルール（GET /rules）の違い（項目のコード。components/drift.ts）。空なら同じ。
   // rproxy にない（missing）・問い合わせできない（unknown）ときは付かない
   drift?: DriftField[];
