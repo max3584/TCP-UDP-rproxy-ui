@@ -79,7 +79,7 @@ test.describe('rproxy settings from the form', () => {
       await page.locator('#rule-src-port').fill(String(TLS_PORT));
       await page.locator('#rule-dist-addr').fill('127.0.0.1');
       await page.locator('#rule-dist-port').fill(String(ECHO_PORT));
-      await page.getByRole('tab', { name: /TLS/ }).click();
+      await page.locator('#rule-tab-tls').click();
       await page.locator('#rule-tls-mode').selectOption('terminate');
       await page.getByRole('button', { name: '＋ 証明書を追加' }).click();
       await page.locator('#rule-cert-0-cert').fill(pki!.cert);
@@ -103,7 +103,7 @@ test.describe('rproxy settings from the form', () => {
 
       // 編集画面に今の値が出る
       await page.getByRole('link', { name: '編集' }).click();
-      await page.getByRole('tab', { name: /TLS/ }).click();
+      await page.locator('#rule-tab-tls').click();
       await expect(page.locator('#rule-tls-min-version')).toHaveValue('1.3');
       await expect(page.getByTestId('tls-options').getByLabel('TLS13_AES_128_GCM_SHA256', { exact: true })).toBeChecked();
       await expect(page.getByTestId('tls-options-note')).toHaveCount(0);
@@ -160,7 +160,7 @@ test.describe('rproxy settings from the form', () => {
   test('UDP sni is offered without the version note on a current rproxy', async ({ page }) => {
     await page.goto('/rules/new');
     await page.locator('#rule-protocol').selectOption('udp');
-    await page.getByRole('tab', { name: /DTLS/ }).click();
+    await page.locator('#rule-tab-tls').click();
     await expect(page.locator('#rule-tls-mode option[value="sni"]')).toHaveCount(1);
     await page.locator('#rule-tls-mode').selectOption('sni');
     await expect(page.getByTestId('udp-sni-notes')).toBeVisible();
