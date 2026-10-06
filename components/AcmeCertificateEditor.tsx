@@ -1,7 +1,7 @@
 // RuleForm の TLS タブの ACME の証明書の 1 件（resolver と名前）。rproxy が ACME に対応し（features.acme）、
 // 設定ファイルに global.acme があるとき（GET /acme）だけ使う。resolver・アカウント・秘密は rproxy の設定ファイルにだけあり、ここでは選ぶだけ
 import React from 'react';
-import { AcmeInfo, challengeHelp, challengeLabel, checkAcmeNames, splitAcmeDomains } from './acme';
+import { AcmeInfo, challengeHelp, challengeLabel, checkAcmeNames, providerTypeHelp, providerTypeLabel, splitAcmeDomains } from './acme';
 
 export interface AcmeCertificateRow {
   acme: string;
@@ -59,8 +59,12 @@ const AcmeCertificateEditor: React.FC<Props> = ({ index, row, info, onChange, on
         )}
         {provider && (
           <p>
-            DNS のプロバイダ <span className="font-mono">{provider.name}</span>（{provider.type}）で証明してよい名前: <span className="font-mono break-all">{provider.allowed_names.join(', ')}</span>
+            DNS のプロバイダ <span className="font-mono">{provider.name}</span>（{providerTypeLabel(provider.type)}）で証明してよい名前: <span className="font-mono break-all">{provider.allowed_names.join(', ')}</span>
           </p>
+        )}
+        {provider && providerTypeHelp(provider.type) && <p data-testid="acme-provider-help">{providerTypeHelp(provider.type)}</p>}
+        {resolver?.challenge === 'dns-01' && info.helper && (
+          <p data-testid="acme-helper">DNS のプロバイダの秘密は、rproxy の補助プロセス（rproxy-api acme-helper）が持っています。</p>
         )}
       </div>
       <label htmlFor={`rule-cert-${i}-domains`} className="block text-xs font-medium text-gray-800">名前（カンマか空白で区切る）</label>

@@ -332,7 +332,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   // ACME の証明書を編集できる：tcp で、rproxy が ACME に対応し、設定ファイルに global.acme がある
   // （一覧を取れなかったときも、rproxy が保存するときに確かめるので編集はさせる）
   const acmeEditable = protocol === 'tcp' && acmeFeature && (acmeInfo?.configured === true || (acmeInfo === null && acmeInfoError !== ''));
-  const acmeInfoForCheck: AcmeInfo = acmeInfo ?? { configured: false, resolvers: [], accounts: [], dnsProviders: [], certificates: [], rateLimit: null };
+  const acmeInfoForCheck: AcmeInfo = acmeInfo ?? { configured: false, resolvers: [], accounts: [], dnsProviders: [], certificates: [], rateLimit: null, helper: false };
 
   useEffect(() => {
     if (editMode) return;

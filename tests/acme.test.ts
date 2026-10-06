@@ -49,15 +49,22 @@ const RAW = {
   dns_providers: [
     { name: 'pdns', type: 'powerdns', zones: ['example.test'], allowed_names: ['**.example.test', 'example.test'] },
     { name: 'relay', type: 'http', zones: [], allowed_names: ['rest.example.test'] },
+    { name: 'bind', type: 'rfc2136', zones: [], allowed_names: ['tsig.example.test'] },
+    { name: 'adns', type: 'acme_dns', zones: [], allowed_names: ['adns.example.test'] },
+    { name: 'future', type: 'some_new_type', zones: [], allowed_names: ['new.example.test'] },
   ],
   resolvers: [
     { name: 'http', account: 'test', challenge: 'http-01', dns_provider: null },
     { name: 'alpn', account: 'test', challenge: 'tls-alpn-01', dns_provider: null },
     { name: 'dns', account: 'test', challenge: 'dns-01', dns_provider: 'pdns' },
     { name: 'rest', account: 'test', challenge: 'dns-01', dns_provider: 'relay' },
+    { name: 'tsig', account: 'test', challenge: 'dns-01', dns_provider: 'bind' },
+    { name: 'adns', account: 'test', challenge: 'dns-01', dns_provider: 'adns' },
+    { name: 'future', account: 'test', challenge: 'dns-01', dns_provider: 'future' },
   ],
   certificates: [{ resolver: 'alpn', domains: ['www.example.test'], state: 'pending' }],
   rate_limit: { orders: 10, period_secs: 3600, used: 1 },
+  helper: true,
 };
 const INFO: AcmeInfo = acmeInfoFromRproxy(RAW);
 
@@ -100,9 +107,15 @@ describe('names (the rules of rproxy src/acme/config.rs)', () => {
 describe('GET /acme (acmeInfoFromRproxy)', () => {
   it('keeps names, challenges and allowlists only (no contact, directory, eab or zones)', () => {
     expect(INFO.configured).toBe(true);
-    expect(INFO.resolvers.map((r) => [r.name, r.challenge, r.dns_provider])).toEqual([
+    expect(INFO.resolvers.map((r) => [r.name, r.challenge, r.dns_provider]).slice(0, 4)).toEqual([
       ['http', 'http-01', null], ['alpn', 'tls-alpn-01', null], ['dns', 'dns-01', 'pdns'], ['rest', 'dns-01', 'relay'],
     ]);
+    expect(INFO.helper).toBe(true);
+    expect(acmeInfoFromRproxy({ ...RAW, helper: undefined }).helper).toBe(false);
+    // 知らない種類のプロバイダもそのまま読む
+    expect(INFO.dnsProviders.map((p) => p.type)).toEqual(['powerdns', 'http', 'rfc2136', 'acme_dns', 'some_new_type']);
+    expect(checkAcmeNames(INFO, 'future', ['new.example.test'])).toBeNull();
+    expect(checkAcmeNames(INFO, 'adns', ['other.example.test'])).toMatch(/DNS のプロバイダ adns/);
     expect(INFO.accounts).toEqual([{ name: 'test', allowed_names: ['**.example.test', 'example.test'], registered: true }]);
     expect(INFO.dnsProviders[0]).toEqual({ name: 'pdns', type: 'powerdns', allowed_names: ['**.example.test', 'example.test'] });
     expect(INFO.rateLimit).toEqual({ orders: 10, periodSecs: 3600, used: 1 });
@@ -129,7 +142,8 @@ describe('/api/forward/acme', () => {
     mocks.getAcme.mockResolvedValue(RAW);
     const ok = await call();
     expect(ok.status).toBe(200);
-    expect(ok.body.resolvers).toHaveLength(4);
+    expect(ok.body.resolvers).toHaveLength(7);
+    expect(ok.body.helper).toBe(true);
     expect(JSON.stringify(ok.body)).not.toContain('mailto:');
     mocks.getAcme.mockRejectedValue(new RproxyError('global.acme is not configured', 'not_found', 404));
     expect(await call()).toMatchObject({ status: 200, body: { configured: false, resolvers: [] } });
@@ -211,6 +225,17 @@ describe('status', () => {
 describe('rule detail (AcmeStatus)', () => {
   const render = (props: Parameters<typeof AcmeStatus>[0]) => renderToStaticMarkup(createElement(AcmeStatus, props));
 
+  it("shows the CA's renewal window (ARI) next to the renewal time, only when there is one", () => {
+    const html = render({ status: status({ not_after: '2026-12-01T00:00:00Z', renew_at: '2026-11-01T00:00:00Z',
+      ari: { start: '2026-10-30T00:00:00Z', end: '2026-11-02T00:00:00Z' } }), reported: true, ruleState: 'running', nowMs: NOW });
+    expect(html).toContain('CA の更新の窓（ARI）');
+    expect(html).toContain('data-testid="acme-ari"');
+    expect(html.indexOf('更新の予定')).toBeLessThan(html.indexOf('CA の更新の窓'));
+    expect(render({ status: status({ not_after: '2026-12-01T00:00:00Z' }), reported: true, ruleState: 'running', nowMs: NOW })).not.toContain('acme-ari');
+    expect(acmeInfoFromRproxy({ certificates: [{ resolver: 'a', domains: ['x.example'], state: 'valid', ari: { start: 's', end: 'e' } }, { resolver: 'a', domains: ['y.example'], state: 'valid', ari: { start: 's' } }] })
+      .certificates.map((c) => c.ari)).toEqual([{ start: 's', end: 'e' }, undefined]);
+  });
+
   it('shows the stand-in clearly while the certificate is not issued', () => {
     const html = render({ status: status({ state: 'pending' }), reported: true, ruleState: 'running', nowMs: NOW });
     expect(html).toContain('取得待ち');
@@ -255,6 +280,19 @@ describe('form (AcmeCertificateEditor)', () => {
     expect(render('http', '')).not.toContain('acme-domains-error');
     // 設定から消えた resolver も選んだまま残す
     expect(render('gone', 'example.test')).toContain('gone（設定にない resolver）');
+  });
+
+  it('explains rfc2136 and acme-dns providers, keeps unknown provider types, and says when a helper holds the secrets', () => {
+    expect(render('tsig', '')).toContain('RFC 2136 の DNS UPDATE（TSIG）');
+    expect(render('tsig', '')).toContain('TSIG で署名した DNS UPDATE');
+    const adns = render('adns', '');
+    expect(adns).toContain('acme-dns');
+    expect(adns).toContain('CNAME を作ってください');
+    const future = render('future', '');
+    expect(future).toContain('（some_new_type）');
+    expect(future).not.toContain('acme-provider-help');
+    expect(render('dns', '')).toContain('data-testid="acme-helper"');
+    expect(render('http', '')).not.toContain('acme-helper');
   });
 });
 

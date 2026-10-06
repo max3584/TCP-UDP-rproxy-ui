@@ -24,6 +24,8 @@ export interface AcmeCertStatus {
   // 失敗や rate_limit で待っている次の試みの時刻
   next_attempt?: string;
   error?: string;
+  // CA が示した更新の窓（ARI、RFC 9773。RFC 3339）。CA が出しているときだけ。renew_at はこの中の時刻
+  ari?: { start: string; end: string };
 }
 
 export interface AcmeResolverInfo {
@@ -54,9 +56,11 @@ export interface AcmeInfo {
   dnsProviders: AcmeProviderInfo[];
   certificates: AcmeCertStatus[];
   rateLimit: { orders: number; periodSecs: number; used: number } | null;
+  // DNS のプロバイダの秘密を補助プロセス（rproxy-api acme-helper、global.acme.helper）が持っているか。秘密そのものは含まない
+  helper: boolean;
 }
 
-export const ACME_NOT_CONFIGURED: AcmeInfo = { configured: false, resolvers: [], accounts: [], dnsProviders: [], certificates: [], rateLimit: null };
+export const ACME_NOT_CONFIGURED: AcmeInfo = { configured: false, resolvers: [], accounts: [], dnsProviders: [], certificates: [], rateLimit: null, helper: false };
 
 // rproxy の 1 つの ACME の証明書に入れられる名前の数の上限（MAX_NAMES）
 export const MAX_ACME_NAMES = 100;
@@ -77,6 +81,7 @@ export function acmeCertStatus(v: unknown): AcmeCertStatus | null {
     ...(str(v.renew_at) ? { renew_at: str(v.renew_at) } : {}),
     ...(str(v.next_attempt) ? { next_attempt: str(v.next_attempt) } : {}),
     ...(str(v.error) ? { error: str(v.error) } : {}),
+    ...(isObj(v.ari) && str(v.ari.start) && str(v.ari.end) ? { ari: { start: str(v.ari.start)!, end: str(v.ari.end)! } } : {}),
   };
 }
 
@@ -110,6 +115,7 @@ export function acmeInfoFromRproxy(raw: unknown): AcmeInfo {
     certificates: acmeCertStatuses(raw.certificates) ?? [],
     rateLimit: rl && typeof rl.orders === 'number' && typeof rl.period_secs === 'number' && typeof rl.used === 'number'
       ? { orders: rl.orders, periodSecs: rl.period_secs, used: rl.used } : null,
+    helper: raw.helper === true,
   };
 }
 
@@ -172,6 +178,28 @@ export const CHALLENGE_HELP: Record<AcmeChallenge, string> = {
 
 export function challengeHelp(challenge: string): string | null {
   return CHALLENGE_HELP[challenge as AcmeChallenge] ?? null;
+}
+
+// DNS のプロバイダの種類（GET /acme の dns_providers[].type）。知らない種類（新しい rproxy）はそのまま出す
+export const PROVIDER_TYPE_LABELS: Record<string, string> = {
+  powerdns: 'PowerDNS の HTTP API',
+  http: '汎用の REST',
+  rfc2136: 'RFC 2136 の DNS UPDATE（TSIG）',
+  acme_dns: 'acme-dns',
+};
+
+export function providerTypeLabel(type: string): string {
+  return PROVIDER_TYPE_LABELS[type] ?? type;
+}
+
+// 種類ごとの注意（dns-01 の resolver の下に出す）。なければ null
+export const PROVIDER_TYPE_HELP: Record<string, string> = {
+  rfc2136: 'TSIG で署名した DNS UPDATE で TXT を書きます（BIND・Knot・PowerDNS など）。',
+  acme_dns: '名前ごとに acme-dns のアカウントを使います。初めての名前は登録だけして注文を失敗にするので、rproxy のログ（acme.dns の register）に出る fulldomain へ _acme-challenge.<名前> の CNAME を作ってください。作ったら次の再試行で取れます。',
+};
+
+export function providerTypeHelp(type: string): string | null {
+  return PROVIDER_TYPE_HELP[type] ?? null;
 }
 
 // フォームで確かめる：resolver があるか、名前が正しいか、ワイルドカードは dns-01 か、アカウント（と DNS のプロバイダ）の allowed_names の内か。

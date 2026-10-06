@@ -1121,4 +1121,11 @@ export const en: Record<string, string> = {
   "ACME の証明書をまだ取れていません（自己署名の仮の証明書を返しています）": "The ACME certificate has not been issued yet (a self-signed stand-in is being served)",
   "ACME 取得待ち": "ACME pending",
   "失敗・未登録・証明書に問題のあるルールはありません。": "No rules are failed, missing or have certificate problems.",
+  "DNS のプロバイダの秘密は、rproxy の補助プロセス（rproxy-api acme-helper）が持っています。": "The DNS providers' secrets are held by rproxy's helper process (rproxy-api acme-helper).",
+  "CA の更新の窓（ARI）": "CA renewal window (ARI)",
+  "PowerDNS の HTTP API": "PowerDNS HTTP API",
+  "汎用の REST": "generic REST",
+  "RFC 2136 の DNS UPDATE（TSIG）": "RFC 2136 DNS UPDATE (TSIG)",
+  "TSIG で署名した DNS UPDATE で TXT を書きます（BIND・Knot・PowerDNS など）。": "Writes the TXT record with a TSIG-signed DNS UPDATE (BIND, Knot, PowerDNS and others).",
+  "名前ごとに acme-dns のアカウントを使います。初めての名前は登録だけして注文を失敗にするので、rproxy のログ（acme.dns の register）に出る fulldomain へ _acme-challenge.<名前> の CNAME を作ってください。作ったら次の再試行で取れます。": "Uses one acme-dns account per name. For a new name rproxy only registers it and fails the order, so create a CNAME from _acme-challenge.<name> to the fulldomain shown in rproxy's log (acme.dns, register). The certificate is obtained on the next retry after that.",
 };

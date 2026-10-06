@@ -55,6 +55,12 @@ const AcmeStatus: React.FC<Props> = ({ status, reported, ruleState, nowMs }) => 
       <dl className="grid grid-cols-1 sm:grid-cols-[9rem_1fr] gap-x-3 text-gray-900">
         {status.not_after && (<><dt className="text-gray-600">期限</dt><dd className="font-mono">{formatIsoTime(status.not_after)}</dd></>)}
         {status.renew_at && (<><dt className="text-gray-600">更新の予定</dt><dd className="font-mono">{formatIsoTime(status.renew_at)}</dd></>)}
+        {status.ari && (
+          <>
+            <dt className="text-gray-600">CA の更新の窓（ARI）</dt>
+            <dd data-testid="acme-ari"><span className="font-mono">{formatIsoTime(status.ari.start)}</span> 〜 <span className="font-mono">{formatIsoTime(status.ari.end)}</span></dd>
+          </>
+        )}
         {status.next_attempt && (<><dt className="text-gray-600">次の試み</dt><dd className="font-mono">{formatIsoTime(status.next_attempt)}</dd></>)}
         {status.error && (<><dt className="text-gray-600">最後の誤り</dt><dd className="text-red-800 break-all" data-testid="acme-error">{status.error}</dd></>)}
       </dl>

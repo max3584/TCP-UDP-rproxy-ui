@@ -111,7 +111,7 @@ describe('英語の画面に日本語が残らない', () => {
       expect(translate(explainError('invalid', detail))).not.toMatch(JA);
     }
     const info = { configured: true, resolvers: [{ name: 'h', account: 'le', challenge: 'http-01', dns_provider: null }],
-      accounts: [{ name: 'le', allowed_names: ['example.com'], registered: true }], dnsProviders: [], certificates: [], rateLimit: null };
+      accounts: [{ name: 'le', allowed_names: ['example.com'], registered: true }], dnsProviders: [], certificates: [], rateLimit: null, helper: false };
     for (const names of [['*.example.com'], ['x.example.org'], ['bad name']]) expect(translate(checkAcmeNames(info, 'h', names) ?? '')).not.toMatch(JA);
   });
 
