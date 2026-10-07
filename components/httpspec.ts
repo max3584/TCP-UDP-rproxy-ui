@@ -6,8 +6,16 @@
 import { BALANCES, type Balance } from './lib';
 import type { HttpSpec } from './lib';
 import type { HttpOutlierSpec } from './v04';
-import { normalizeHttpOutlier } from './v04';
+import { normalizeHttpOutlier, parseDurationMs } from './v04';
 import { joinList } from '@/i18n/core';
+
+// ルートの時間の上限（rproxy の Gateway API 向けの項目、#227。features.http_options の route_timeouts）。0s は上限なし
+export interface RouteTimeoutsSpec {
+  // リクエストを受けてから応答の本文を送り終えるまで
+  request?: string;
+  // 転送先への 1 回の送信の、送り始めから応答の本文の終わりまで
+  backend_request?: string;
+}
 
 export interface RouteSpec {
   name: string;
@@ -16,11 +24,38 @@ export interface RouteSpec {
   service?: string;
   to?: string;
   middlewares?: string[];
+  timeouts?: RouteTimeoutsSpec;
 }
 
+// 転送先。url（http:// / https://）か status（固定の状態コードで答える、#235）のどちらか一方
 export interface ServerSpec {
-  url: string;
+  url?: string;
   weight?: number;
+  status?: number;
+  // この転送先へ送るリクエストにだけ働くミドルウェア（#229。SERVER_MIDDLEWARES の種類だけ）
+  middlewares?: string[];
+}
+
+// 転送先との HTTP の版（#233。省略は http1）
+export const UPSTREAM_PROTOCOLS = ['http1', 'h2', 'h2c', 'auto'] as const;
+export type UpstreamProtocol = typeof UPSTREAM_PROTOCOLS[number];
+
+export const UPSTREAM_PROTOCOL_LABELS: Record<UpstreamProtocol, string> = {
+  http1: 'HTTP/1.1（既定）',
+  h2: 'HTTP/2（TLS。https:// の転送先）',
+  h2c: 'HTTP/2（平文。http:// の転送先）',
+  auto: '自動（https:// は ALPN で選ぶ）',
+};
+
+// サービスの転送先への TLS（#236。ルールの tls.upstream の代わり）
+export interface ServiceTlsSpec {
+  server_name?: string;
+  ca_file?: string;
+  subject_alt_names?: string[];
+  cert_file?: string;
+  key_file?: string;
+  chain_file?: string;
+  insecure_skip_verify?: boolean;
 }
 
 export interface ServiceSpec {
@@ -33,6 +68,10 @@ export interface ServiceSpec {
   balance?: Balance;
   // 受け身のヘルスチェック（rproxy v0.4、#170。features.services に outlier_detection があるとき）
   outlier_detection?: HttpOutlierSpec;
+  // 転送先との HTTP の版（#233。features.services に protocol があるとき）
+  protocol?: UpstreamProtocol;
+  // https:// の転送先への TLS（#236。features.services に tls があるとき）
+  tls?: ServiceTlsSpec;
 }
 
 // {種類: 設定}（種類は 1 つだけ）
@@ -74,6 +113,9 @@ export const MIDDLEWARE_KINDS: Record<string, string> = {
   errors: '独自のエラーページ',
   respond: '固定の応答（拒否・メンテナンス表示）',
   geoip: 'GeoIP（国・AS での許可と拒否）',
+  cors: 'CORS（オリジンの許可）',
+  mirror: 'ミラー（リクエストの写しを送る）',
+  replace_host: 'Host の書き換え',
 };
 
 // 新しいミドルウェアの設定のひな形（必須の項目を埋める）
@@ -99,7 +141,20 @@ export const MIDDLEWARE_TEMPLATES: Record<string, Record<string, unknown>> = {
   errors: { status: ['500-599'], service: '', path: '/{status}.html' },
   respond: { status: 403, body: 'Forbidden' },
   geoip: { allow_countries: ['JP'] },
+  cors: { allow_origins: ['https://www.example.com'], allow_methods: ['GET', 'POST'] },
+  mirror: { service: '', percent: 100 },
+  replace_host: { host: 'app.example.com' },
 };
+
+// 転送先ごと（servers[].middlewares）に使えるミドルウェアの種類（rproxy の SERVER_MIDDLEWARES。書き換えるだけのもの）
+export const SERVER_MIDDLEWARES = ['headers', 'replace_host', 'strip_prefix', 'add_prefix', 'replace_path', 'replace_path_regex'];
+
+// リダイレクトの状態コード（#226）
+export const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
+
+// features.http_options の名前（rproxy の Features::http_options）
+export const HTTP_OPTIONS = ['headers_add', 'redirect_status', 'route_timeouts', 'server_middlewares', 'server_status', 'retry_status'] as const;
+export type HttpOption = typeof HTTP_OPTIONS[number];
 
 // 応答を自分で返すミドルウェア（service のないルートでも使える）
 export const ANSWERING_KINDS = ['redirect_scheme', 'redirect_regex', 'respond'];
@@ -284,6 +339,130 @@ function isHttpUrl(v: string): boolean {
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
+// rproxy の l7::parse_duration と同じ（数と単位 ms・s・m・h、365 日まで）
+function isDuration(v: string): boolean {
+  return parseDurationMs(v) !== null;
+}
+
+// rproxy の parse_status_range と同じ：「500」か「502-504」（100〜599、前 ≤ 後）
+export function isStatusRange(v: string): boolean {
+  const [a, b = a] = v.split('-', 2).length === 2 ? v.split('-', 2) : [v, v];
+  const n = (x: string) => (/^\s*[0-9]+\s*$/.test(x) ? Number(x) : NaN);
+  const lo = n(a);
+  const hi = n(b);
+  return lo >= 100 && hi <= 599 && lo <= hi;
+}
+
+// ヘッダの値に使える文字（hyper の HeaderValue::from_str：表示できる ASCII・空白・タブ）
+const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
+
+// サーバ名か IP アドレス（rustls の ServerName と同じく、ラベルは英数字・- ・_ で 63 文字まで）
+function isServerName(v: string): boolean {
+  if (v.includes(':')) return /^[0-9A-Fa-f:.]+$/.test(v);
+  return v.length <= 253 && /^[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?)*\.?$/.test(v);
+}
+
+// replace_host の host（host か host:port。@ や / を含まない）
+function isAuthority(v: string): boolean {
+  const m = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._~-]+)(?::([0-9]{1,5}))?$/.exec(v);
+  return m !== null && (m[2] === undefined || Number(m[2]) <= 65535);
+}
+
+const strings = (v: unknown): string[] | null => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v : null);
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+// ミドルウェアの種類ごとの中身（rproxy の MiddlewareSpec::validate のうち、Gateway API 向けの項目）
+function checkMiddlewareConfig(name: string, kind: string, c: Record<string, unknown>, services: Record<string, ServiceSpec>, errors: string[]): void {
+  const label = `ミドルウェア「${name}」`;
+  if ((kind === 'redirect_scheme' || kind === 'redirect_regex') && c.status !== undefined && !REDIRECT_STATUSES.includes(c.status as number)) {
+    errors.push(`${label}の状態コードは 301・302・303・307・308 のどれかにしてください。`);
+  }
+  if (kind === 'retry' && c.status !== undefined) {
+    const list = strings(c.status);
+    if (list === null) errors.push(`${label}の送り直す状態コードは文字列の一覧にしてください。`);
+    else for (const st of list) if (!isStatusRange(st)) errors.push(`${label}の送り直す状態コード「${st}」は 500 や 502-504 のように書いてください（100〜599）。`);
+  }
+  if (kind === 'headers') {
+    for (const side of ['request', 'response']) {
+      const ops = c[side];
+      if (!isObject(ops) || ops.add === undefined) continue;
+      if (!isObject(ops.add) || !Object.values(ops.add).every((v) => typeof v === 'string')) {
+        errors.push(`${label}の ${side}.add は {名前: 値} の形にしてください。`);
+      }
+    }
+  }
+  if (kind === 'replace_host') {
+    const host = c.host;
+    if (typeof host !== 'string' || !isAuthority(host)) errors.push(`${label}の host は host か host:port の形にしてください。`);
+  }
+  if (kind === 'mirror') {
+    const svc = c.service;
+    if (typeof svc !== 'string' || svc === '') errors.push(`${label}にミラーの送り先のサービスを指定してください。`);
+    else if (!(svc in services)) errors.push(`${label}のサービス「${svc}」がありません。`);
+    if (c.percent !== undefined && c.fraction !== undefined) errors.push(`${label}は割合（percent）と分数（fraction）のどちらか一方にしてください。`);
+    if (c.percent !== undefined && !(Number.isInteger(c.percent) && (c.percent as number) >= 0 && (c.percent as number) <= 100)) {
+      errors.push(`${label}の割合は 0〜100 の整数にしてください。`);
+    }
+    if (c.fraction !== undefined) {
+      const f = isObject(c.fraction) ? c.fraction : {};
+      const num = f.numerator;
+      const den = f.denominator ?? 100;
+      if (!Number.isInteger(num) || !Number.isInteger(den) || (num as number) < 0 || (den as number) < 1 || (num as number) > (den as number)) {
+        errors.push(`${label}の分数は、分母を 1 以上、分子を 0 以上で分母以下の整数にしてください。`);
+      }
+    }
+  }
+  if (kind === 'cors') {
+    const origins = strings(c.allow_origins);
+    if (origins === null || origins.length === 0) errors.push(`${label}に許可するオリジン（allow_origins）を 1 つ以上書いてください。`);
+    for (const o of origins ?? []) {
+      if (o !== '*' && !/^https?:\/\//.test(o)) errors.push(`${label}のオリジン「${o}」は * か http:// / https:// で始めてください。`);
+    }
+    for (const key of ['allow_origins', 'allow_methods', 'allow_headers', 'expose_headers']) {
+      if (c[key] === undefined) continue;
+      const list = strings(c[key]);
+      if (list === null) {
+        errors.push(`${label}の ${key} は文字列の一覧にしてください。`);
+        continue;
+      }
+      for (const v of list) if (!HEADER_VALUE.test(v) || v.includes(',')) errors.push(`${label}の「${v}」はヘッダの値に使えません（カンマや制御文字を含めない）。`);
+    }
+    if (c.max_age !== undefined && !(Number.isInteger(c.max_age) && (c.max_age as number) >= 0)) errors.push(`${label}の max_age は 0 以上の整数（秒）にしてください。`);
+  }
+}
+
+// サービスの tls（rproxy の ServiceTlsSpec::validate と同じ）
+function checkServiceTls(name: string, t: ServiceTlsSpec, errors: string[]): void {
+  const label = `サービス「${name}」の転送先の TLS`;
+  if ((t.cert_file === undefined) !== (t.key_file === undefined)) errors.push(`${label}: クライアント証明書と秘密鍵は両方とも指定してください。`);
+  if (t.chain_file !== undefined && t.cert_file === undefined) errors.push(`${label}: 中間 CA はクライアント証明書と一緒に指定してください。`);
+  if (t.server_name !== undefined && !isServerName(t.server_name)) errors.push(`${label}: サーバ名「${t.server_name}」はホスト名か IP アドレスにしてください。`);
+  for (const n of t.subject_alt_names ?? []) {
+    if (n === '' || /[\s\x00-\x1f\x7f]/.test(n)) errors.push(`${label}: 確かめる名前（SAN）「${n}」は DNS 名か URI にしてください。`);
+  }
+  if (t.insecure_skip_verify && ((t.subject_alt_names ?? []).length > 0 || t.ca_file !== undefined)) {
+    errors.push(`${label}: 証明書を確かめないときは CA ファイルと確かめる名前（SAN）を指定できません。`);
+  }
+}
+
+// この設定が使う features.http_options の名前（rproxy の HttpSpec::options_used と同じ）
+export function httpOptionsUsed(spec: HttpRules): HttpOption[] {
+  const used = new Set<HttpOption>();
+  const hasAdd = (o: unknown) => isObject(o) && isObject(o.add) && Object.keys(o.add).length > 0;
+  for (const m of Object.values(spec.middlewares ?? {})) {
+    const kind = middlewareKind(m);
+    const c = (m[kind] ?? {}) as Record<string, unknown>;
+    if (kind === 'headers' && (hasAdd(c.request) || hasAdd(c.response))) used.add('headers_add');
+    if ((kind === 'redirect_scheme' || kind === 'redirect_regex') && c.status !== undefined) used.add('redirect_status');
+    if (kind === 'retry' && Array.isArray(c.status) && c.status.length > 0) used.add('retry_status');
+  }
+  if (spec.routes.some((r) => r.timeouts !== undefined)) used.add('route_timeouts');
+  const servers = Object.values(spec.services ?? {}).flatMap((s) => s.servers ?? []);
+  if (servers.some((s) => (s.middlewares ?? []).length > 0)) used.add('server_middlewares');
+  if (servers.some((s) => s.status !== undefined)) used.add('server_status');
+  return HTTP_OPTIONS.filter((o) => used.has(o));
+}
+
 // 誤りの一覧（空なら問題なし）。features.middlewares を渡すと、この rproxy で使えない種類も誤りにする
 export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly string[]): string[] {
   const errors: string[] = [];
@@ -293,10 +472,31 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
   for (const [name, s] of Object.entries(services)) {
     if (!NAME.test(name)) errors.push(`サービスの名前「${name}」には英数字と _ . - だけを使ってください。`);
     if (!Array.isArray(s.servers) || s.servers.length === 0) errors.push(`サービス「${name}」に転送先（servers）がありません。`);
+    const protocol = s.protocol ?? 'http1';
+    if (!UPSTREAM_PROTOCOLS.includes(protocol)) errors.push(`サービス「${name}」の HTTP の版は http1 / h2 / h2c / auto から選んでください。`);
     for (const srv of s.servers ?? []) {
-      if (!isHttpUrl(srv.url ?? '')) errors.push(`サービス「${name}」の転送先「${srv.url ?? ''}」は http:// か https:// で始まる URL にしてください。`);
-      if (srv.weight !== undefined && !(Number.isInteger(srv.weight) && srv.weight >= 0)) errors.push(`サービス「${name}」の重みは 0 以上の整数にしてください。`);
+      const url = srv.url ?? '';
+      if (srv.status !== undefined) {
+        if (url !== '') errors.push(`サービス「${name}」の転送先は URL と状態コードのどちらか一方にしてください。`);
+        if (!(Number.isInteger(srv.status) && srv.status >= 100 && srv.status <= 599)) errors.push(`サービス「${name}」の転送先の状態コードは 100〜599 にしてください。`);
+        if ((srv.middlewares ?? []).length > 0) errors.push(`サービス「${name}」の状態コードで答える転送先には、ミドルウェアを付けられません。`);
+      } else if (!isHttpUrl(url)) {
+        errors.push(`サービス「${name}」の転送先「${url}」は http:// か https:// で始まる URL にしてください。`);
+      }
+      if (srv.weight !== undefined && !(Number.isInteger(srv.weight) && srv.weight >= 1)) errors.push(`サービス「${name}」の重みは 1 以上の整数にしてください。`);
+      for (const mw of srv.middlewares ?? []) {
+        if (!(mw in middlewares)) errors.push(`サービス「${name}」の転送先のミドルウェア「${mw}」がありません。`);
+        else if (!SERVER_MIDDLEWARES.includes(middlewareKind(middlewares[mw]))) {
+          errors.push(`サービス「${name}」の転送先のミドルウェア「${mw}」は、転送先ごとには使えない種類です（使えるのは ${joinList(SERVER_MIDDLEWARES, '・')}）。`);
+        }
+      }
+      if (protocol === 'h2' && url !== '' && !url.startsWith('https://')) errors.push(`サービス「${name}」の HTTP/2（h2）には https:// の転送先が要ります（平文の HTTP/2 は h2c）。`);
+      if (protocol === 'h2c' && url.startsWith('https://')) errors.push(`サービス「${name}」の平文の HTTP/2（h2c）には http:// の転送先が要ります（TLS の HTTP/2 は h2）。`);
     }
+    if ((s.servers ?? []).length > 0 && s.servers.every((srv) => srv.status !== undefined) && (s.health_check || s.sticky)) {
+      errors.push(`サービス「${name}」のヘルスチェックとスティッキーには、URL の転送先が 1 つ以上要ります。`);
+    }
+    if (s.tls !== undefined) checkServiceTls(name, s.tls, errors);
     if (s.health_check && !(s.health_check.path ?? '').startsWith('/')) errors.push(`サービス「${name}」のヘルスチェックのパスは / で始めてください。`);
     if (s.outlier_detection !== undefined) {
       try {
@@ -319,6 +519,8 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
     else if (availableMiddlewares && !availableMiddlewares.includes(kinds[0])) {
       errors.push(`ミドルウェア「${name}」の種類「${kinds[0]}」は、この rproxy ではまだ使えません。`);
     }
+    const config = m[kinds[0]];
+    if (isObject(config)) checkMiddlewareConfig(name, kinds[0], config, services, errors);
   }
 
   const seen = new Set<string>();
@@ -336,6 +538,9 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
     for (const mw of r.middlewares ?? []) {
       if (!(mw in middlewares)) errors.push(`${label}のミドルウェア「${mw}」がありません。`);
     }
+    for (const d of [r.timeouts?.request, r.timeouts?.backend_request]) {
+      if (d !== undefined && !isDuration(d)) errors.push(`${label}の時間の上限「${d}」は 10s・500ms・1m のように書いてください。`);
+    }
     if (!r.service && !r.to) {
       const answers = (r.middlewares ?? []).some((mw) => ANSWERING_KINDS.includes(middlewareKind(middlewares[mw] ?? {})));
       if (!answers) errors.push(`${label}に転送先（サービスか to）を指定するか、リダイレクト・固定の応答のミドルウェアを付けてください。`);
@@ -351,6 +556,35 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
   return errors;
 }
 
+// 空の文字列・undefined の項目を省く（残りがなければ undefined）
+function compact<T extends object>(o: T | undefined): Partial<T> | undefined {
+  if (o === undefined || o === null) return undefined;
+  const out = Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== '')) as Partial<T>;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// 転送先の 1 件（url か status。重み 1 と空のミドルウェアは省く）
+function cleanServer(srv: ServerSpec): ServerSpec {
+  const out: ServerSpec = srv.status !== undefined ? { status: srv.status } : { url: (srv.url ?? '').trim() };
+  if (srv.weight !== undefined && srv.weight !== 1) out.weight = srv.weight;
+  if (srv.status === undefined && srv.middlewares && srv.middlewares.length > 0) out.middlewares = srv.middlewares;
+  return out;
+}
+
+// サービスの tls（空の欄・空の一覧・false を省く。何もなければ undefined）
+export function cleanServiceTls(t: ServiceTlsSpec | undefined): ServiceTlsSpec | undefined {
+  if (t === undefined) return undefined;
+  const out: ServiceTlsSpec = {};
+  for (const k of ['server_name', 'ca_file', 'cert_file', 'key_file', 'chain_file'] as const) {
+    const v = t[k]?.trim();
+    if (v) out[k] = v;
+  }
+  const sans = (t.subject_alt_names ?? []).map((n) => n.trim()).filter((n) => n !== '');
+  if (sans.length > 0) out.subject_alt_names = sans;
+  if (t.insecure_skip_verify === true) out.insecure_skip_verify = true;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 // 空の項目を省いて rproxy に送る形に揃える
 export function cleanHttp(spec: HttpRules): HttpSpec {
   const out: Record<string, unknown> = {};
@@ -361,6 +595,8 @@ export function cleanHttp(spec: HttpRules): HttpSpec {
     if (r.service) route.service = r.service;
     else if (r.to) route.to = r.to.trim();
     if (r.middlewares && r.middlewares.length > 0) route.middlewares = r.middlewares;
+    const t = compact(r.timeouts);
+    if (t !== undefined) route.timeouts = t;
     return route;
   });
   if (spec.default && (spec.default.service || (spec.default.status !== undefined && spec.default.status !== 404))) {
@@ -369,8 +605,11 @@ export function cleanHttp(spec: HttpRules): HttpSpec {
   if (spec.services && Object.keys(spec.services).length > 0) {
     out.services = Object.fromEntries(Object.entries(spec.services).map(([name, s]) => {
       const svc: Record<string, unknown> = {
-        servers: s.servers.map((srv) => (srv.weight !== undefined && srv.weight !== 1 ? { url: srv.url.trim(), weight: srv.weight } : { url: srv.url.trim() })),
+        servers: s.servers.map(cleanServer),
       };
+      if (s.protocol !== undefined && s.protocol !== 'http1') svc.protocol = s.protocol;
+      const tls = cleanServiceTls(s.tls);
+      if (tls !== undefined) svc.tls = tls;
       if (s.health_check?.path) {
         svc.health_check = Object.fromEntries(Object.entries(s.health_check).filter(([, v]) => v !== undefined && v !== ''));
       }

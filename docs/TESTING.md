@@ -178,6 +178,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 - `api-rules.spec.ts`：rproxy の API を直接呼んで作ったルールが、利用者には見えず（404）、管理者にはダッシュボードと詳細に「API」で出て、編集で rproxy の転送先が変わり、削除で rproxy から消えること（rproxy の版を問わない）
 - `usage.spec.ts`：作ったルールに通信を流すと、UI の集計（E2E では `RPROXY_UI_USAGE_SECS=30`）でルールの利用量が増え、詳細画面のグラフ・利用量の画面の表・CSV に出ること（010 の表がなければ飛ばす）
 - `v04.spec.ts`：v0.4 の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームの「制限・GeoIP」でラベルと送信元ごとの同時接続 1 を付けて追加し、詳細画面にラベルが出て、2 本目の接続がすぐ閉じられること。`features.dry_run` のときは「差分を見る」で作成・変更の差分（接続を切らずに変わる、`labels`）が出ること
+- `gateway.spec.ts`：Gateway API 向けの L7・TLS の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームでルートの時間の上限・Host の書き換え・ヘッダを足す・ミラー・418 で答える転送先を付けて追加し、実際に Host が変わりヘッダが足され、写しがミラーの送り先に届き、`/teapot` が 418 を返すこと、詳細画面と編集画面に出ること。TLS の sni のサーバ名ごとの転送先を複数の宛先（フェイルオーバー）にして、ClientHello が 1 番目の宛先へ届き、詳細・編集画面に出ること。375px ではみ出さず、ライト・ダークで白地に白文字がないこと
 - `acme.spec.ts`（`UI_E2E_ACME=1` のときだけ）：ACME（rproxy-api v0.3.21）。CI は rproxy-api に `docs/ACME.md` があれば、apk の pebble（ACME の試験用の CA）を同じコンテナで動かし、`scripts/ci-pebble.sh` が Pebble の HTTPS の証明書（openssl）・`/etc/hosts` の名前・rproxy の設定ファイル（`RPROXY_CONFIG` の `global.acme`）を作る。
   フォームで resolver を選び、ワイルドカード（dns-01 だけ）と `allowed_names` の外の名前を保存の前に断ること、保存したルールに rproxy が Pebble から証明書を取り（http-01、`http01_listen`）、詳細画面が「有効」になって実際に Pebble の証明書を返すこと、編集画面に resolver と名前が入っていること。
   rproxy が許可の外の名前を `400 invalid` で断ること。届かない CA の resolver では、詳細画面に「失敗」と仮の証明書（実際に `rproxy ACME placeholder` を返す）、ダッシュボードの要確認に「ACME 失敗」が出ること（375px でもはみ出さない・白地に白文字がない）
@@ -192,6 +193,17 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 | rule detail・form | `AcmeStatus`（取得待ちの仮の証明書、期限・更新の予定・次の試み・最後の誤り、古い rproxy の注意）、`AcmeCertificateEditor`（challenge つきの resolver、許可する名前、入力中の誤り） |
 | explainError | rproxy の断り（許可の外の名前・ワイルドカード・resolver・`global.acme` がない・udp・古い rproxy・`acme:write`）の説明 |
 | TLS・export / import | 名前の正規化、udp の ACME は `tls_config`、ACME の証明書が書き出して読み込んでも同じ |
+
+## 単体テスト：Gateway API 向けの L7・TLS（`tests/httpgateway.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| validateHttp | rproxy-api の docs/API.md の例が通り、`cleanHttp` で項目が残ること。転送先（URL と状態コード・重み・転送先ごとのミドルウェアの種類・h2 / h2c の scheme）、サービスの TLS、ルートの時間の上限、リダイレクト・送り直しの状態コード、ミラー・replace_host・CORS の誤り（rproxy の `src/l7/mod.rs` などと同じ規則）、使う `http_options` の名前 |
+| HttpEditor | `features` にある項目だけ欄を出し、ない項目は値があれば読み取り専用の注記で残すこと |
+| HttpSummary | 時間の上限・状態コードの転送先・転送先ごとのミドルウェア・HTTP の版・サービスの TLS・新しいミドルウェアの名前 |
+| tls.routes の targets | `normalizeTls` の形（既定の balance は省く）、両方・どちらもない・targets のない balance・範囲のポートの誤り、ダッシュボードの検索、読み取り専用の表示 |
+
+エクスポートして読み込み直すと同じルールになることは `tests/export-import.test.ts`（Gateway API の項目を使う L7 のルールと targets のある sni のルール）。
 
 ## 単体テスト：v0.4 のルールの項目（`tests/v04.test.ts`・`tests/forward-v04.test.ts`）
 

@@ -31,7 +31,7 @@ import { AcmeInfo, splitAcmeDomains } from './acme';
 import AcmeCertificateEditor, { acmeRowProblem } from './AcmeCertificateEditor';
 import HttpEditor from './HttpEditor';
 import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHttp } from './httpspec';
-import TargetsEditor from './TargetsEditor';
+import TargetsEditor, { RouteTargetsEditor } from './TargetsEditor';
 import { EMPTY_ROW, HealthCheckRow, TargetRow, buildBalancing, toHealthCheckRow, toRows } from './targets';
 import { Balancing, NO_BALANCING } from './tls';
 import { hostPort, http3PortConflicts, multiNode, targetChoices } from './dashboard';
@@ -100,6 +100,9 @@ interface RouteRow {
   remote_addr: string;
   remote_port: number | '';
   passthrough: boolean;
+  // 名前ごとの複数の宛先（rproxy の #234）。空なら remote_addr / remote_port の 1 件
+  targets: TargetRow[];
+  balance: Balance;
 }
 
 // 証明書の 1 行。ACME の証明書（acme がある）は名前の欄の文字を domainsText に持つ
@@ -110,7 +113,14 @@ function certRow(c: TlsCertificate): CertRow {
 }
 
 function routeRow(r: TlsRoute): RouteRow {
-  return { names: routeNames(r).join(', '), remote_addr: r.remote_addr, remote_port: r.remote_port, passthrough: r.passthrough === true };
+  return {
+    names: routeNames(r).join(', '),
+    remote_addr: r.remote_addr ?? '',
+    remote_port: r.remote_port ?? '',
+    passthrough: r.passthrough === true,
+    targets: toRows(r.targets ?? []),
+    balance: r.balance ?? DEFAULT_BALANCE,
+  };
 }
 
 interface Caps {
@@ -135,6 +145,10 @@ interface Caps {
     acme: boolean;
     // 実装済みのサービスの項目（health_check / sticky）。返さない rproxy では null
     services: string[] | null;
+    // Gateway API 向けの L7 の項目（features.http_options。返さない rproxy では空）
+    httpOptions: string[];
+    // tls.routes[] の targets / balance（features.tls_route_targets）
+    tlsRouteTargets: boolean;
     // v0.4 のルールの項目（labels・limits・bandwidth・geoip・outlier_detection）。返さない rproxy では false
     v04: Record<V04Key, boolean>;
     // 変更前の差分（?dry_run=true）
@@ -324,6 +338,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             tlsOptions: data.features.tls_options === true,
             acme: data.features.acme === true,
             services: Array.isArray(data.features.services) ? data.features.services : null,
+            httpOptions: Array.isArray(data.features.http_options) ? data.features.http_options : [],
+            tlsRouteTargets: data.features.tls_route_targets === true,
             v04: Object.fromEntries(V04_KEYS.map((k) => [k, data.features[k] === true])) as Record<V04Key, boolean>,
             dryRun: data.features.dry_run === true,
           } : null,
@@ -465,6 +481,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const showStartTls = protocol === 'tcp' && tlsMode === 'terminate' && !l7;
   // TLS のオプションは tcp の終端で、rproxy が features.tls_options を返すときだけ編集できる
   const tlsOptionsEditable = protocol === 'tcp' && tlsMode === 'terminate' && caps.features?.tlsOptions === true;
+  // サーバ名ごとの複数の宛先（rproxy の #234）は features.tls_route_targets のときだけ編集できる（使っていれば読み取り専用で残す）
+  const routeTargetsEditable = caps.features?.tlsRouteTargets === true;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
   const showUnmatched = ((protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate')) || (protocol === 'udp' && tlsMode === 'sni'))
@@ -544,8 +562,17 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         const passthrough = tlsMode === 'terminate' && (l7 || r.passthrough);
         return {
           ...(names.length > 1 ? { server_names: names } : { server_name: names[0] ?? '' }),
-          remote_addr: r.remote_addr,
-          remote_port: r.remote_port === '' ? 0 : r.remote_port,
+          ...(r.targets.length > 0
+            ? {
+              targets: r.targets.map((t) => ({
+                addr: t.addr.trim(),
+                port: t.port === '' ? undefined : t.port,
+                ...(t.weight === '' ? {} : { weight: t.weight }),
+                ...(t.backup ? { backup: true } : {}),
+              })),
+              ...(r.balance !== DEFAULT_BALANCE ? { balance: r.balance } : {}),
+            }
+            : { remote_addr: r.remote_addr, remote_port: r.remote_port === '' ? 0 : r.remote_port }),
           ...(passthrough ? { passthrough: true } : {}),
         };
       });
@@ -1106,6 +1133,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               value={httpRules}
               onChange={setHttpRules}
               middlewares={caps.features?.middlewares ?? null}
+              httpOptions={caps.features?.httpOptions ?? null}
               serviceOptions={caps.features?.services ?? null}
               http3={caps.features?.http3 === true || httpRules.http3 === true}
             />
@@ -1154,14 +1182,25 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               {tlsMode === 'terminate' && '「終端しない」にした名前は、rproxy で TLS を終端せずに ClientHello ごと転送先へ流します（証明書は転送先のもの）。'}
             </p>
             {routes.map((r, i) => (
-              <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-1 mb-1" data-testid="tls-route-row">
+              <div key={i} className="mb-2" data-testid="tls-route-row">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-1">
                 <input type="text" value={r.names} onChange={(e) => updateRoute(i, { names: e.target.value })}
                   className={inputClass} placeholder="例: git.example.com, **.tenant.example.com" aria-label={`サーバ名 ${i + 1}`}
                   aria-describedby="rule-tls-routes-help" />
-                <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
-                  className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
-                <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
-                  className="border border-gray-300 rounded-sm px-2 py-1 sm:w-28 max-lg:min-h-11" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
+                {r.targets.length === 0 && (
+                  <>
+                    <input type="text" value={r.remote_addr} onChange={(e) => updateRoute(i, { remote_addr: e.target.value.trim() })}
+                      className={inputClass} placeholder="転送先アドレス" aria-label={`転送先アドレス ${i + 1}`} />
+                    <input type="number" value={r.remote_port} onChange={(e) => updateRoute(i, { remote_port: toNumber(e.target.value) })}
+                      className="border border-gray-300 rounded-sm px-2 py-1 sm:w-28 max-lg:min-h-11" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
+                    {routeTargetsEditable && (
+                      <button type="button" className={`${smallButtonClass} whitespace-nowrap`} aria-label={`転送先 ${i + 1} を複数の宛先にする`}
+                        onClick={() => updateRoute(i, { targets: [{ addr: r.remote_addr, port: r.remote_port, weight: '', backup: false }, { ...EMPTY_ROW }] })}>
+                        複数の宛先
+                      </button>
+                    )}
+                  </>
+                )}
                 {tlsMode === 'terminate' && (
                   <label className="flex items-center gap-1 text-sm text-gray-900 whitespace-nowrap">
                     <input type="checkbox" checked={l7 || r.passthrough} disabled={l7}
@@ -1169,11 +1208,17 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                     終端しない
                   </label>
                 )}
-                <button type="button" onClick={() => setRoutes(routes.filter((_, j) => j !== i))} className={removeButtonClass}
+                <button type="button" onClick={() => setRoutes(routes.filter((_, j) => j !== i))} className={`${removeButtonClass} whitespace-nowrap`}
                   aria-label={`転送先 ${i + 1} を削除`}>削除</button>
+                </div>
+                {r.targets.length > 0 && (
+                  <RouteTargetsEditor index={i} rows={r.targets} balance={r.balance} editable={routeTargetsEditable}
+                    onChange={(rows, balance) => updateRoute(i, { targets: rows, balance: balance })}
+                    onSingle={() => updateRoute(i, { targets: [], balance: DEFAULT_BALANCE, remote_addr: r.targets[0]?.addr ?? '', remote_port: r.targets[0]?.port ?? '' })} />
+                )}
               </div>
             ))}
-            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7 }])} className={smallButtonClass}>
+            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7, targets: [], balance: DEFAULT_BALANCE }])} className={smallButtonClass}>
               ＋ 転送先を追加
             </button>
           </fieldset>

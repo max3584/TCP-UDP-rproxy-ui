@@ -96,11 +96,11 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/messages.ts` | API のエラーコードを利用者向けの説明に直す（`resolve_failed`、`static`、`no_role`、`rproxy_unauthorized` など） |
 | `components/roles.ts` | ロール（`rproxy-admin` / `rproxy-user`）の判定。クレームの位置・ロールの名前・利用者が使えるポート・ノードは環境変数（`RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_USER_PORTS` / `RPROXY_UI_USER_NODES`。`nodesAllowed`） |
 | `components/apiguard.ts` | API route の共通の確認（サインインとロール、`requireRole`）と、rproxy の失敗の返し方（`rproxyFailure`。rproxy の 401 は `rproxy_unauthorized`） |
-| `components/httpspec.ts` | L7（ルールの `http`）の型、`match` の式の検査（rproxy の `src/l7/matcher.rs` と同じ書き方）と組み立て、`validateHttp`・`cleanHttp`。画面と API route の両方で使う |
-| `components/HttpEditor.tsx` | RuleForm の「L7 (HTTP)」タブ（ルート・サービス・ミドルウェア・一致しないとき）。ミドルウェアの種類は `features.middlewares`、サービスのヘルスチェック・スティッキーは `features.services` にあるものだけ出す。種類ごとの欄（`FIELDS`。basic_auth は users_file・realm・user_header・keep_authorization）がない種類は JSON で編集する |
+| `components/httpspec.ts` | L7（ルールの `http`）の型、`match` の式の検査（rproxy の `src/l7/matcher.rs` と同じ書き方）と組み立て、`validateHttp`・`cleanHttp`。画面と API route の両方で使う。Gateway API 向けの項目の型と検証（`checkMiddlewareConfig`・`checkServiceTls`。rproxy の `src/l7/mod.rs`・`backend_tls.rs`・`middleware/cors.rs` と同じ規則）と、使う `features.http_options` の名前（`httpOptionsUsed`。rproxy の `options_used`） |
+| `components/HttpEditor.tsx` | RuleForm の「L7 (HTTP)」タブ（ルート・サービス・ミドルウェア・一致しないとき）。ミドルウェアの種類は `features.middlewares`、サービスのヘルスチェック・スティッキーは `features.services` にあるものだけ出す。種類ごとの欄（`FIELDS`。basic_auth は users_file・realm・user_header・keep_authorization、cors・replace_host、mirror は `MirrorConfig`）がない種類は JSON で編集する（headers の `add` も JSON）。Gateway API 向けの項目は `features.http_options`・`features.services`（`protocol`・`tls`）にあるときだけ欄を出し（features を取れなければ出す）、ない項目に値があれば `Preserved`（読み取り専用の注記）で残して送る |
 | `components/targets.ts` | 宛先を複数にしたとき（`targets` / `balance` / `health_check`）のフォームの行・組み立て・宛先ごとの状態の探し方。形の検証は `tls.ts` の `normalizeTargets` / `checkBalancing` |
-| `components/TargetsEditor.tsx` | RuleForm の「基本」タブの宛先の一覧・振り分け方・ヘルスチェック（「宛先を追加」で出る） |
-| `components/HttpSummary.tsx` | 詳細画面の L7 の読み取り専用の表示（ルートは rproxy が試す順） |
+| `components/TargetsEditor.tsx` | RuleForm の「基本」タブの宛先の一覧・振り分け方・ヘルスチェック（「宛先を追加」で出る）。TLS タブのサーバ名ごとの転送先の複数の宛先（`RouteTargetsEditor`。`features.tls_route_targets` がなければ読み取り専用） |
+| `components/HttpSummary.tsx` | 詳細画面の L7 の読み取り専用の表示（ルートは rproxy が試す順。ルートの時間の上限、状態コードで答える転送先・転送先ごとのミドルウェア、サービスの HTTP の版と TLS も） |
 | `components/settingsdoc.ts` | ルールと rproxy の設定ファイルの形の変換（エクスポートの `toSettingsRule`・`exportDoc`・`formatDoc`、インポートの `parseDoc`・`settingsRuleToBody`）と、rproxy へ送るルールの形 `toRproxyRule`（API route と共有）。エクスポートは JSON だけで、先頭の `format: "rproxy-ui-export"` で rproxy の設定ファイルと区別する（rproxy は知らない項目として断る）。インポートは UI のエクスポートと rproxy の設定ファイル（YAML / JSON。`yaml`、純粋な JS で読む）を読む。`enabled`（停止中）は UI のエクスポートの中だけ |
 | `components/history.ts` | 変更の履歴の型（`HistoryEntry`）と、前の版との違いの文（`ruleChanges`） |
 | `components/HistoryList.tsx` | 履歴の表（ページ送り、「この版に戻す」）。`/history` と詳細画面で使う |
@@ -177,6 +177,8 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
   API で作ったルール（#76）：rproxy の `GET /rules` の static でない UI の DB にないルールと、`rproxy_rules`（migration 009。rproxy が書き、UI は読むだけ。テーブルがない（errno 1146）なら空）にあって動いていないルールを、管理者にだけ `origin: 'api'` の行で出す（`rule` も管理者だけ。利用者は 404）。
   編集は `api-modify`（rproxy の今の内容を `ruleFromStatus` で画面の形にして `mergeEdit` で本文を重ね、PATCH だけ。DB にも履歴にも書かない。rproxy は origin: api のルールの変更をトークンを問わず保存する（rproxy-api #222）ので、保存されていたルールで応答が `persisted: false` のときだけ `warning`）、削除は `api-delete`。どちらも管理者だけ（403 `forbidden_admin`）、ノードを設定していれば `target` はノードの名前、ルールの組のものは 409 `owned`、同じキーの UI のルールがあれば 409 `ui_rule`。`plan` の `api-modify` も同じ。
   UI のルールの live の状態が `origin: api` か `ruleset` なら `shadowedBy`（UI のルールの代わりに動いている。rproxy は起動時に UI のテーブルを優先する）。`rproxy_rules` の `node` は UI のノードの名前（1 台の環境ではノードの名前を問わない）。`db/node-view.mjs` はノードの行だけを書ける `rproxy_rules` のビューも作る（`--without-rproxy-rules`）。
+  Gateway API 向けの L7・TLS（rproxy-api #237、docs/API.md「Gateway API 向けの L7・TLS」）：`headers` の `add`、リダイレクトの `status`、ルートの `timeouts`、`replace_host`・`cors`・`mirror`、`servers[]` の `middlewares` と `status`（`url` の代わり。`ServerSpec.url` は省略できる）、`retry` の `status`、サービスの `protocol`・`tls`、`tls.routes[]` の `targets` / `balance`（`TlsRoute.remote_addr` / `remote_port` は省略できる。宛先は `routeTargets`）。
+  `features.http_options`（RuleForm の `caps.features.httpOptions`。返さない rproxy では空）・`features.services`・`features.middlewares`・`features.tls_route_targets` で欄を出し分け、使えない項目の値は消さずに読み取り専用で残して送る（rproxy が断る）。`validateHttp` は使えない項目を誤りにしない（使えないミドルウェアの種類だけは今までどおり誤り）。サーバの重みは rproxy と同じく 1 以上。
   `KNOWN_RPROXY_MINOR` は 0.4。`MIN_RPROXY_VERSION` は上げていない（v0.4 の項目は `features` で判断する）。
 
 - v0.3 の形（rproxy-api の docs/API.md「v0.3 の設定」）：ルールの `http`（L7）、`tls.certificates[]` の ACME（`acme` / `domains`）、`tls.options`（`min_version` / `cipher_suites`）、`GET /capabilities` の `features`。

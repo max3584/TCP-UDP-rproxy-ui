@@ -34,10 +34,21 @@ export type TlsUnmatched = 'default' | 'reject';
 export interface TlsRoute {
   server_name?: string;
   server_names?: string[];
-  remote_addr: string;
-  remote_port: number;
+  // 転送先。targets（rproxy の Gateway API 向けの #234。features.tls_route_targets）のときは付けない
+  remote_addr?: string;
+  remote_port?: number;
   // true のときだけ付ける
   passthrough?: boolean;
+  // 名前ごとの複数の宛先（remote_addr / remote_port の代わり。ルールの targets と同じ形）
+  targets?: Target[];
+  // targets の振り分け方（既定の round_robin なら省く）
+  balance?: Balance;
+}
+
+// route の宛先の一覧（targets か、remote_addr / remote_port の 1 件）
+export function routeTargets(route: TlsRoute): Target[] {
+  if (route.targets && route.targets.length > 0) return route.targets;
+  return [{ addr: route.remote_addr ?? '', port: route.remote_port ?? 0 }];
 }
 
 // route のサーバ名の一覧（server_name / server_names のどちらでも）

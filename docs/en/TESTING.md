@@ -178,6 +178,7 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 - `api-rules.spec.ts`: a rule created by calling the rproxy API directly is hidden from users (404), shown to administrators as "API" on the dashboard and details, editing changes the target in rproxy and deleting removes it from rproxy (any rproxy version)
 - `usage.spec.ts`: traffic through a new rule raises its usage after the UI collects (`RPROXY_UI_USAGE_SECS=30` in E2E) and appears in the detail chart, the usage report and the CSV (skipped without the 010 tables)
 - `v04.spec.ts`: v0.4 rule settings (only when rproxy's `features` report them; skipped otherwise). Adds a rule with a label and one concurrent connection per source from the "Limits & GeoIP" tab, checks the label on the details and that a second connection is closed at once. With `features.dry_run`, "Show the difference" shows the create and change plans (changes without cutting connections, `labels`)
+- `gateway.spec.ts`: Gateway API L7 and TLS fields (only when rproxy's `features` report them; skipped otherwise). Adds a rule with a route time limit, replace_host, appended headers, a mirror and a backend answering 418 from the form, and checks that the Host is replaced, the header appended, copies reach the mirror service and `/teapot` answers 418, and that the details and the edit form show them. Gives a server name of a TLS sni rule several destinations (failover) and checks that the ClientHello reaches the first one and the details and edit form show them. Nothing overflows at 375px and there is no white-on-white text in light and dark
 - `acme.spec.ts` (only with `UI_E2E_ACME=1`): ACME (rproxy-api v0.3.21). When rproxy-api has `docs/ACME.md`, CI runs apk's pebble (the ACME test CA) in the same container, and `scripts/ci-pebble.sh` makes Pebble's HTTPS certificate (openssl), the names in `/etc/hosts` and rproxy's settings file (`global.acme` in `RPROXY_CONFIG`).
   The form offers the resolvers and refuses wildcards (dns-01 only) and names outside `allowed_names` before saving; for the saved rule rproxy obtains a certificate from Pebble (http-01, `http01_listen`), the details show "valid" and Pebble's certificate is actually served; the edit page shows the resolver and the names.
   rproxy refuses names outside the allowlist with `400 invalid`. With a resolver whose CA cannot be reached, the details show "failed" and the stand-in (`rproxy ACME placeholder` is actually served), and the dashboard's attention list shows "ACME failed" (no overflow at 375px, no white text on white)
@@ -192,6 +193,17 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 | rule detail, form | `AcmeStatus` (the stand-in while pending, expiry, renewal time, next attempt, last error, the note for an older rproxy), `AcmeCertificateEditor` (resolvers with their challenge, allowed names, errors while typing) |
 | explainError | Explanations of rproxy's refusals (names outside the allowlist, wildcards, resolvers, no `global.acme`, udp, an older rproxy, `acme:write`) |
 | TLS, export / import | Normalizing names, ACME on udp is `tls_config`, ACME certificates are the same after export and import |
+
+## Unit tests: Gateway API L7 and TLS (`tests/httpgateway.test.ts`)
+
+| Test | What it checks |
+|---|---|
+| validateHttp | The example of rproxy-api docs/API.md passes and `cleanHttp` keeps its fields. Errors for backends (URL or status code, weight, kinds of per-backend middlewares, h2 / h2c schemes), the service TLS, route time limits, redirect and retry status codes, mirror, replace_host and CORS (the same rules as rproxy's `src/l7/mod.rs` and others), and the names of the `http_options` used |
+| HttpEditor | Only fields reported in `features` are shown; values of the others are kept with a read-only note |
+| HttpSummary | Time limits, status-code backends, per-backend middlewares, the HTTP version, the service TLS and the names of the new middlewares |
+| tls.routes targets | The `normalizeTls` shape (the default balance is left out), errors for both or neither, balance without targets and range ports, dashboard search, the read-only view |
+
+That exporting and importing again gives the same rules is checked in `tests/export-import.test.ts` (an L7 rule with the Gateway API fields and an sni rule with targets).
 
 ## Unit tests: v0.4 rule settings (`tests/v04.test.ts`, `tests/forward-v04.test.ts`)
 

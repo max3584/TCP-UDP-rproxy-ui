@@ -150,6 +150,26 @@ For building a production environment (apt, DB users and privileges, Keycloak, p
 Table definitions and migrations are in `db/` (see [db/README.en.md](db/README.en.md)). On existing environments, apply `db/migrations/005_ranges_and_tls.sql` (columns for port ranges and TLS).
 The HTTP API contract with rproxy-api is `../rproxy-api/docs/API.md`.
 
+## Gateway API L7 and TLS fields
+
+The rproxy-api fields for the Gateway API (rproxy-api #237; editable only when `features` of `GET /capabilities` reports them) can be created and edited in the form too.
+With an rproxy that cannot use them, the fields are hidden, and values a rule already has are kept with a read-only note and sent as they are. The L7 view on the rule details shows them as well.
+
+| Field | Where | features |
+|---|---|---|
+| Route time limits (whole request, one attempt to a backend) | Routes in the L7 tab | `route_timeouts` in `http_options` |
+| Replace the Host, CORS, mirror (percentage or fraction) | Middleware kinds (`replace_host`, `cors`, `mirror`) | `middlewares` |
+| Append headers (`add` in `request` / `response` of `headers`) | JSON of `headers` | `headers_add` in `http_options` |
+| Redirect status code (301, 302, 303, 307, 308) | `redirect_scheme`, `redirect_regex` | `redirect_status` in `http_options` |
+| Retry on status codes (`500`, `502-504`) | `retry` | `retry_status` in `http_options` |
+| Middlewares per backend (only `headers`, `replace_host` and path rewrites) | Backend rows of a service | `server_middlewares` in `http_options` |
+| Backends answering with a fixed status code (for their share by weight) | Backend kind "Answer with a status code" | `server_status` in `http_options` |
+| HTTP version towards the backends (`http1`, `h2`, `h2c`, `auto`; h2 or h2c for gRPC) | Service | `protocol` in `services` |
+| Backend TLS per service (server name, CA, SAN, client certificate, no verification) | Service | `tls` in `services` |
+| Several destinations and balancing per server name | "Several destinations" of the per-name backends in the TLS tab | `tls_route_targets` |
+
+Before saving, the form checks the same rules as rproxy (a URL or a status code, `h2` with https:// backends and `h2c` with http:// backends, the kinds of per-backend middlewares, the mirror's service, CORS origins, combinations of the service TLS, and so on).
+
 ## Multiple targets
 
 "Add backend" in the "Basic" tab lets a rule have multiple backends, with a choice of "Load balancing" (rproxy-api v0.3.3 or later; L4 TCP / UDP rules).

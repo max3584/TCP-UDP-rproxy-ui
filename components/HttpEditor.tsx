@@ -7,12 +7,20 @@ import type { HttpOutlierSpec } from './v04';
 import { BALANCE_LABELS } from './dashboard';
 import { BALANCE_HELP } from './targets';
 import {
+  HttpOption,
   HttpRules,
   MIDDLEWARE_KINDS,
   MIDDLEWARE_TEMPLATES,
   MiddlewareSpec,
+  REDIRECT_STATUSES,
   RouteSpec,
+  SERVER_MIDDLEWARES,
+  ServerSpec,
   ServiceSpec,
+  ServiceTlsSpec,
+  UPSTREAM_PROTOCOLS,
+  UPSTREAM_PROTOCOL_LABELS,
+  UpstreamProtocol,
   buildMatch,
   checkMatch,
   defaultPriority,
@@ -25,8 +33,13 @@ export interface HttpEditorProps {
   // GET /capabilities の features（取得できなかったときは null。そのときはすべての種類を出す）
   middlewares: readonly string[] | null;
   serviceOptions: readonly string[] | null;
+  // features.http_options（Gateway API 向けの項目。features を取得できなかったときは null。そのときはすべて出す）
+  httpOptions: readonly string[] | null;
   http3: boolean;
 }
+
+// rproxy が使えると言う項目か（null は分からない＝出す）
+const supports = (list: readonly string[] | null, name: string) => list === null || list.includes(name);
 
 const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
 const monoInput = `${inputClass} font-mono text-sm`;
@@ -37,18 +50,24 @@ const boxClass = 'border border-gray-300 rounded-sm p-3 mb-3 bg-white';
 const headingClass = 'text-sm font-semibold text-gray-900 mb-2';
 
 // 種類ごとの入力欄（ここにない種類は JSON で編集する）
-type FieldType = 'text' | 'number' | 'bool' | 'list' | 'numlist' | 'select';
-interface FieldDef { key: string; label: string; type: FieldType; options?: string[]; placeholder?: string }
+type FieldType = 'text' | 'number' | 'bool' | 'list' | 'numlist' | 'select' | 'status';
+// option は features.http_options の名前（その rproxy が使えるときだけ編集できる項目）
+interface FieldDef { key: string; label: string; type: FieldType; options?: string[]; placeholder?: string; option?: HttpOption }
+
+// リダイレクトの状態コード（#226。permanent より優先する）
+const REDIRECT_STATUS_FIELD: FieldDef = { key: 'status', label: '状態コード（指定すると「恒久的」より優先）', type: 'status', option: 'redirect_status' };
 const FIELDS: Record<string, FieldDef[]> = {
   redirect_scheme: [
     { key: 'scheme', label: 'スキーム', type: 'select', options: ['https', 'http'] },
     { key: 'port', label: 'ポート（省略時は既定）', type: 'number' },
     { key: 'permanent', label: '恒久的（301 / 308）', type: 'bool' },
+    REDIRECT_STATUS_FIELD,
   ],
   redirect_regex: [
     { key: 'regex', label: '正規表現（URL 全体）', type: 'text', placeholder: '^https?://www\\.(.+)$' },
     { key: 'replacement', label: '置き換え後', type: 'text', placeholder: 'https://$1' },
     { key: 'permanent', label: '恒久的（301 / 308）', type: 'bool' },
+    REDIRECT_STATUS_FIELD,
   ],
   rate_limit: [
     { key: 'average', label: '平均（period あたりの件数）', type: 'number' },
@@ -86,6 +105,7 @@ const FIELDS: Record<string, FieldDef[]> = {
   retry: [
     { key: 'attempts', label: '回数', type: 'number' },
     { key: 'initial_interval', label: '最初の間隔（例 100ms）', type: 'text' },
+    { key: 'status', label: 'この状態コードでも送り直す（カンマ区切り。例 500, 502-504）', type: 'list', placeholder: '500, 502-504', option: 'retry_status' },
   ],
   circuit_breaker: [
     { key: 'failure_percent', label: '失敗の割合（%）', type: 'number' },
@@ -98,7 +118,25 @@ const FIELDS: Record<string, FieldDef[]> = {
     { key: 'user_header', label: '利用者の名前を渡すヘッダ（任意）', type: 'text', placeholder: 'X-Forwarded-User' },
     { key: 'keep_authorization', label: 'Authorization を転送先に渡す', type: 'bool' },
   ],
+  // Gateway API 向け（#228・#230）
+  replace_host: [{ key: 'host', label: '転送先へ送る Host（host か host:port）', type: 'text', placeholder: 'app.example.com' }],
+  cors: [
+    { key: 'allow_origins', label: '許可するオリジン（カンマ区切り。* や https://*.example.com も可）', type: 'list', placeholder: 'https://www.example.com' },
+    { key: 'allow_methods', label: '許可するメソッド（カンマ区切り。* も可）', type: 'list', placeholder: 'GET, POST' },
+    { key: 'allow_headers', label: '許可するリクエストのヘッダ（カンマ区切り）', type: 'list', placeholder: 'X-Requested-With' },
+    { key: 'expose_headers', label: 'ブラウザに見せる応答のヘッダ（カンマ区切り）', type: 'list' },
+    { key: 'max_age', label: 'プリフライトを覚える秒数（max_age）', type: 'number', placeholder: '3600' },
+    { key: 'allow_credentials', label: 'クッキーなどの資格情報を許す（allow_credentials）', type: 'bool' },
+  ],
 };
+
+// 使えない項目に値があるときの読み取り専用の表示（消さずにそのまま送る）
+const Preserved: React.FC<{ label: string; value: unknown }> = ({ label, value }) => (
+  <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-1 break-all" data-testid="http-preserved">
+    {label}: <span className="font-mono">{typeof value === 'string' ? value : JSON.stringify(value)}</span>
+    （この rproxy では使えないので編集できません。そのまま残して送ります）
+  </p>
+);
 
 // 名前の付け替え（順番を保つ）
 function renameKey<T>(obj: Record<string, T>, from: string, to: string): Record<string, T> {
@@ -119,6 +157,22 @@ function move<T>(list: T[], index: number, delta: number): T[] {
   const out = [...list];
   [out[index], out[to]] = [out[to], out[index]];
   return out;
+}
+
+// ルートの時間の上限の 1 項目を変える（空欄は省き、どちらもなければ timeouts ごと省く）
+function routeTimeouts(r: RouteSpec, key: 'request' | 'backend_request', raw: string): RouteSpec['timeouts'] {
+  const next = { ...r.timeouts, [key]: raw.trim() || undefined };
+  if (next.request === undefined) delete next.request;
+  if (next.backend_request === undefined) delete next.backend_request;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+// headers の request / response に add があるか
+function headersAdd(config: Record<string, unknown>): boolean {
+  return ['request', 'response'].some((k) => {
+    const ops = config[k] as Record<string, unknown> | undefined;
+    return typeof ops === 'object' && ops !== null && typeof ops.add === 'object' && ops.add !== null && Object.keys(ops.add).length > 0;
+  });
 }
 
 // ---- 1 つのミドルウェアの設定 ----
@@ -151,10 +205,10 @@ const JsonConfig: React.FC<{ id: string; value: Record<string, unknown>; onChang
   );
 };
 
-const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void }> = ({ id, fields, value, onChange }) => {
+const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void; httpOptions: readonly string[] | null }> = ({ id, fields, value, onChange, httpOptions }) => {
   const set = (key: string, v: unknown) => {
     const next = { ...value };
-    if (v === undefined || v === '') delete next[key];
+    if (v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) delete next[key];
     else next[key] = v;
     onChange(next);
   };
@@ -163,6 +217,20 @@ const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<stri
       {fields.map((f) => {
         const fid = `${id}-${f.key}`;
         const v = value[f.key];
+        if (f.option && !supports(httpOptions, f.option)) {
+          return v === undefined ? null : <div key={f.key} className="sm:col-span-2"><Preserved label={f.label} value={v} /></div>;
+        }
+        if (f.type === 'status') {
+          return (
+            <div key={f.key}>
+              <label htmlFor={fid} className={labelClass}>{f.label}</label>
+              <select id={fid} className={inputClass} value={v === undefined ? '' : String(v)} onChange={(e) => set(f.key, e.target.value === '' ? undefined : Number(e.target.value))}>
+                <option value="">指定しない</option>
+                {REDIRECT_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
+              </select>
+            </div>
+          );
+        }
         if (f.type === 'bool') {
           return (
             <label key={f.key} htmlFor={fid} className="flex items-center gap-2 text-sm text-gray-800">
@@ -197,6 +265,142 @@ const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<stri
           </div>
         );
       })}
+    </div>
+  );
+};
+
+// ---- ミラー（#232）：送り先のサービスと、写す割合（percent か fraction） ----
+
+const MirrorConfig: React.FC<{ id: string; value: Record<string, unknown>; services: string[]; onChange: (v: Record<string, unknown>) => void }> = ({ id, value, services, onChange }) => {
+  const service = typeof value.service === 'string' ? value.service : '';
+  const fraction = (value.fraction ?? null) as { numerator?: number; denominator?: number } | null;
+  const mode = fraction !== null ? 'fraction' : value.percent !== undefined ? 'percent' : 'all';
+  const num = (raw: string) => (raw === '' ? undefined : Number(raw));
+  const base = () => {
+    const next = { ...value };
+    delete next.percent;
+    delete next.fraction;
+    return next;
+  };
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <div>
+        <label htmlFor={`${id}-service`} className={labelClass}>写しを送るサービス</label>
+        <select id={`${id}-service`} className={inputClass} value={service} onChange={(e) => onChange({ ...value, service: e.target.value })}>
+          <option value="">選んでください</option>
+          {services.map((n) => <option key={n} value={n}>{n}</option>)}
+          {service !== '' && !services.includes(service) && <option value={service}>{service}（ありません）</option>}
+        </select>
+      </div>
+      <div>
+        <label htmlFor={`${id}-mode`} className={labelClass}>写す割合</label>
+        <select id={`${id}-mode`} className={inputClass} value={mode} onChange={(e) => {
+          const m = e.target.value;
+          if (m === 'all') onChange(base());
+          else if (m === 'percent') onChange({ ...base(), percent: 100 });
+          else onChange({ ...base(), fraction: { numerator: 1, denominator: 100 } });
+        }}>
+          <option value="all">すべて</option>
+          <option value="percent">百分率（percent）</option>
+          <option value="fraction">分数（fraction）</option>
+        </select>
+      </div>
+      {mode === 'percent' && (
+        <div>
+          <label htmlFor={`${id}-percent`} className={labelClass}>割合（0〜100 %）</label>
+          <input id={`${id}-percent`} type="number" min="0" max="100" className={inputClass} value={value.percent === undefined ? '' : String(value.percent)}
+            onChange={(e) => onChange({ ...base(), percent: num(e.target.value) })} />
+        </div>
+      )}
+      {mode === 'fraction' && fraction !== null && (
+        <div className="flex gap-2 items-end">
+          <div>
+            <label htmlFor={`${id}-numerator`} className={labelClass}>分子</label>
+            <input id={`${id}-numerator`} type="number" min="0" className={inputClass} value={fraction.numerator ?? ''}
+              onChange={(e) => onChange({ ...base(), fraction: { ...fraction, numerator: num(e.target.value) } })} />
+          </div>
+          <span className="pb-1 text-gray-800" aria-hidden="true">/</span>
+          <div>
+            <label htmlFor={`${id}-denominator`} className={labelClass}>分母</label>
+            <input id={`${id}-denominator`} type="number" min="1" className={inputClass} value={fraction.denominator ?? ''} placeholder="100"
+              onChange={(e) => onChange({ ...base(), fraction: { ...fraction, denominator: num(e.target.value) } })} />
+          </div>
+        </div>
+      )}
+      <p className="sm:col-span-2 text-xs text-gray-600">写しの応答は読み捨て、ミラーの失敗や遅れはクライアントへの応答に影響しません。ルートのミドルウェアでこれより前のものを通った形のリクエストを写します。</p>
+    </div>
+  );
+};
+
+// ---- サービスの転送先への TLS（#236） ----
+
+const TLS_TEXT_FIELDS: { key: keyof ServiceTlsSpec & ('server_name' | 'ca_file' | 'cert_file' | 'key_file' | 'chain_file'); label: string; placeholder: string }[] = [
+  { key: 'server_name', label: 'サーバ名（SNI と証明書で確かめる名前。既定は URL のホスト）', placeholder: 'backend.example.com' },
+  { key: 'ca_file', label: 'CA ファイル（既定は Mozilla のルート）', placeholder: '/etc/rproxy/backend-ca.crt' },
+  { key: 'cert_file', label: 'クライアント証明書', placeholder: '/etc/rproxy/client.crt' },
+  { key: 'key_file', label: 'クライアント証明書の秘密鍵', placeholder: '/etc/rproxy/client.key' },
+  { key: 'chain_file', label: 'クライアント証明書の中間 CA', placeholder: '/etc/rproxy/client-chain.crt' },
+];
+
+const ServiceTlsFields: React.FC<{ id: string; name: string; value: ServiceTlsSpec | undefined; onChange: (v: ServiceTlsSpec | undefined) => void }> = ({ id, name, value, onChange }) => {
+  const on = value !== undefined;
+  const set = (patch: Partial<ServiceTlsSpec>) => {
+    const next: Record<string, unknown> = { ...(value ?? {}), ...patch };
+    for (const [k, v] of Object.entries(next)) if (v === undefined || v === '' || v === false || (Array.isArray(v) && v.length === 0)) delete next[k];
+    onChange(next as ServiceTlsSpec);
+  };
+  return (
+    <div className="mt-2" data-testid="service-tls">
+      <label className="flex items-center gap-2 text-sm text-gray-800">
+        <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked ? {} : undefined)} />
+        このサービスの https:// の転送先に、専用の TLS の設定を使う（ルールの「転送先の TLS」の代わり）
+      </label>
+      {on && (
+        <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {TLS_TEXT_FIELDS.map((f) => (
+            <div key={f.key}>
+              <label htmlFor={`${id}-${f.key}`} className={labelClass}>{f.label}</label>
+              <input id={`${id}-${f.key}`} className={monoInput} placeholder={f.placeholder} value={value?.[f.key] ?? ''}
+                aria-label={`サービス ${name}: ${f.label}`} onChange={(e) => set({ [f.key]: e.target.value.trim() || undefined })} />
+            </div>
+          ))}
+          <div className="sm:col-span-2">
+            <label htmlFor={`${id}-sans`} className={labelClass}>確かめる名前（SAN の DNS 名か URI。カンマ区切り。指定するとサーバ名の代わりに確かめる）</label>
+            <input id={`${id}-sans`} className={monoInput} placeholder="backend.example.com, spiffe://example.com/backend" value={(value?.subject_alt_names ?? []).join(', ')}
+              aria-label={`サービス ${name}: 確かめる名前（SAN）`}
+              onChange={(e) => set({ subject_alt_names: e.target.value.split(',').map((x) => x.trim()).filter((x) => x !== '') })} />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-800 sm:col-span-2">
+            <input type="checkbox" checked={value?.insecure_skip_verify === true} onChange={(e) => set({ insecure_skip_verify: e.target.checked || undefined })} />
+            転送先の証明書を確かめない（試験用）
+          </label>
+          <p className="sm:col-span-2 text-xs text-gray-600">ファイルはルールを作る・変えるときに読みます。http:// の転送先だけのサービスでは使いません。</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ---- 転送先ごとのミドルウェア（#229） ----
+
+const ServerMiddlewares: React.FC<{ service: string; index: number; value: string[]; candidates: string[]; onChange: (v: string[]) => void }> = ({ service, index, value, candidates, onChange }) => {
+  const rest = candidates.filter((m) => !value.includes(m));
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-xs ml-2 mb-1" data-testid="server-middlewares">
+      <span className="text-gray-700">この転送先だけのミドルウェア:</span>
+      {value.length === 0 && <span className="text-gray-700">なし</span>}
+      {value.map((m) => (
+        <span key={m} className="inline-flex items-center gap-1 bg-gray-100 text-gray-900 border border-gray-300 rounded-sm px-1 font-mono">
+          {m}
+          <button type="button" className={removeButton} aria-label={`サービス ${service} の転送先 ${index} から ${m} を外す`} onClick={() => onChange(value.filter((x) => x !== m))}>×</button>
+        </span>
+      ))}
+      {rest.length > 0 && (
+        <select aria-label={`サービス ${service} の転送先 ${index} にミドルウェアを足す`} className={`${inputClass} sm:w-auto text-xs`} value="" onChange={(e) => e.target.value && onChange([...value, e.target.value])}>
+          <option value="">足す…</option>
+          {rest.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      )}
     </div>
   );
 };
@@ -281,13 +485,15 @@ const ServiceOutlierFields: React.FC<{ id: string; name: string; value: HttpOutl
 
 // ---- 本体 ----
 
-const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, http3 }) => {
+const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3 }) => {
   const services = value.services ?? {};
   const mws = value.middlewares ?? {};
   const serviceNames = Object.keys(services);
   const mwNames = Object.keys(mws);
   // 選べるミドルウェアの種類（features.middlewares。使っている種類は残す）
   const kinds = Object.keys(MIDDLEWARE_KINDS).filter((k) => middlewares === null || middlewares.includes(k));
+  // 転送先ごとに付けられるミドルウェア（書き換えるだけの種類）
+  const serverMwCandidates = mwNames.filter((m) => SERVER_MIDDLEWARES.includes(middlewareKind(mws[m])));
 
   const setRoutes = (routes: RouteSpec[]) => onChange({ ...value, routes });
   const updateRoute = (i: number, patch: Partial<RouteSpec>) =>
@@ -296,10 +502,25 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
   const updateService = (name: string, patch: Partial<ServiceSpec>) => setServices({ ...services, [name]: { ...services[name], ...patch } });
   const setMiddlewares = (m: Record<string, MiddlewareSpec>) => onChange({ ...value, middlewares: m });
 
+  // ミラーの送り先のサービスの名前を付け替える
+  const mirrorsRenamed = (from: string, to: string): Record<string, MiddlewareSpec> => Object.fromEntries(Object.entries(mws).map(([n, m]) => (
+    middlewareKind(m) === 'mirror' && (m.mirror as Record<string, unknown>).service === from ? [n, { mirror: { ...m.mirror, service: to } }] : [n, m])));
+  // 転送先ごとのミドルウェアの付け替え・外し
+  const serversMapped = (f: (names: string[]) => string[]): Record<string, ServiceSpec> => Object.fromEntries(Object.entries(services).map(([n, svc]) => [n, {
+    ...svc,
+    servers: svc.servers.map((srv) => {
+      if (!srv.middlewares) return srv;
+      const next = f(srv.middlewares);
+      const out: ServerSpec = { ...srv, middlewares: next };
+      if (next.length === 0) delete out.middlewares;
+      return out;
+    }),
+  }]));
   const renameService = (from: string, to: string) => {
     onChange({
       ...value,
       services: renameKey(services, from, to),
+      middlewares: mirrorsRenamed(from, to),
       routes: value.routes.map((r) => (r.service === from ? { ...r, service: to } : r)),
       default: value.default?.service === from ? { ...value.default, service: to } : value.default,
     });
@@ -318,13 +539,19 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
     onChange({
       ...value,
       middlewares: renameKey(mws, from, to),
+      services: serversMapped((names) => names.map((m) => (m === from ? to : m))),
       routes: value.routes.map((r) => ({ ...r, middlewares: r.middlewares?.map((m) => (m === from ? to : m)) })),
     });
   };
   const removeMiddleware = (name: string) => {
     const rest = { ...mws };
     delete rest[name];
-    onChange({ ...value, middlewares: rest, routes: value.routes.map((r) => ({ ...r, middlewares: r.middlewares?.filter((m) => m !== name) })) });
+    onChange({
+      ...value,
+      middlewares: rest,
+      services: serversMapped((names) => names.filter((m) => m !== name)),
+      routes: value.routes.map((r) => ({ ...r, middlewares: r.middlewares?.filter((m) => m !== name) })),
+    });
   };
 
   return (
@@ -402,6 +629,20 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                   </div>
                 )}
               </div>
+              {supports(httpOptions, 'route_timeouts') ? (
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label htmlFor={`${id}-timeout-request`} className={labelClass}>リクエスト全体の時間の上限（空欄・0s は上限なし）</label>
+                    <input id={`${id}-timeout-request`} className={monoInput} value={r.timeouts?.request ?? ''} placeholder="10s"
+                      onChange={(e) => updateRoute(i, { timeouts: routeTimeouts(r, 'request', e.target.value) })} />
+                  </div>
+                  <div>
+                    <label htmlFor={`${id}-timeout-backend`} className={labelClass}>転送先への 1 回の時間の上限（サービスの応答のタイムアウトの代わり）</label>
+                    <input id={`${id}-timeout-backend`} className={monoInput} value={r.timeouts?.backend_request ?? ''} placeholder="5s"
+                      onChange={(e) => updateRoute(i, { timeouts: routeTimeouts(r, 'backend_request', e.target.value) })} />
+                  </div>
+                </div>
+              ) : r.timeouts !== undefined && <Preserved label="時間の上限" value={r.timeouts} />}
               <div className="mt-2">
                 <span className={labelClass}>ミドルウェア（上から順に働く）</span>
                 <ol className="space-y-1">
@@ -451,6 +692,8 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           const stickyAvailable = serviceOptions === null || serviceOptions.includes('sticky') || s.sticky !== undefined;
           // 受け身のヘルスチェック（v0.4、#170）は rproxy が services に outlier_detection を返すときだけ（使っていれば残す）
           const outlierAvailable = (serviceOptions !== null && serviceOptions.includes('outlier_detection')) || s.outlier_detection !== undefined;
+          // 固定の状態コードの転送先（#235）
+          const statusAvailable = supports(httpOptions, 'server_status');
           return (
             <div key={i} className={boxClass} data-testid="http-service">
               <div className="flex flex-wrap gap-2 items-end mb-2">
@@ -469,26 +712,44 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                 <button type="button" className={removeButton} onClick={() => removeService(name)}>削除</button>
               </div>
               <span className={labelClass}>転送先（重みつきで順に振り分ける）</span>
-              {s.servers.map((srv, k) => (
-                <div key={k} className="flex items-center gap-2 mb-1">
-                  <input
-                    aria-label={`サービス ${name} の転送先 ${k + 1} の URL`}
-                    className={monoInput}
-                    value={srv.url}
-                    placeholder="http://10.0.0.20:80"
-                    onChange={(e) => updateService(name, { servers: s.servers.map((x, j) => (j === k ? { ...x, url: e.target.value.trim() } : x)) })}
-                  />
-                  <input
-                    aria-label={`サービス ${name} の転送先 ${k + 1} の重み`}
-                    type="number"
-                    min="0"
-                    className={`${inputClass} max-w-20 shrink-0`}
-                    value={srv.weight ?? 1}
-                    onChange={(e) => updateService(name, { servers: s.servers.map((x, j) => (j === k ? { ...x, weight: e.target.value === '' ? undefined : Number(e.target.value) } : x)) })}
-                  />
-                  <button type="button" className={removeButton} onClick={() => updateService(name, { servers: s.servers.filter((_, j) => j !== k) })}>削除</button>
-                </div>
-              ))}
+              {s.servers.map((srv, k) => {
+                const setServer = (patch: Partial<ServerSpec>) => updateService(name, { servers: s.servers.map((x, j) => {
+                  if (j !== k) return x;
+                  const next: ServerSpec = { ...x, ...patch };
+                  for (const key of Object.keys(next) as (keyof ServerSpec)[]) if (next[key] === undefined) delete next[key];
+                  return next;
+                }) });
+                const isStatus = srv.status !== undefined;
+                                return (
+                  <div key={k} className="mb-1" data-testid="http-server">
+                    <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                      {(statusAvailable || isStatus) && (
+                        <select aria-label={`サービス ${name} の転送先 ${k + 1} の種類`} className={`${inputClass} sm:w-auto shrink-0`} value={isStatus ? 'status' : 'url'} disabled={!statusAvailable}
+                          onChange={(e) => setServer(e.target.value === 'status' ? { url: undefined, status: 500, middlewares: undefined } : { status: undefined, url: 'http://' })}>
+                          <option value="url">URL</option>
+                          <option value="status">状態コードで答える</option>
+                        </select>
+                      )}
+                      {isStatus ? (
+                        <input aria-label={`サービス ${name} の転送先 ${k + 1} の状態コード`} type="number" min="100" max="599" className={`${inputClass} sm:max-w-28`} value={srv.status ?? ''} readOnly={!statusAvailable}
+                          onChange={(e) => setServer({ status: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                      ) : (
+                        <input aria-label={`サービス ${name} の転送先 ${k + 1} の URL`} className={monoInput} value={srv.url ?? ''} placeholder="http://10.0.0.20:80"
+                          onChange={(e) => setServer({ url: e.target.value.trim() })} />
+                      )}
+                      <input aria-label={`サービス ${name} の転送先 ${k + 1} の重み`} type="number" min="1" className={`${inputClass} max-w-20 shrink-0`} value={srv.weight ?? 1}
+                        onChange={(e) => setServer({ weight: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                      <button type="button" className={`${removeButton} whitespace-nowrap`} onClick={() => updateService(name, { servers: s.servers.filter((_, j) => j !== k) })}>削除</button>
+                    </div>
+                    {!isStatus && (supports(httpOptions, 'server_middlewares')
+                      ? serverMwCandidates.length > 0 || (srv.middlewares ?? []).length > 0
+                        ? <ServerMiddlewares service={name} index={k + 1} value={srv.middlewares ?? []} candidates={serverMwCandidates} onChange={(v) => setServer({ middlewares: v.length > 0 ? v : undefined })} />
+                        : null
+                      : srv.middlewares !== undefined && <Preserved label="この転送先だけのミドルウェア" value={srv.middlewares} />)}
+                  </div>
+                );
+              })}
+              {statusAvailable && <p className="text-xs text-gray-600 mb-1">「状態コードで答える」は、重みの割合のリクエストに rproxy がその状態コードで答えます（ヘルスチェック・スティッキーの対象外）。</p>}
               <button type="button" className={smallButton} onClick={() => updateService(name, { servers: [...s.servers, { url: 'http://' }] })}>転送先を追加</button>
               <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <label className="flex items-center gap-2 text-sm text-gray-800 sm:col-span-3">
@@ -505,6 +766,16 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     <p className="mt-1 text-xs text-gray-600">{BALANCE_HELP[s.balance ?? 'round_robin']}{s.balance === 'failover' ? '（転送先の上から順）' : ''}</p>
                   </div>
                 )}
+                {supports(serviceOptions, 'protocol') ? (
+                  <div className="sm:col-span-3">
+                    <label htmlFor={`${id}-protocol`} className={labelClass}>転送先との HTTP の版</label>
+                    <select id={`${id}-protocol`} className={inputClass} value={s.protocol ?? 'http1'}
+                      onChange={(e) => updateService(name, { protocol: e.target.value === 'http1' ? undefined : e.target.value as UpstreamProtocol })}>
+                      {UPSTREAM_PROTOCOLS.map((p) => <option key={p} value={p}>{UPSTREAM_PROTOCOL_LABELS[p]}</option>)}
+                    </select>
+                    <p className="mt-1 text-xs text-gray-600">gRPC の転送先は h2（TLS）か h2c（平文）にします。トレーラーはそのまま流します。</p>
+                  </div>
+                ) : s.protocol !== undefined && <div className="sm:col-span-3"><Preserved label="転送先との HTTP の版" value={s.protocol} /></div>}
                 <div>
                   <label htmlFor={`${id}-connect`} className={labelClass}>接続のタイムアウト（既定 5s）</label>
                   <input id={`${id}-connect`} className={monoInput} value={s.timeouts?.connect ?? ''} placeholder="5s"
@@ -539,6 +810,9 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                   )}
                 </div>
               )}
+              {supports(serviceOptions, 'tls')
+                ? <ServiceTlsFields id={`${id}-tls`} name={name} value={s.tls} onChange={(t) => updateService(name, { tls: t })} />
+                : s.tls !== undefined && <Preserved label="転送先の TLS" value={s.tls} />}
               {outlierAvailable && (
                 <ServiceOutlierFields id={`${id}-outlier`} name={name} value={s.outlier_detection}
                   onChange={(o) => updateService(name, { outlier_detection: o })} />
@@ -594,9 +868,22 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                 <button type="button" className={removeButton} onClick={() => removeMiddleware(name)}>削除</button>
               </div>
               {unavailable && <p className="text-amber-900 text-xs mb-2">この種類は、この rproxy ではまだ使えません（GET /capabilities の features.middlewares にありません）。</p>}
-              {FIELDS[kind]
-                ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
-                : <JsonConfig key={`${name}-${kind}`} id={`${id}-json`} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />}
+              {kind === 'mirror'
+                ? <MirrorConfig id={id} value={config} services={serviceNames} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
+                : FIELDS[kind]
+                  ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} httpOptions={httpOptions} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
+                  : <JsonConfig key={`${name}-${kind}`} id={`${id}-json`} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />}
+              {kind === 'headers' && (
+                <p className="text-xs text-gray-600 mt-1">
+                  {supports(httpOptions, 'headers_add')
+                    ? '転送先へのヘッダは request、応答のヘッダは response に、set（置き換え）・add（あれば値の後ろに , で足す）・remove（取り除く）を書きます。'
+                    : '転送先へのヘッダは request、応答のヘッダは response に、set（置き換え）・remove（取り除く）を書きます。'}
+                  {supports(httpOptions, 'headers_add') && <span className="font-mono">{' {"request": {"add": {"X-Env": "prod"}}}'}</span>}
+                </p>
+              )}
+              {kind === 'headers' && !supports(httpOptions, 'headers_add') && headersAdd(config) && (
+                <p className="text-amber-900 text-xs mt-1">add（ヘッダを足す）は、この rproxy ではまだ使えません（GET /capabilities の features.http_options に headers_add がありません）。</p>
+              )}
             </div>
           );
         })}
