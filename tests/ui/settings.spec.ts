@@ -24,6 +24,8 @@ function selfSigned(dir: string): { cert: string; key: string } | null {
       'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
       '-subj', '/CN=app.test', '-addext', 'subjectAltName=DNS:app.test', '-keyout', key, '-out', cert,
     ], { stdio: 'ignore' });
+    // rproxy-api v0.4 は誰でも読める鍵を断る（global.files.owner_check）
+    fs.chmodSync(key, 0o600);
     return { cert, key };
   } catch {
     return null;
@@ -117,7 +119,7 @@ test.describe('rproxy settings from the form', () => {
   // basic_auth の realm・user_header（と keep_authorization）を専用の欄で設定する
   test('basic_auth: realm and user_header', async ({ page }) => {
     const htpasswd = path.join(dir, 'htpasswd');
-    fs.writeFileSync(htpasswd, `alice:{SHA}${createHash('sha1').update('secret').digest('base64')}\n`);
+    fs.writeFileSync(htpasswd, `alice:{SHA}${createHash('sha1').update('secret').digest('base64')}\n`, { mode: 0o600 });
     const backend = http.createServer((req, res) => res.end(`user=${req.headers['x-forwarded-user'] ?? ''} auth=${req.headers.authorization ? 'yes' : 'no'}`));
     await new Promise<void>((r) => backend.listen(HTTP_BACKEND_PORT, '127.0.0.1', () => r()));
     try {
