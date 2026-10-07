@@ -217,7 +217,7 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 | Test | What it checks |
 |---|---|
 | Screen shape | API rule rows from rproxy's answer and from `rproxy_rules` rows (stored, creating token and time; unreadable specs are skipped); static rules for everyone, API rules only for administrators; no duplicate keys; rules running instead of a UI rule; badges |
-| /api/forward | Administrators' dashboards show running API rules, rule-set rules and stored rules that are not running; users do not see them; works without `rproxy_rules`; `shadowedBy`; getting one rule; `api-modify` only PATCHes (no DB write) and warns when the change is no longer stored; `api-delete`; administrators only; 409 `owned` / `ui_rule`; `plan` with `api-modify` |
+| /api/forward | Administrators' dashboards show running API rules, rule-set rules and stored rules that are not running; users do not see them; works without `rproxy_rules`; `shadowedBy`; getting one rule; `api-modify` only PATCHes (no DB write) and warns only when rproxy could not store the change (`persisted: false`); `api-delete`; administrators only; 409 `owned` / `ui_rule`; `plan` with `api-modify` |
 
 `tests/nodeview.test.ts` also checks that the per-node SQL creates an `rproxy_rules` view that can write only that node's rows (`WITH CHECK OPTION`) with its grant (left out with `--without-rproxy-rules`).
 
