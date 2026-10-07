@@ -24,6 +24,8 @@ function selfSigned(dir: string): { cert: string; key: string } | null {
       'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
       '-subj', '/CN=app.test', '-addext', 'subjectAltName=DNS:app.test', '-keyout', key, '-out', cert,
     ], { stdio: 'ignore' });
+    // rproxy-api v0.4 は誰でも読める鍵を断る（global.files.owner_check）
+    fs.chmodSync(key, 0o600);
     return { cert, key };
   } catch {
     return null;

@@ -75,7 +75,8 @@ function selfSigned(names: string[]): { cert: string; key: string; dir: string }
     return null;
   }
   fs.chmodSync(dir, 0o755);
-  fs.chmodSync(key, 0o644);
+  // rproxy-api v0.4 は誰でも読める鍵を断る（global.files.owner_check）。rproxy はテストと同じユーザーで動く
+  fs.chmodSync(key, 0o600);
   return { cert: cert, key: key, dir: dir };
 }
 
