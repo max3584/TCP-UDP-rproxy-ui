@@ -119,7 +119,7 @@ describe('HttpEditor and the L7 parts of RuleForm', () => {
 
   it('shows routes in order with their middlewares, services and typed middleware forms', () => {
     const html = renderToStaticMarkup(createElement(HttpEditor, {
-      value: gitlab, onChange: () => undefined, middlewares: ['crowdsec', 'rate_limit', 'respond'], serviceOptions: [], http3: false,
+      value: gitlab, onChange: () => undefined, middlewares: ['crowdsec', 'rate_limit', 'respond'], serviceOptions: [], httpOptions: [], http3: false,
     }));
     expect(html.match(/data-testid="http-route"/g)).toHaveLength(4);
     expect(html.match(/data-testid="http-service"/g)).toHaveLength(1);
@@ -140,7 +140,7 @@ describe('HttpEditor and the L7 parts of RuleForm', () => {
       routes: [{ match: 'PathPrefix(`/`)', to: 'http://10.0.0.1' }],
       middlewares: { auth: { basic_auth: { users_file: '/etc/rproxy/htpasswd', realm: 'staff', keep_authorization: true, user_header: 'X-Forwarded-User' } } },
     } as never);
-    const html = renderToStaticMarkup(createElement(HttpEditor, { value, onChange: () => undefined, middlewares: ['basic_auth'], serviceOptions: [], http3: false }));
+    const html = renderToStaticMarkup(createElement(HttpEditor, { value, onChange: () => undefined, middlewares: ['basic_auth'], serviceOptions: [], httpOptions: [], http3: false }));
     expect(html).toMatch(/id="http-mw-0-users_file"[^>]*value="\/etc\/rproxy\/htpasswd"/);
     expect(html).toMatch(/id="http-mw-0-realm"[^>]*value="staff"/);
     expect(html).toMatch(/id="http-mw-0-user_header"[^>]*value="X-Forwarded-User"/);

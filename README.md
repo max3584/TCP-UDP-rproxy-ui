@@ -150,6 +150,26 @@ rproxy-api v0.3.1 以降（`GET /capabilities` の `features.http` が true）�
 テーブル定義とマイグレーションは `db/` にあります（`db/README.md` を参照）。既存の環境では `db/migrations/005_ranges_and_tls.sql`（ポート範囲と TLS の列）を適用してください。
 rproxy-api との HTTP API の取り決めは `../rproxy-api/docs/API.md` です。
 
+## Gateway API 向けの L7・TLS の項目
+
+rproxy-api の Gateway API 向けの項目（rproxy-api #237。`GET /capabilities` の `features` で使えると言うものだけ編集できる）も、フォームで作成・編集できます。
+使えない rproxy では欄を出さず、すでに値があるルールは読み取り専用の注記で残してそのまま送ります。詳細画面の L7 の表示にも出します。
+
+| 項目 | 場所 | features |
+|---|---|---|
+| ルートの時間の上限（リクエスト全体・転送先への 1 回） | L7 タブのルート | `http_options` の `route_timeouts` |
+| Host の書き換え・CORS・ミラー（百分率か分数） | ミドルウェアの種類（`replace_host`・`cors`・`mirror`） | `middlewares` |
+| ヘッダを足す（`headers` の `request` / `response` の `add`） | `headers` の JSON | `http_options` の `headers_add` |
+| リダイレクトの状態コード（301・302・303・307・308） | `redirect_scheme`・`redirect_regex` | `http_options` の `redirect_status` |
+| 状態コードでの送り直し（`500`・`502-504`） | `retry` | `http_options` の `retry_status` |
+| 転送先ごとのミドルウェア（`headers`・`replace_host`・パスの書き換えだけ） | サービスの転送先の行 | `http_options` の `server_middlewares` |
+| 固定の状態コードで答える転送先（重みの割合で答える） | サービスの転送先の種類「状態コードで答える」 | `http_options` の `server_status` |
+| 転送先との HTTP の版（`http1`・`h2`・`h2c`・`auto`。gRPC は h2 か h2c） | サービス | `services` の `protocol` |
+| サービスごとの転送先の TLS（サーバ名・CA・SAN・クライアント証明書・確かめない） | サービス | `services` の `tls` |
+| サーバ名ごとの複数の宛先と振り分け方 | TLS タブの「サーバ名ごとの転送先」の「複数の宛先」 | `tls_route_targets` |
+
+保存の前に rproxy と同じ規則で確かめます（URL と状態コードはどちらか一方、`h2` は https:// の転送先・`h2c` は http:// の転送先、転送先ごとのミドルウェアの種類、ミラーの送り先のサービス、CORS のオリジン、サービスの TLS の組み合わせなど）。
+
 ## 宛先を複数にする
 
 「基本」タブの「宛先を追加」で宛先を複数にでき、振り分け方を選べる（rproxy-api v0.3.3 以降。L4 の TCP / UDP のルール）。

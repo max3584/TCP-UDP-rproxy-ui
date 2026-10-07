@@ -165,7 +165,7 @@ describe('L7 services', () => {
 
   it('offer the balance select when rproxy lists it (or features are unknown)', () => {
     const render = (serviceOptions: string[] | null, value = spec) => renderToStaticMarkup(createElement(HttpEditor, {
-      value: value, onChange: () => undefined, middlewares: [], serviceOptions: serviceOptions, http3: false,
+      value: value, onChange: () => undefined, middlewares: [], serviceOptions: serviceOptions, httpOptions: [], http3: false,
     }));
     expect(render(null)).toMatch(/<option value="failover" selected="">フェイルオーバー<\/option>/);
     expect(render(['balance'], { ...spec, services: { app: { servers: spec.services.app.servers } } } as never)).toContain('-balance"');

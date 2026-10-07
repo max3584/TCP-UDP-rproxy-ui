@@ -116,6 +116,10 @@ export interface CapabilityFeatures {
   middlewares: string[];
   // 使えるサービスの項目（health_check・sticky・balance、v0.4 の outlier_detection）
   services?: string[];
+  // Gateway API 向けの L7 の項目（headers_add・redirect_status・route_timeouts・server_middlewares・server_status・retry_status）
+  http_options?: string[];
+  // tls.routes[] の targets / balance（#234）
+  tls_route_targets?: boolean;
   // v0.4（docs/DESIGN-v0.4.md 13.2）。古い rproxy は返さない
   rulesets?: boolean;
   labels?: boolean;

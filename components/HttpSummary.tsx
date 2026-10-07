@@ -2,8 +2,9 @@
 
 import React from 'react';
 import type { HttpSpec } from './lib';
-import { MIDDLEWARE_KINDS, defaultPriority, middlewareKind, toHttpRules } from './httpspec';
-import { translate } from '@/i18n/core';
+import { MIDDLEWARE_KINDS, UPSTREAM_PROTOCOL_LABELS, defaultPriority, middlewareKind, toHttpRules } from './httpspec';
+import type { ServerSpec, ServiceTlsSpec } from './httpspec';
+import { joinList, translate } from '@/i18n/core';
 
 const Mono: React.FC<{ children: React.ReactNode }> = ({ children }) => <span className="font-mono">{children}</span>;
 
@@ -12,6 +13,26 @@ function configLabel(config: Record<string, unknown>): string {
   return Object.entries(config)
     .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
     .join(', ');
+}
+
+// 転送先 1 件（URL か状態コード、重み、転送先だけのミドルウェア）
+function serverLabel(srv: ServerSpec): string {
+  const head = srv.status !== undefined ? translate(`状態コード ${srv.status} で答える`) : srv.url ?? '';
+  const weight = srv.weight !== undefined && srv.weight !== 1 ? translate(`（重み ${srv.weight}）`) : '';
+  const mws = (srv.middlewares ?? []).length > 0 ? translate(`（ミドルウェア ${(srv.middlewares ?? []).join(' → ')}）`) : '';
+  return `${head}${weight}${mws}`;
+}
+
+// サービスの転送先の TLS の要約
+function serviceTlsLabel(t: ServiceTlsSpec): string {
+  const parts: string[] = [];
+  if (t.server_name) parts.push(translate(`サーバ名 ${t.server_name}`));
+  if (t.ca_file) parts.push(translate(`CA ${t.ca_file}`));
+  if (t.subject_alt_names && t.subject_alt_names.length > 0) parts.push(translate(`SAN ${t.subject_alt_names.join(', ')}`));
+  if (t.cert_file) parts.push(translate(`クライアント証明書 ${t.cert_file}`));
+  if (t.chain_file) parts.push(translate(`中間 CA ${t.chain_file}`));
+  if (t.insecure_skip_verify) parts.push(translate('証明書を確かめない'));
+  return parts.length > 0 ? joinList(parts) : translate('既定');
 }
 
 const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
@@ -43,7 +64,17 @@ const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
                 <td className="text-right tabular-nums">{priority}{r.priority === undefined && <span className="text-xs text-gray-600">（既定）</span>}</td>
                 <td className="font-mono break-all">{r.name}</td>
                 <td className="font-mono text-xs break-all">{r.match}</td>
-                <td className="font-mono text-xs break-all">{r.service ? `サービス ${r.service}` : r.to ?? <span className="font-sans text-gray-700">ミドルウェアが応答</span>}</td>
+                <td className="font-mono text-xs break-all">
+                  {r.service ? `サービス ${r.service}` : r.to ?? <span className="font-sans text-gray-700">ミドルウェアが応答</span>}
+                  {r.timeouts && (r.timeouts.request || r.timeouts.backend_request) && (
+                    <div className="font-sans text-gray-700" data-testid="http-route-timeouts">
+                      {joinList([
+                        ...(r.timeouts.request ? [translate(`全体 ${r.timeouts.request}`)] : []),
+                        ...(r.timeouts.backend_request ? [translate(`転送先へ 1 回 ${r.timeouts.backend_request}`)] : []),
+                      ])}
+                    </div>
+                  )}
+                </td>
                 <td className="font-mono text-xs break-all">{(r.middlewares ?? []).join(' → ') || '-'}</td>
               </tr>
             ))}
@@ -60,7 +91,9 @@ const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
             {Object.entries(services).map(([name, s]) => (
               <li key={name} className="break-all">
                 <Mono>{name}</Mono>:{' '}
-                <span className="font-mono text-xs break-all">{s.servers.map((srv) => `${srv.url}${srv.weight !== undefined && srv.weight !== 1 ? translate(`（重み ${srv.weight}）`) : ''}`).join(', ')}</span>
+                <span className="font-mono text-xs break-all">{s.servers.map(serverLabel).join(', ')}</span>
+                {s.protocol !== undefined && s.protocol !== 'http1' && <span className="text-xs text-gray-700" data-testid="http-service-protocol">（{UPSTREAM_PROTOCOL_LABELS[s.protocol] ?? s.protocol}）</span>}
+                {s.tls && <span className="text-xs text-gray-700 break-all" data-testid="http-service-tls">（転送先の TLS: {serviceTlsLabel(s.tls)}）</span>}
                 {s.pass_host_header === false && <span className="text-xs text-gray-700">（Host は転送先の URL）</span>}
                 {s.health_check && <span className="text-xs text-gray-700">（ヘルスチェック {s.health_check.path}）</span>}
                 {s.sticky && <span className="text-xs text-gray-700">（スティッキー {s.sticky.cookie}）</span>}

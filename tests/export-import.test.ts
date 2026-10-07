@@ -111,6 +111,37 @@ function row(r: ForwardRule, extra: Record<string, unknown> = {}) {
   };
 }
 
+// rproxy-api の docs/API.md「Gateway API 向けの L7・TLS」の例（cleanHttp の形）
+const GATEWAY_HTTP = {
+  routes: [{
+    name: 'r0', match: 'Host(`app.example`) && PathPrefix(`/api/`)', service: 'r0',
+    middlewares: ['r0-hdr', 'r0-cors', 'r0-mirror', 'r0-retry'], timeouts: { request: '10s', backend_request: '2s' },
+  }],
+  services: {
+    r0: {
+      servers: [
+        { url: 'http://10.1.0.5:8080', weight: 5, middlewares: ['r0-b0'] },
+        { status: 500, weight: 10 },
+      ],
+      protocol: 'h2c',
+    },
+    'r0-shadow': { servers: [{ url: 'http://10.1.0.9:8080' }] },
+    'tls-svc': {
+      servers: [{ url: 'https://10.1.0.7:8443' }],
+      tls: { server_name: 'abc.example.com', ca_file: '/var/run/certs/ca.crt', subject_alt_names: ['abc.example.com', 'spiffe://abc.example.com/id'] },
+    },
+  },
+  middlewares: {
+    'r0-hdr': { headers: { request: { set: { 'X-Header-Set': 'v' }, add: { 'X-Header-Add': 'v' }, remove: ['X-Header-Remove'] } } },
+    'r0-b0': { headers: { request: { set: { Backend: 'v1' } } } },
+    'r0-cors': { cors: { allow_origins: ['https://www.foo.com', 'https://*.bar.com'], allow_methods: ['GET', 'OPTIONS'], allow_credentials: true, max_age: 3600 } },
+    'r0-mirror': { mirror: { service: 'r0-shadow', fraction: { numerator: 1, denominator: 3 } } },
+    'r0-retry': { retry: { attempts: 4, status: ['500', '502-504'], initial_interval: '100ms' } },
+    'r0-host': { replace_host: { host: 'one.example.org' } },
+    'r0-redirect': { redirect_regex: { regex: '^http://([^/:]+)(:\\d+)?/(.*)$', replacement: 'https://$1/$3', status: 303 } },
+  },
+};
+
 // いろいろな設定のルール（エクスポートして読み込み直すと同じになること）
 const RULES: ForwardRule[] = [
   rule({}),
@@ -138,6 +169,19 @@ const RULES: ForwardRule[] = [
     crowdsec: true,
   }),
   rule({ srcPort: 587, tls: { mode: 'terminate', certificates: [{ cert_file: '/c.pem', key_file: '/c.key' }] }, starttls: 'smtp', starttlsRequired: false }),
+  // Gateway API 向けの L7 の項目（rproxy-api #237）
+  rule({ srcPort: 8443, distAddr: '', distPort: 0, http: GATEWAY_HTTP }),
+  // tls.routes[] の targets / balance（#234）
+  rule({
+    srcPort: 9443,
+    tls: {
+      mode: 'sni',
+      routes: [
+        { server_name: 'a.example.com', targets: [{ addr: '10.0.2.1', port: 443, weight: 3 }, { addr: '10.0.2.2', port: 443, backup: true }], balance: 'failover' },
+        { server_name: 'b.example.com', remote_addr: '10.0.3.1', remote_port: 443 },
+      ],
+    },
+  }),
 ];
 
 beforeEach(() => {

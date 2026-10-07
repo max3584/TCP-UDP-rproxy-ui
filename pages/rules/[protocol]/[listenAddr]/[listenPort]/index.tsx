@@ -216,7 +216,18 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                     {routeNames(r).map((n) => <div key={n}>{n}</div>)}
                   </td>
                   <td className="font-mono break-all">
-                    {hostPort(r.remote_addr, portsLabel(r.remote_port, count > 1 ? r.remote_port + count - 1 : null))}
+                    {r.targets && r.targets.length > 0 ? (
+                      <div data-testid="tls-route-targets">
+                        {r.targets.map((t, j) => (
+                          <div key={j}>
+                            {targetHostPort(t, rule)}
+                            {t.weight !== undefined && <span className="font-sans text-xs text-gray-700">{`（重み ${t.weight}）`}</span>}
+                            {t.backup && <span className="font-sans text-xs text-gray-700">（予備）</span>}
+                          </div>
+                        ))}
+                        <div className="font-sans text-xs text-gray-700">振り分け方: {BALANCE_LABELS[r.balance ?? 'round_robin']}</div>
+                      </div>
+                    ) : hostPort(r.remote_addr ?? '', portsLabel(r.remote_port ?? 0, count > 1 ? (r.remote_port ?? 0) + count - 1 : null))}
                     {r.passthrough && (
                       <span className="badge ml-2 bg-indigo-100 text-indigo-900" title="rproxy で TLS を終端せずに、ClientHello ごと転送先へ流す（証明書は転送先のもの）">
                         終端しない（passthrough）

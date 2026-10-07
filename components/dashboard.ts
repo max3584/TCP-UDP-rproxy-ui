@@ -1,6 +1,6 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
-import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames } from './lib';
+import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames, routeTargets } from './lib';
 import type { Balance, CertRole, CertState, CertStatus, ForwardRule, ForwardRules, HttpSpec, HttpStats, NodeLiveState, NodesInfo, Protocol, RuleState, RuleStats, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
@@ -317,7 +317,7 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
     if (inRange(n, rule.srcPort, rule.srcPortEnd)) return true;
     if (rule.http === null && inRange(n, rule.distPort, rule.distPort + count - 1)) return true;
     if ((rule.targets ?? []).some((t) => inRange(n, t.port, t.port + count - 1))) return true;
-    if ((rule.tls.routes ?? []).some((r) => inRange(n, r.remote_port, r.remote_port + count - 1))) return true;
+    if ((rule.tls.routes ?? []).some((r) => routeTargets(r).some((t) => inRange(n, t.port, t.port + count - 1)))) return true;
   }
   const haystack = [
     rule.srcAddr,
@@ -326,7 +326,7 @@ export function matchesText(rule: ForwardRule, text: string): boolean {
     // L7 のルールは転送先を持たない（'L7 (HTTP)' で探せる）
     ...(rule.http === null ? [rule.distAddr, `${rule.distAddr}:${targetPortsLabel(rule)}`] : ['L7 (HTTP)']),
     ...(rule.targets ?? []).flatMap((t) => [t.addr, targetHostPort(t, rule)]),
-    ...(rule.tls.routes ?? []).flatMap((r) => [...routeNames(r), r.remote_addr]),
+    ...(rule.tls.routes ?? []).flatMap((r) => [...routeNames(r), ...routeTargets(r).map((t) => t.addr)]),
     // L7 のルートの Host(...) の名前（一覧には代表の 1 つしか出さないので、ほかの名前でも探せるように）
     ...l7Hosts(rule.http),
     // ノード／グループの名前（#98）

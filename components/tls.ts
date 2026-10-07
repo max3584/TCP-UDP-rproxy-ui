@@ -149,9 +149,20 @@ export function normalizeTls(input: unknown): TlsSpec {
 
   const routes = list(input.routes, 'tls.routes').map((r): TlsRoute => {
     if (!isObject(r)) throw invalid('サーバ名ごとの転送先の形式が不正です。');
-    checkKeys(r, ['server_name', 'server_names', 'remote_addr', 'remote_port', 'passthrough'], 'tls.routes');
+    checkKeys(r, ['server_name', 'server_names', 'remote_addr', 'remote_port', 'passthrough', 'targets', 'balance'], 'tls.routes');
+    // 名前ごとの複数の宛先（rproxy の #234）：remote_addr / remote_port の代わりに targets と balance
+    const targets = r.targets === undefined || r.targets === null ? [] : normalizeTargets(r.targets);
+    const hasRemote = (r.remote_addr !== undefined && r.remote_addr !== null && r.remote_addr !== '')
+      || (r.remote_port !== undefined && r.remote_port !== null && r.remote_port !== 0);
+    if (targets.length > 0 && hasRemote) {
+      throw new TlsError('サーバ名ごとの転送先には、転送先（remote_addr / remote_port）か複数の宛先（targets）のどちらか一方を指定してください。', 'tls_config');
+    }
+    const balance = normalizeBalance(r.balance);
+    if (targets.length === 0 && balance !== DEFAULT_BALANCE) {
+      throw new TlsError('サーバ名ごとの振り分け方（balance）は、複数の宛先（targets）を指定したときだけ使えます。', 'tls_config');
+    }
     const remotePort = r.remote_port;
-    if (!isPort(remotePort)) throw invalid('サーバ名ごとの転送先のポート番号は1から65535の範囲で指定してください。');
+    if (targets.length === 0 && !isPort(remotePort)) throw invalid('サーバ名ごとの転送先のポート番号は1から65535の範囲で指定してください。');
     const hasOne = r.server_name !== undefined && r.server_name !== null;
     const hasMany = r.server_names !== undefined && r.server_names !== null;
     if (hasOne === hasMany) {
@@ -169,11 +180,13 @@ export function normalizeTls(input: unknown): TlsSpec {
     if (names.server_names !== undefined && names.server_names.length === 0) {
       throw new TlsError('複数のサーバ名（server_names）には 1 つ以上の名前を指定してください。', 'tls_config');
     }
+    // キーの順番は rproxy の応答（…, passthrough, targets, balance）に揃える
     return {
       ...names,
-      remote_addr: requiredString(r.remote_addr, 'サーバ名ごとの転送先のアドレス'),
-      remote_port: remotePort,
+      ...(targets.length === 0 ? { remote_addr: requiredString(r.remote_addr, 'サーバ名ごとの転送先のアドレス'), remote_port: remotePort as number } : {}),
       ...(r.passthrough === true ? { passthrough: true } : {}),
+      ...(targets.length > 0 ? { targets: targets } : {}),
+      ...(targets.length > 0 && balance !== DEFAULT_BALANCE ? { balance: balance } : {}),
     };
   });
   if (routes.length > 0) tls.routes = routes;
@@ -342,12 +355,19 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
         throw new TlsError(`サーバ名の形式が不正です: ${name}`, 'tls_config');
       }
     }
-    if (!isRemoteAddr(route.remote_addr)) {
-      throw invalid(`サーバ名ごとの転送先には IP アドレスかホスト名を指定してください: ${route.remote_addr}`);
-    }
-    // ポート範囲では routes の remote_port も同じだけずれる
-    if (route.remote_port + portCount - 1 > 65535) {
-      throw invalid(`${names.join(', ')} の転送先ポートにポート範囲の長さを足すと 65535 を超えます。`);
+    if (route.targets && route.targets.length > 0) {
+      // ポート範囲では各宛先のポートも同じだけずれる
+      for (const [i, t] of route.targets.entries()) {
+        if (t.port + portCount - 1 > 65535) throw invalid(`${names.join(', ')} の宛先 ${i + 1} のポートにポート範囲の長さを足すと 65535 を超えます。`);
+      }
+    } else {
+      if (!isRemoteAddr(route.remote_addr ?? '')) {
+        throw invalid(`サーバ名ごとの転送先には IP アドレスかホスト名を指定してください: ${route.remote_addr ?? ''}`);
+      }
+      // ポート範囲では routes の remote_port も同じだけずれる
+      if ((route.remote_port ?? 0) + portCount - 1 > 65535) {
+        throw invalid(`${names.join(', ')} の転送先ポートにポート範囲の長さを足すと 65535 を超えます。`);
+      }
     }
     if (route.passthrough && protocol === 'udp') {
       throw new TlsError('「終端しない（passthrough）」は TCP のルールでだけ指定できます（UDP の sni ではすべての名前が終端されずに流れます）。', 'tls_config');
