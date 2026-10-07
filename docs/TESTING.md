@@ -175,6 +175,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 - `settings.spec.ts`：TLS のオプション（最小バージョン 1.3 で TLS 1.3 のスイートがないと送る前に断る・保存すると TLS 1.2 のクライアントを断る・編集画面に今の値）、basic_auth の realm・user_header・keep_authorization（401 の `WWW-Authenticate`、転送先に届く利用者の名前）、UDP の sni が版の注意なしで選べること。自己署名の証明書は openssl で作る（CI では apk の openssl）
 - `i18n.spec.ts`：英語への切り替えと cookie、別の子になった括弧の前の空白
 - `responsive.spec.ts`・`contrast.spec.ts`・`version.spec.ts`：375px / 768px ではみ出さないこと、白地に白文字がないこと、版の表示
+- `api-rules.spec.ts`：rproxy の API を直接呼んで作ったルールが、利用者には見えず（404）、管理者にはダッシュボードと詳細に「API」で出て、編集で rproxy の転送先が変わり、削除で rproxy から消えること（rproxy の版を問わない）
 - `v04.spec.ts`：v0.4 の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームの「制限・GeoIP」でラベルと送信元ごとの同時接続 1 を付けて追加し、詳細画面にラベルが出て、2 本目の接続がすぐ閉じられること。`features.dry_run` のときは「差分を見る」で作成・変更の差分（接続を切らずに変わる、`labels`）が出ること
 - `acme.spec.ts`（`UI_E2E_ACME=1` のときだけ）：ACME（rproxy-api v0.3.21）。CI は rproxy-api に `docs/ACME.md` があれば、apk の pebble（ACME の試験用の CA）を同じコンテナで動かし、`scripts/ci-pebble.sh` が Pebble の HTTPS の証明書（openssl）・`/etc/hosts` の名前・rproxy の設定ファイル（`RPROXY_CONFIG` の `global.acme`）を作る。
   フォームで resolver を選び、ワイルドカード（dns-01 だけ）と `allowed_names` の外の名前を保存の前に断ること、保存したルールに rproxy が Pebble から証明書を取り（http-01、`http01_listen`）、詳細画面が「有効」になって実際に Pebble の証明書を返すこと、編集画面に resolver と名前が入っていること。
@@ -209,6 +210,15 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 | クライアント証明書の設定 | `RPROXY_API_TLS_*`、`nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca`（https だけ・証明書と鍵は両方・読めないファイルは誤り）、429 の `Retry-After` |
 | https の制御 API | openssl で作った CA・サーバ・クライアントの証明書で、クライアント証明書を求める https のサーバに接続でき、証明書がなければ断られる（openssl がなければ飛ばす） |
 | /system | v0.4 の rproxy の機能の印・performance・設定ファイル、v0.3 の rproxy・届かない rproxy |
+
+## 単体テスト：rproxy の API のルール（`tests/apirules.test.ts`・`tests/forward-api.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| 画面の形 | rproxy の応答と `rproxy_rules` の行から API のルールの行（保存・作ったトークン・時刻、読めない spec は飛ばす）、固定ルールはだれにでも・API のルールは管理者だけ足す、同じキーは足さない、UI のルールの代わりに動いているもの、バッジ |
+| /api/forward | 管理者のダッシュボードに動いている API のルール・組のルール・保存済みで動いていないルール、利用者には出さない、`rproxy_rules` がなくても動く、`shadowedBy`、1 件の取得、`api-modify` は PATCH だけで DB に書かず保存されなくなったら warning、`api-delete`・管理者だけ・409 `owned` / `ui_rule`、`plan` の `api-modify` |
+
+`tests/nodeview.test.ts` は、ノードごとのビューに、そのノードの行だけを書ける `rproxy_rules` のビュー（`WITH CHECK OPTION`）と権限が出ること（`--without-rproxy-rules` で出さない）も確かめる。
 
 ## まだテストしていないこと
 

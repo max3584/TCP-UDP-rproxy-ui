@@ -259,6 +259,16 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
   範囲外からの TCP 接続は TLS や PROXY ヘッダより前に切断し、UDP では範囲外の送信元のデータグラムを捨てます。保存すると `10.0.0.5` → `10.0.0.5/32` のように正規化します。
 - 「どのサーバ名にも一致しない接続」は、sni（TCP / UDP）か TCP の終端で、サーバ名ごとの転送先があるときだけ選べます。「切断する」にすると、一致しない名前や SNI のない接続を切断します（終端ではハンドシェイクを完了せずに切断）。
 
+## rproxy の API で作ったルール
+
+rproxy の API を直接呼んで作ったルール（CI・スクリプト・Kubernetes のコントローラなど。UI の DB にないもの）は、管理者（`rproxy-admin`）のダッシュボードと詳細画面に「API」のバッジで出ます（#76。利用者には出しません）。
+
+- rproxy-api v0.4 は、`persist: true` のトークンで作ったルールを自分のテーブル `rproxy_rules`（`db/migrations/009_rproxy_rules.sql`。UI の DB）に保存し、`origin: "api"` と作ったトークン・時刻を返します。UI は rproxy の `GET /rules` と `rproxy_rules` を読み、rproxy で動いていない保存済みのルールも「未登録」で出します。保存していないルールは「API（保存なし）」（rproxy を再起動すると消える）。
+- 編集・削除は rproxy の API（`PATCH` / `DELETE`）で行います（UI の DB には入れず、UI の履歴にも残りません。一時停止・コピー・送り直しはありません）。UI のトークンに `persist` がなければ、保存してあるルールへの変更を rproxy が保存しないことがあり、そのときは「再起動で前の内容に戻る」と知らせます。rproxy が `features.dry_run` を返すときは「差分を見る」も使えます。
+- ルールの組（`ruleset`。Kubernetes のコントローラなどが `PUT /rulesets/{name}` で丸ごと渡すもの）のルールは「組: 名前」のバッジで読み取り専用です（rproxy も個別の変更を `409 owned` で断ります）。
+- UI のルールと同じキーを rproxy で API のルール・組のルールが使っている（UI のルールが動いていない）ときは、詳細画面に注意を出します。rproxy は起動時に UI のテーブルを優先するので、どちらかを消すかキーを変えてください。
+- 複数の rproxy では、rproxy の `RPROXY_NODE_NAME` を `RPROXY_UI_NODES` のノードの名前に揃えます（`rproxy_rules` の `node` 列）。ノードごとのビュー（`db/node-view.mjs`）は、そのノードの行だけを書ける `rproxy_rules` のビューも作ります。
+
 ## ルールの一時停止
 
 ルールの詳細画面の「一時停止」（一覧の行の「一時停止」でも）で、ルールを消さずに止められます。「再開」で同じ内容のまま動かします。
@@ -348,7 +358,7 @@ default_target: ha                   # 追加の画面で最初に選ぶもの�
   - 画面の「act / stb」（`/ha`。管理者だけ。ダッシュボードのノードの一覧から開く）で、グループの act と、ノードごとに揃っているかを確かめ、「このノードを揃える」で送り直せる。元の act に戻す（failback）手順の案内もここにある。VIP を動かすのは keepalived。
 - **ノードに限ったロール**：`RPROXY_UI_USER_NODES=node1,node2` で、`rproxy-user` が触れるノードを絞れる（グループはそのノードがすべて入っているときだけ。外は 403 `node_not_allowed`。追加の画面の選択肢も絞る）。`rproxy-admin` は制限されない。既定は制限なし。
 - 同じキー（プロトコル・アドレス・ポート）のルールは、ノードが重ならないノード／グループどうしなら別々に置ける（重なると 409 `target_conflict`）。
-- 使う前に DB に `db/migrations/006_nodes.sql`・`007_log_node.sql`（送り直しの履歴のノード）・`008_overrides.sql`（ノードごとの上書き。適用したらノードごとのビューを作り直す）を適用する（`forward_rules` と `forward_rules_log` に `target` 列、`forward_rule_targets` 表）。既存のルールは `default` に属するので、設定ファイルのノードの名前を `default` にするか、`UPDATE forward_rules SET target = 'node1' WHERE target = 'default'` で付け替える。
+- 使う前に DB に `db/migrations/006_nodes.sql`・`007_log_node.sql`（送り直しの履歴のノード）・`008_overrides.sql`（ノードごとの上書き。適用したらノードごとのビューを作り直す）・`009_rproxy_rules.sql`（rproxy-api v0.4 の API のルール）を適用する（`forward_rules` と `forward_rules_log` に `target` 列、`forward_rule_targets` 表）。既存のルールは `default` に属するので、設定ファイルのノードの名前を `default` にするか、`UPDATE forward_rules SET target = 'node1' WHERE target = 'default'` で付け替える。
 
 ### rproxy の起動時の復元（ノードごとのビュー）
 

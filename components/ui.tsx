@@ -42,6 +42,17 @@ export const StaticBadge: React.FC = () => (
   <span className="badge bg-slate-700 text-white" title="固定ルール（rproxy の設定ファイルで管理）">固定</span>
 );
 
+// rproxy の API で作ったルール（UI の DB にない。rproxy v0.4）。保存しているか・ルールの組か
+export const ApiBadge: React.FC<{ rule: Pick<ForwardRules, 'origin' | 'persisted' | 'ruleset'> }> = ({ rule }) => {
+  if (rule.origin !== 'api') return null;
+  if (rule.ruleset) {
+    return <span className="badge bg-violet-100 text-violet-900" title={`rproxy のルールの組 ${rule.ruleset} のルール（画面からは変更できない）`}>組: {rule.ruleset}</span>;
+  }
+  return rule.persisted
+    ? <span className="badge bg-teal-100 text-teal-900" title="rproxy の API で作り、rproxy が rproxy_rules に保存しているルール">API</span>
+    : <span className="badge bg-teal-50 text-teal-900 border border-teal-300" title="rproxy の API で作ったルール（保存していないので、rproxy を再起動すると消える）">API（保存なし）</span>;
+};
+
 // 証明書の期限が近い・切れたルール（rproxy の cert_status）
 export const CertBadge: React.FC<{ state: CertState | null }> = ({ state }) => {
   if (state === 'expired') return <span className="badge bg-red-100 text-red-900" title="期限切れの証明書があります">証明書 期限切れ</span>;
@@ -265,7 +276,8 @@ export function goBack(router: { back: () => void; push: (url: string) => unknow
 // 画面から API へルールを送る。失敗したら表示用のメッセージで Error を投げる
 // L7 の設定（http）は送らない（API は受け取らず、変更では DB の値を保つ。UI #34 まで）
 // http は L7 のルールのときだけ送る（null を送ると、変更では L7 の設定を外す指定になる）
-export async function postRule(action: 'add' | 'modify' | 'delete' | 'pause' | 'resume' | 'resend', rule: unknown): Promise<void> {
+// 応答の本文を返す（API のルールの変更の warning など）
+export async function postRule(action: 'add' | 'modify' | 'delete' | 'pause' | 'resume' | 'resend' | 'api-modify' | 'api-delete', rule: unknown): Promise<Record<string, unknown>> {
   const body = typeof rule === 'object' && rule !== null && 'http' in rule && (rule as { http: unknown }).http === null
     ? Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'http'))
     : rule;
@@ -275,10 +287,15 @@ export async function postRule(action: 'add' | 'modify' | 'delete' | 'pause' | '
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await errorDetail(res));
+  try {
+    return await res.json() as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 // 保存する前の差分（rproxy v0.4 の ?dry_run=true）。DB も rproxy も変えない
-export async function postPlan(action: 'add' | 'modify' | 'delete', rule: unknown): Promise<PlanResponse> {
+export async function postPlan(action: 'add' | 'modify' | 'delete' | 'api-modify', rule: unknown): Promise<PlanResponse> {
   const body = typeof rule === 'object' && rule !== null && 'http' in rule && (rule as { http: unknown }).http === null
     ? Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'http'))
     : rule;

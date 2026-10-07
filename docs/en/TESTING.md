@@ -175,6 +175,7 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 - `settings.spec.ts`: TLS options (minimum version 1.3 without a TLS 1.3 suite is refused before sending; once saved, TLS 1.2 clients are refused; the edit page shows the current values), basic_auth realm, user_header and keep_authorization (the 401 `WWW-Authenticate` and the user name the backend receives), and UDP sni offered without the version note. The self-signed certificate is made with openssl (apk's openssl in CI)
 - `i18n.spec.ts`: switching to English and the cookie, the space before a parenthetical that is a separate child
 - `responsive.spec.ts`, `contrast.spec.ts`, `version.spec.ts`: no overflow at 375px / 768px, no white text on white, the version display
+- `api-rules.spec.ts`: a rule created by calling the rproxy API directly is hidden from users (404), shown to administrators as "API" on the dashboard and details, editing changes the target in rproxy and deleting removes it from rproxy (any rproxy version)
 - `v04.spec.ts`: v0.4 rule settings (only when rproxy's `features` report them; skipped otherwise). Adds a rule with a label and one concurrent connection per source from the "Limits & GeoIP" tab, checks the label on the details and that a second connection is closed at once. With `features.dry_run`, "Show the difference" shows the create and change plans (changes without cutting connections, `labels`)
 - `acme.spec.ts` (only with `UI_E2E_ACME=1`): ACME (rproxy-api v0.3.21). When rproxy-api has `docs/ACME.md`, CI runs apk's pebble (the ACME test CA) in the same container, and `scripts/ci-pebble.sh` makes Pebble's HTTPS certificate (openssl), the names in `/etc/hosts` and rproxy's settings file (`global.acme` in `RPROXY_CONFIG`).
   The form offers the resolvers and refuses wildcards (dns-01 only) and names outside `allowed_names` before saving; for the saved rule rproxy obtains a certificate from Pebble (http-01, `http01_listen`), the details show "valid" and Pebble's certificate is actually served; the edit page shows the resolver and the names.
@@ -209,6 +210,15 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 | Client certificate settings | `RPROXY_API_TLS_*`, `tls_cert` / `tls_key` / `tls_ca` in `nodes.yaml` (https only, certificate and key together, unreadable files are errors), `Retry-After` of a 429 |
 | https control API | With a CA, server and client certificate made by openssl, connects to an https server that requires client certificates, and is refused without one (skipped without openssl) |
 | /system | Feature flags, performance and settings file of a v0.4 rproxy; a v0.3 rproxy; an unreachable rproxy |
+
+## Unit tests: rproxy API rules (`tests/apirules.test.ts`, `tests/forward-api.test.ts`)
+
+| Test | What it checks |
+|---|---|
+| Screen shape | API rule rows from rproxy's answer and from `rproxy_rules` rows (stored, creating token and time; unreadable specs are skipped); static rules for everyone, API rules only for administrators; no duplicate keys; rules running instead of a UI rule; badges |
+| /api/forward | Administrators' dashboards show running API rules, rule-set rules and stored rules that are not running; users do not see them; works without `rproxy_rules`; `shadowedBy`; getting one rule; `api-modify` only PATCHes (no DB write) and warns when the change is no longer stored; `api-delete`; administrators only; 409 `owned` / `ui_rule`; `plan` with `api-modify` |
+
+`tests/nodeview.test.ts` also checks that the per-node SQL creates an `rproxy_rules` view that can write only that node's rows (`WITH CHECK OPTION`) with its grant (left out with `--without-rproxy-rules`).
 
 ## Not yet tested
 

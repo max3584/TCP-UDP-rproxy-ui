@@ -15,6 +15,7 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrations/006_nodes.sql` | 複数の rproxy（#98）：両テーブルに `target` 列、キーを `(target, protocol, src_addr, src_port)` に、`forward_rule_targets` 表を追加。`RPROXY_UI_NODES` を使わない 1 台の環境では適用しなくても動く |
 | `migrations/007_log_node.sql` | 複数の rproxy（#98）：`forward_rules_log` に送り直したノード（`node`）の列を追加。`RPROXY_UI_NODES` を使うときに必要 |
 | `migrations/008_overrides.sql` | 複数の rproxy（#98）：グループのルールのノードごとの上書き（`forward_rule_overrides`）。適用したらノードごとのビューを `node-view.mjs` で作り直す |
+| `migrations/009_rproxy_rules.sql` | rproxy-api v0.4 が API で作ったルールを保存する `rproxy_rules`（#76。書くのは rproxy だけ）。複数の rproxy では適用したらノードごとのビューを作り直す |
 | `node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけの DB ユーザーの SQL を出す（下の「複数の rproxy（ノードごとのビュー）」） |
 
 既存の環境では `002` から順に適用する。`schema.sql` を変えたときは、同じ変更をする migration も追加すること。
@@ -49,6 +50,9 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `forward_rule_overrides`：グループのルールの、ノードごとの上書き（`rule_id`・`node` で一意。ルールを消すと一緒に消える）。`src_addr`・`dist_addr`・`dist_port` は上書きするときだけ値を持ち（複数の宛先にするときの `dist_addr` は `''`）、`options` は `forward_rules.options` に `JSON_MERGE_PATCH` で重ねる差分（`allow_from`・`extra_listen_addrs`・`targets`・`balance`・`health_check`・`enabled`。null はキーを消す）。
   `forward_rules_log` にも `target` 列がある。上書きの変更は `update_action` が `OVERRIDE` で、`node` にそのノード、内容はそのノードで動かす内容（巻き戻しはできない）。1 つのノードへの送り直しは `update_action` が `RESEND` で、`node`（007）にそのノードを残す（内容は送ったルール）。
 
+- `rproxy_rules`（009）：rproxy-api v0.4 が、`persist: true` のトークンで API から作った・変えたルールを保存する（`(node, protocol, listen_addr, listen_port)` で一意。`spec` は `POST /rules` の本文と同じ形の JSON、`created_by` / `updated_by` はトークンの名前）。書くのは rproxy だけで、UI は読んで管理者のダッシュボードに「API」のルールとして出す（変えるときは rproxy の API）。
+  `node` は rproxy の `RPROXY_NODE_NAME`（既定はホスト名）。複数の rproxy では UI の `RPROXY_UI_NODES` のノードの名前と揃える。rproxy は起動時に自分の `node` の行を UI のテーブルのあとに復元し、同じキーが両方にあれば UI の行を使う。
+
 ## DB ユーザー
 
 UI 用のユーザーには両テーブルへの読み書き権限を与える。
@@ -60,6 +64,8 @@ GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@
 -- RPROXY_UI_NODES を使うとき
 GRANT SELECT, INSERT, DELETE         ON rproxy.forward_rule_targets TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overrides TO 'rproxy_ui'@'10.0.0.%';
+-- rproxy-api v0.4 の API のルールを見せるとき（009。UI は読むだけ）
+GRANT SELECT                         ON rproxy.rproxy_rules TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api は起動時に `forward_rules` を読むだけなので、読み取り専用のユーザーを使う。
@@ -69,6 +75,8 @@ rproxy-api は起動時に `forward_rules` を読むだけなので、読み取�
 ```sql
 CREATE USER 'rproxy'@'127.0.0.1' IDENTIFIED BY '<password>';
 GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
+-- rproxy-api v0.4 で API のルールを保存するとき（009。rproxy の RPROXY_DATABASE_URL のユーザー）
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rules TO 'rproxy'@'127.0.0.1';
 ```
 
 （例ではデータベース名を `rproxy` としている。`DB_DATABASE` に合わせて読み替えること。）
@@ -94,7 +102,15 @@ CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`forward_rules` 
    WHERE r.`target` IN (SELECT t.`target` FROM `rproxy`.`forward_rule_targets` t WHERE t.`node` = 'node1');
 CREATE USER IF NOT EXISTS 'rproxy_node1'@'10.0.0.11' IDENTIFIED BY '<password>';
 GRANT SELECT ON `rproxy_node_node1`.`forward_rules` TO 'rproxy_node1'@'10.0.0.11';
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_rules` AS
+  SELECT `node`, `protocol`, `listen_addr`, `listen_port`, `spec`, `spec_version`, `created_by`, `created_at`, `updated_by`, `updated_at`
+    FROM `rproxy`.`rproxy_rules`
+   WHERE `node` = 'node1'
+  WITH CHECK OPTION;
+GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_node1`.`rproxy_rules` TO 'rproxy_node1'@'10.0.0.11';
 ```
+
+`rproxy_rules`（009。rproxy-api v0.4 が API のルールを保存する）は、そのノードの行だけを書けるビューにする（`WITH CHECK OPTION` でほかのノードの行は書けない。その rproxy の `RPROXY_NODE_NAME` をノードの名前にする）。009 を適用していなければ `--without-rproxy-rules` で出さない。
 
 その rproxy は `RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB のホスト>/rproxy_node_node1` にする。
 グループの構成を変えても `forward_rule_targets` を UI が直すので、ビューは作り直さなくてよい。ノードを足したときだけ、そのノードの分を流す。

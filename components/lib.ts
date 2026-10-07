@@ -162,8 +162,18 @@ export interface ForwardRule extends V04Settings {
 
 export const MAX_EXTRA_LISTEN_ADDRS = 16;
 
-// dynamic: API（この UI）で作ったルール / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない）
-export type RuleOrigin = 'dynamic' | 'static';
+// dynamic: この UI で作ったルール（DB の forward_rules） / static: rproxy の設定ファイルの固定ルール（DB にはない。変更・削除できない） /
+// api: rproxy の API を直接呼んで作ったルール（UI の DB にない。rproxy が rproxy_rules に保存したもの（persisted）と、メモリだけのもの、
+// ルールの組（ruleset）のもの。rproxy v0.4。#76）。管理者だけに見せ、変えるときは rproxy の API を通す
+export type RuleOrigin = 'dynamic' | 'static' | 'api';
+
+// UI のルールと同じキーを、rproxy では API のルール・ルールの組が使っている（UI のルールは動いていない）
+export interface ShadowedBy {
+  // rproxy の origin（api・dynamic）
+  origin: string;
+  ruleset?: string;
+  createdBy?: string;
+}
 
 // missing: DB にはあるが rproxy にない / unknown: rproxy に問い合わせできなかった / paused: UI で一時停止中（DB にだけある）
 export type RuleState = 'running' | 'failed' | 'missing' | 'unknown' | 'paused';
@@ -269,6 +279,12 @@ export interface ForwardRules extends ForwardRule {
   conditions?: Condition[];
   // ルールの組（rproxy v0.4 の rulesets。k8s のコントローラなど）に属するときの組の名前。組のルールは個別に変えられない（409 owned）
   ruleset?: string;
+  // API のルール（origin: api）：rproxy_rules に保存しているか、作ったトークンと時刻（Unix 秒）
+  persisted?: boolean;
+  createdBy?: string;
+  createdAt?: number;
+  // UI のルール（dynamic）と同じキーを、rproxy では API のルールが使っている
+  shadowedBy?: ShadowedBy;
 }
 
 // ルールの 1 ノードでの稼働情報
@@ -288,6 +304,7 @@ export interface NodeLiveState {
   // active_standby のグループで、VIP を持っているか（GET /interfaces）。判定できなければ付かない
   role?: NodeRole;
   conditions?: Condition[];
+  shadowedBy?: ShadowedBy;
 }
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）

@@ -58,7 +58,8 @@ import {
   planModify,
   withNode,
 } from '@/components/rproxy';
-import { aggregateNodeStates, mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
+import { aggregateNodeStates, ruleFromStatus } from '@/components/dashboard';
+import { StoredApiRule, apiRuleFromRow, apiRuleFromStatus, mergeExternalRules, shadowedBy } from '@/components/apirules';
 import { acmeStatusField } from '@/components/acme';
 import { NodesConfig, NodesConfigError, groupOf, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode } from '@/components/nodes';
 import { needsRecreateOnNode, ruleDrift } from '@/components/drift';
@@ -516,6 +517,8 @@ function withLiveState(id: number, rule: ForwardRule, live: boolean, status: Rpr
     ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
     ...acmeStatusField(status?.acme),
     ...(Array.isArray(status?.conditions) ? { conditions: status.conditions } : {}),
+    // 同じキーを rproxy では API のルール・ルールの組が使っている（UI のルールは動いていない）
+    ...(shadowedBy(status) ? { shadowedBy: shadowedBy(status) } : {}),
   };
 }
 
@@ -559,6 +562,8 @@ function nodeLiveState(node: string, rule: ForwardRule, live: boolean, status: R
     ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
     ...acmeStatusField(status?.acme),
     ...(Array.isArray(status?.conditions) ? { conditions: status.conditions } : {}),
+    // 同じキーを rproxy では API のルール・ルールの組が使っている（UI のルールは動いていない）
+    ...(shadowedBy(status) ? { shadowedBy: shadowedBy(status) } : {}),
     // UI の定義との違い（rproxy にあるときだけ。停止中なのに動いていれば enabled）
     ...(status ? { drift: ruleDrift(rule, status) } : {}),
   };
@@ -609,9 +614,24 @@ function withNodeStates(id: number, rule: ForwardRule, nodes: NodeLiveState[], o
     ...(agg.certStatus ? { certStatus: agg.certStatus } : {}),
     ...(agg.acmeStatus ? { acmeStatus: agg.acmeStatus } : {}),
     ...(agg.conditions ? { conditions: agg.conditions } : {}),
+    ...(nodes.find((n) => n.shadowedBy)?.shadowedBy ? { shadowedBy: nodes.find((n) => n.shadowedBy)!.shadowedBy } : {}),
     nodes: nodes,
     ...(ha ? { ha: ha } : {}),
   };
+}
+
+// rproxy が保存した API のルール（rproxy_rules。migration 009。rproxy v0.4）。テーブルがない・読めないときは空
+async function loadStoredApiRules(logger: AppLogger): Promise<StoredApiRule[]> {
+  try {
+    const rows = await pool.query('SELECT node, protocol, listen_addr, listen_port, spec, created_by, created_at, updated_by, updated_at FROM rproxy_rules ORDER BY node, protocol, listen_addr, listen_port');
+    // 形の崩れた行は飛ばす
+    return (Array.isArray(rows) ? rows : []).filter((r: any): r is StoredApiRule => typeof r?.node === 'string' && typeof r?.protocol === 'string'
+      && typeof r?.listen_addr === 'string' && Number.isInteger(Number(r?.listen_port)) && r?.spec !== undefined);
+  } catch (err) {
+    // 1146: テーブルがない（009 を適用していない）。それ以外（権限など）はログに出す
+    if ((err as { errno?: number })?.errno !== 1146) logger.warn(`rproxy_rules を読めません（db/migrations/009_rproxy_rules.sql と UI の DB ユーザーの SELECT の権限を確認してください）: ${err}`);
+    return [];
+  }
 }
 
 // withStatic: rproxy の固定ルール（DB にない）も読み取り専用の行として足す（dashboard）。
@@ -625,6 +645,8 @@ async function listForwardingRules(actor: Actor, logger: AppLogger, withStatic: 
   );
 
   const { live, statuses, error: rproxyError } = await fetchNodeLive(null, logger);
+  // API のルール（rproxy v0.4。UI の DB にない）は管理者のダッシュボードだけ
+  const stored = admin && withStatic ? await loadStoredApiRules(logger) : [];
 
   const rules = rows.map((row: any): ForwardRules => {
     const rule = fromRow(row);
@@ -634,7 +656,7 @@ async function listForwardingRules(actor: Actor, logger: AppLogger, withStatic: 
   return {
     reachable: live !== null,
     rproxyError: rproxyError,
-    rules: withStatic ? mergeStaticRules(rules, statuses) : rules,
+    rules: withStatic ? mergeExternalRules(rules, statuses, { api: admin, stored: stored, live: live !== null }) : rules,
     ...(admin ? { admin: true } : {}),
   };
 }
@@ -685,17 +707,20 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
 
   let out = rules;
   if (withStatic) {
+    // 固定ルール（だれにでも）と API のルール（管理者だけ。rproxy v0.4）はノードごと（target がそのノード）
+    const stored = admin ? await loadStoredApiRules(logger) : [];
     let next = -1;
-    const statics: ForwardRules[] = [];
+    const external: ForwardRules[] = [];
     for (const l of lives) {
-      for (const s of l.statuses) {
-        const key = ruleKeyString(s.protocol, s.listen_addr, s.listen_port);
-        if (s.origin !== 'static' || usedKeys.get(l.node.name)!.has(key)) continue;
-        const r = ruleFromStatus(s, next--);
-        statics.push({ ...r, target: l.node.name, nodes: [{ node: l.node.name, state: r.state, error: r.error, connections: r.connections, stats: r.stats, startedAt: r.startedAt, resolved: r.resolved }] });
+      const rows = mergeExternalRules([], l.statuses, {
+        api: admin, stored: stored.filter((r) => r.node === l.node.name), live: l.live !== null, firstId: next, seenKeys: usedKeys.get(l.node.name)!,
+      });
+      next -= rows.length;
+      for (const r of rows) {
+        external.push({ ...r, target: l.node.name, nodes: [{ node: l.node.name, state: r.state, error: r.error, connections: r.connections, stats: r.stats, startedAt: r.startedAt, resolved: r.resolved }] });
       }
     }
-    out = [...rules, ...statics];
+    out = [...rules, ...external];
   }
   const down = lives.filter((l) => l.live === null);
   // vip を設定した active_standby のグループの act
@@ -743,11 +768,18 @@ async function getForwardingRule(actor: Actor, query: NextApiRequest['query'], l
     try {
       status = await getRule(key);
     } catch (err) {
-      if (isNotFound(err)) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
+      if (isNotFound(err)) {
+        // rproxy にない API のルールでも、rproxy_rules に保存してあれば管理者には出す（未登録）
+        const stored = actor.access === 'admin' ? await storedApiRule(key, null, logger) : null;
+        if (stored) return stored;
+        throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
+      }
       throw err;
     }
-    if (status.origin !== 'static') throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
-    return ruleFromStatus(status, -1);
+    if (status.origin === 'static') return ruleFromStatus(status, -1);
+    // API のルール（UI の DB にない。rproxy v0.4）は管理者だけ
+    if (actor.access === 'admin') return apiRuleFromStatus(status, -1);
+    throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
   }
   const rule = fromRow(rows[0]);
 
@@ -764,6 +796,13 @@ async function getForwardingRule(actor: Actor, query: NextApiRequest['query'], l
   return withLiveState(Number(rows[0].id), rule, live, status, actor.access === 'admin' ? String(rows[0].auth_id) : undefined);
 }
 
+// rproxy_rules の 1 件（rproxy にない API のルール）。node が null なら 1 台の環境（ノードの名前を問わない）
+async function storedApiRule(key: RproxyRuleKey, node: string | null, logger: AppLogger, live = true): Promise<ForwardRules | null> {
+  const rows = (await loadStoredApiRules(logger)).filter((r) => (node === null || r.node === node)
+    && r.protocol.toLowerCase() === key.protocol && normalizeAddr(r.listen_addr) === key.listen_addr && Number(r.listen_port) === key.listen_port);
+  return rows.length > 0 ? apiRuleFromRow(rows[0], -1, live ? 'missing' : 'unknown') : null;
+}
+
 // ノードを設定したときの 1 件：置き場所のノードごとに GET /rules/{key} を聞く。
 // DB になければ、その置き場所（target がなければ既定）のノードの固定ルール
 async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | string[] | undefined, logger: AppLogger): Promise<ForwardRules> {
@@ -776,16 +815,23 @@ async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | str
     [...owner.params, ...where.params]
   );
   if (rows.length === 0) {
-    // 固定ルールはノードごと（DB にない）。最初に見つかったノードのもの
+    // 固定ルール・API のルール（管理者だけ）はノードごと（DB にない）。最初に見つかったノードのもの
     let unreachable: unknown = null;
+    const admin = actor.access === 'admin';
+    const withNodeState = (r: ForwardRules, node: string): ForwardRules => ({ ...r, target: node, nodes: [{ node: node, state: r.state, error: r.error, connections: r.connections, stats: r.stats, startedAt: r.startedAt, resolved: r.resolved }] });
     for (const node of place.nodes) {
       try {
         const status = await withNode(node, () => getRule(key));
-        if (status.origin !== 'static') continue;
-        const r = ruleFromStatus(status, -1);
-        return { ...r, target: node.name, nodes: [{ node: node.name, state: r.state, error: r.error, connections: r.connections, stats: r.stats, startedAt: r.startedAt, resolved: r.resolved }] };
+        if (status.origin === 'static') return withNodeState(ruleFromStatus(status, -1), node.name);
+        if (admin) return withNodeState(apiRuleFromStatus(status, -1), node.name);
       } catch (err) {
         if (!isNotFound(err)) unreachable = err;
+      }
+    }
+    if (admin) {
+      for (const node of place.nodes) {
+        const stored = await storedApiRule(key, node.name, logger, unreachable === null);
+        if (stored) return withNodeState(stored, node.name);
       }
     }
     if (unreachable !== null) throw unreachable;
@@ -1022,7 +1068,7 @@ interface PlanResult {
 // rproxy の断り（400 invalid・unsupported など）はノードごとの error にする（features.dry_run が false の rproxy も 400 unsupported）
 async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ action: string; results: PlanResult[] }> {
   const action = body?.action;
-  if (action !== 'add' && action !== 'modify' && action !== 'delete') throw invalid('action は add / modify / delete のどれかです。');
+  if (action !== 'add' && action !== 'modify' && action !== 'delete' && action !== 'api-modify') throw invalid('action は add / modify / delete / api-modify のどれかです。');
   const ask = async (place: Place, step: (node: RproxyNode) => Promise<RulePlan | null>): Promise<PlanResult[]> => Promise.all(place.nodes.map(async (node) => {
     try {
       const plan = await withNode(node, () => step(node));
@@ -1038,6 +1084,14 @@ async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ a
     checkPorts(actor, rule);
     checkNodes(actor, place);
     return { action: action, results: await ask(place, () => planAdd(toRproxyRule(rule))) };
+  }
+  if (action === 'api-modify') {
+    // API のルール（UI の DB にない）：rproxy の今の内容に本文を重ねた PATCH を聞く
+    const node = apiRuleNode(actor, body?.target);
+    const rule = parseRule(body, false, true);
+    const { rule: current } = await currentApiRule(actor, node, rule);
+    const updated = mergeEdit(current, rule, apiGiven(body));
+    return { action: action, results: await ask({ target: null, nodes: [node] }, () => planModify(toKey(updated), toRproxyPatch(updated, current.crowdsec, current.targets.length > 0, extraAddrs(current).length > 0, current))) };
   }
   const rule = parseRule(body, action === 'delete', true);
   const place = await placeForKey(actor, rule, body?.target);
@@ -1075,6 +1129,74 @@ async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ a
       throw err;
     }
   }) };
+}
+
+// ---- rproxy の API のルール（UI の DB にない。rproxy v0.4、#76） ----
+
+// API のルールを置いているノード。管理者だけ。ノードを設定していれば body.target はノードの名前（グループではない）
+function apiRuleNode(actor: Actor, target: unknown): RproxyNode {
+  if (actor.access !== 'admin') throw new HttpError(403, 'rproxy の API のルールは管理者だけが変えられます。', 'forbidden_admin');
+  if (!actor.cfg.configured) return toRproxyNode(actor.cfg.nodes[0]);
+  const node = actor.cfg.nodes.find((n) => n.name === target);
+  if (!node) throw new HttpError(400, `API のルールのノード（target）を指定してください（${String(target ?? '')} はノードではありません）。`, 'unknown_node');
+  return toRproxyNode(node);
+}
+
+// 今の API のルール（固定ルールは 409 static、ルールの組のものは 409 owned、UI のルールなら 409 ui_rule、なければ 404）
+async function currentApiRule(actor: Actor, node: RproxyNode, key: ForwardRule): Promise<{ status: RproxyRuleStatus; rule: ForwardRule }> {
+  const where = actor.cfg.configured ? { sql: 'target = ? AND protocol = ? AND src_addr = ? AND src_port = ?', params: [node.name, key.protocol, key.srcAddr, key.srcPort] } : { sql: 'protocol = ? AND src_addr = ? AND src_port = ?', params: [key.protocol, key.srcAddr, key.srcPort] };
+  const own = await pool.query(`SELECT id FROM forward_rules WHERE ${where.sql}`, where.params);
+  if (Array.isArray(own) && own.length > 0) throw new HttpError(409, 'このキーは UI のルールです（UI の変更・削除を使ってください）。', 'ui_rule');
+  let status: RproxyRuleStatus;
+  try {
+    status = await withNode(node, () => getRule(toKey(key)));
+  } catch (err) {
+    if (isNotFound(err)) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
+    throw err;
+  }
+  if (status.origin === 'static') throw staticRuleError();
+  if (typeof status.ruleset === 'string' && status.ruleset !== '') {
+    throw new HttpError(409, `このルールは rproxy のルールの組 ${status.ruleset} に属しているため、画面からは変更・削除できません。`, 'owned');
+  }
+  return { status: status, rule: ruleFromStatus(status, 0) };
+}
+
+const NOT_PERSISTED_MESSAGE = 'rproxy は変更を rproxy_rules に保存しませんでした（UI のトークンに persist がないため）。rproxy を再起動すると、保存してある前の内容に戻ります。';
+
+// POST /api/forward/api-modify {protocol, srcAddr, srcPort, target?, ...}：API のルールを rproxy の PATCH で変える（UI の DB には書かない。履歴も残らない）。
+// body にない項目は今の値を保つ（modify と同じ）。保存されていたルールの変更を rproxy が保存しなかったら warning
+async function editApiRule(actor: Actor, body: any): Promise<{ message: string; persisted?: boolean; warning?: string }> {
+  const node = apiRuleNode(actor, body?.target);
+  const rule = parseRule(body, false, true);
+  const { status, rule: current } = await currentApiRule(actor, node, rule);
+  const updated = mergeEdit(current, rule, apiGiven(body));
+  const res = await withNode(node, () => modifyRule(toKey(updated), toRproxyPatch(updated, current.crowdsec, current.targets.length > 0, extraAddrs(current).length > 0, current)));
+  const persisted = typeof res?.persisted === 'boolean' ? res.persisted : undefined;
+  return {
+    message: 'API rule modified',
+    ...(persisted !== undefined ? { persisted: persisted } : {}),
+    ...(status.persisted === true && persisted === false ? { warning: NOT_PERSISTED_MESSAGE } : {}),
+  };
+}
+
+function apiGiven(body: any): Given {
+  return {
+    range: hasRangeEnd(body), allowFrom: hasAllowFrom(body), http: hasHttp(body), crowdsec: hasCrowdsec(body),
+    targets: hasTargets(body), extraListenAddrs: hasExtraListenAddrs(body), v04: givenV04(body),
+  };
+}
+
+// POST /api/forward/api-delete {protocol, srcAddr, srcPort, target?}：API のルールを rproxy の DELETE で消す
+async function deleteApiRule(actor: Actor, body: any): Promise<{ message: string }> {
+  const node = apiRuleNode(actor, body?.target);
+  const key = parseRule(body, true);
+  await currentApiRule(actor, node, key);
+  try {
+    await withNode(node, () => deleteRule(toKey(key)));
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+  return { message: 'API rule deleted' };
 }
 
 // ---- 一時停止と再開 ----
@@ -1953,6 +2075,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         }, logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json(done(actor, 'Forwarding rule modified successfully', results));
+      } else if (query === 'api-modify') {
+        const out = await editApiRule(actor, req.body);
+        logger.info(`API rule modified${out.warning ? ' (not persisted)' : ''}`);
+        return res.status(200).json(out);
+      } else if (query === 'api-delete') {
+        const out = await deleteApiRule(actor, req.body);
+        logger.info('API rule deleted');
+        return res.status(200).json(out);
       } else if (query === 'plan') {
         const out = await planRule(actor, req.body, logger);
         return res.status(200).json(out);

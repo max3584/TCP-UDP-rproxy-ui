@@ -259,6 +259,16 @@ The form is divided into tabs.
   TCP connections from outside the range are dropped before TLS or the PROXY header, and for UDP, datagrams from sources outside the range are discarded. On save they are normalized, e.g. `10.0.0.5` → `10.0.0.5/32`.
 - "Connections matching no server name" can be chosen only for sni (TCP / UDP) or TCP terminate with backends per server name. "Disconnect" drops connections with an unmatched name or without SNI (with terminate, they are dropped without completing the handshake).
 
+## Rules created through the rproxy API
+
+Rules created by calling the rproxy API directly (CI, scripts, Kubernetes controllers; not in the UI's DB) appear with an "API" badge on administrators' (`rproxy-admin`) dashboards and detail screens (#76; users do not see them).
+
+- rproxy-api v0.4 stores the rules created with a `persist: true` token in its own table `rproxy_rules` (`db/migrations/009_rproxy_rules.sql`, in the UI's DB) and reports `origin: "api"` with the creating token and time. The UI reads rproxy's `GET /rules` and `rproxy_rules`, and shows stored rules that are not running in rproxy as "missing". Rules that are not stored show "API (not stored)" (they disappear when rproxy restarts).
+- Edit and delete go through the rproxy API (`PATCH` / `DELETE`); nothing goes into the UI's DB or history, and there is no pause, copy or resend. When the UI's token has no `persist`, rproxy may not store changes to a stored rule; the UI then says a restart brings back the earlier contents. "Show the difference" works when rproxy reports `features.dry_run`.
+- Rules of a rule set (`ruleset`, applied as a whole with `PUT /rulesets/{name}` by e.g. a Kubernetes controller) show a "Set: name" badge and are read-only (rproxy also refuses changing them one by one with `409 owned`).
+- When an API rule or a rule-set rule in rproxy uses the same key as a UI rule (so the UI rule is not running), the detail screen warns. rproxy prefers the UI's table at startup; delete one of them or change the key.
+- With several rproxy instances, match rproxy's `RPROXY_NODE_NAME` with the node names in `RPROXY_UI_NODES` (the `node` column of `rproxy_rules`). The per-node views (`db/node-view.mjs`) also create an `rproxy_rules` view that can write only that node's rows.
+
 ## Pausing a rule
 
 "Pause" on the rule details screen (or on the row in the list) stops a rule without deleting it. "Resume" runs it again with the same contents.
@@ -348,7 +358,7 @@ default_target: ha                   # chosen first on the add screen (optional;
   - the "act / stb" screen (`/ha`; administrators only; opened from the dashboard's node list) shows each group's act and whether each node is in sync, and "Sync this node" resends. It also guides going back to the original act (failback). keepalived moves the VIP.
 - **Node-scoped roles**: `RPROXY_UI_USER_NODES=node1,node2` limits the nodes `rproxy-user` can change (a group only when all its nodes are listed; otherwise 403 `node_not_allowed`; the add screen's choices are limited too). `rproxy-admin` is not restricted. No restriction by default.
 - Rules with the same key (protocol, address, port) can be put on nodes / groups that share no node (otherwise 409 `target_conflict`).
-- Apply `db/migrations/006_nodes.sql`, `007_log_node.sql` (the node of a resend in the history) and `008_overrides.sql` (per-node overrides; recreate the per-node views afterwards) before using it (a `target` column in `forward_rules` and `forward_rules_log`, and the `forward_rule_targets` table). Existing rules belong to `default`: name a node `default` in the file, or move them with `UPDATE forward_rules SET target = 'node1' WHERE target = 'default'`.
+- Apply `db/migrations/006_nodes.sql`, `007_log_node.sql` (the node of a resend in the history) and `008_overrides.sql` (per-node overrides; recreate the per-node views afterwards) and `009_rproxy_rules.sql` (rproxy-api v0.4 API rules) before using it (a `target` column in `forward_rules` and `forward_rules_log`, and the `forward_rule_targets` table). Existing rules belong to `default`: name a node `default` in the file, or move them with `UPDATE forward_rules SET target = 'node1' WHERE target = 'default'`.
 
 ### Restoring at rproxy startup (a view per node)
 
