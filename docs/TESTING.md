@@ -176,6 +176,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 - `i18n.spec.ts`：英語への切り替えと cookie、別の子になった括弧の前の空白
 - `responsive.spec.ts`・`contrast.spec.ts`・`version.spec.ts`：375px / 768px ではみ出さないこと、白地に白文字がないこと、版の表示
 - `api-rules.spec.ts`：rproxy の API を直接呼んで作ったルールが、利用者には見えず（404）、管理者にはダッシュボードと詳細に「API」で出て、編集で rproxy の転送先が変わり、削除で rproxy から消えること（rproxy の版を問わない）
+- `usage.spec.ts`：作ったルールに通信を流すと、UI の集計（E2E では `RPROXY_UI_USAGE_SECS=30`）でルールの利用量が増え、詳細画面のグラフ・利用量の画面の表・CSV に出ること（010 の表がなければ飛ばす）
 - `v04.spec.ts`：v0.4 の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームの「制限・GeoIP」でラベルと送信元ごとの同時接続 1 を付けて追加し、詳細画面にラベルが出て、2 本目の接続がすぐ閉じられること。`features.dry_run` のときは「差分を見る」で作成・変更の差分（接続を切らずに変わる、`labels`）が出ること
 - `acme.spec.ts`（`UI_E2E_ACME=1` のときだけ）：ACME（rproxy-api v0.3.21）。CI は rproxy-api に `docs/ACME.md` があれば、apk の pebble（ACME の試験用の CA）を同じコンテナで動かし、`scripts/ci-pebble.sh` が Pebble の HTTPS の証明書（openssl）・`/etc/hosts` の名前・rproxy の設定ファイル（`RPROXY_CONFIG` の `global.acme`）を作る。
   フォームで resolver を選び、ワイルドカード（dns-01 だけ）と `allowed_names` の外の名前を保存の前に断ること、保存したルールに rproxy が Pebble から証明書を取り（http-01、`http01_listen`）、詳細画面が「有効」になって実際に Pebble の証明書を返すこと、編集画面に resolver と名前が入っていること。
@@ -219,6 +220,16 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 | /api/forward | 管理者のダッシュボードに動いている API のルール・組のルール・保存済みで動いていないルール、利用者には出さない、`rproxy_rules` がなくても動く、`shadowedBy`、1 件の取得、`api-modify` は PATCH だけで DB に書かず保存されなくなったら warning、`api-delete`・管理者だけ・409 `owned` / `ui_rule`、`plan` の `api-modify` |
 
 `tests/nodeview.test.ts` は、ノードごとのビューに、そのノードの行だけを書ける `rproxy_rules` のビュー（`WITH CHECK OPTION`）と権限が出ること（`--without-rproxy-rules` で出さない）も確かめる。
+
+## 単体テスト：利用量（`tests/usage.test.ts`・`tests/usage-route.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| 差分の取り方 | 同じ数え始めなら差、`counters_since` が変われば全部、引き継ぎでは続けて数える、古い rproxy は `started_at`、初めて見るルールは前回の集計より後に作られたときだけ全部 |
+| 区切りとグラフ | 時間・日・月の区切り（UTC）、ない区切りは 0、合計、目盛り |
+| 表と CSV | 所有者・ラベル・ルールでまとめる、ラベルのキー、CSV（式として読まれない）、期間と設定（環境変数） |
+| collectNode | 時間・日の表に足す値、所有者と印、基準の更新、消えたルールの基準を捨てる |
+| /api/forward/usage | 利用者は自分のルールだけ、ルールの指定、表がなければ `available: false`、集計表と CSV、期間の誤り |
 
 ## まだテストしていないこと
 

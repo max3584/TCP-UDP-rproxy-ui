@@ -1,7 +1,7 @@
 // ライト・ダークのどちらでも、白地に白文字のような読めない文字がないこと
 import { expect, test } from '@playwright/test';
 
-const PAGES = ['/', '/rules/new', '/rules/import', '/history', '/system', '/profile'];
+const PAGES = ['/', '/rules/new', '/rules/import', '/history', '/usage', '/system', '/profile'];
 
 for (const colorScheme of ['light', 'dark'] as const) {
   test.describe(`${colorScheme} mode`, () => {

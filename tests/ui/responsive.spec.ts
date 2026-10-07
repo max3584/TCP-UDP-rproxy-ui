@@ -95,6 +95,13 @@ for (const vp of VIEWPORTS) {
       await expectNoPageOverflow(page);
     });
 
+    test('usage fits the width', async ({ page }) => {
+      await page.goto('/usage');
+      await expect(page.getByRole('heading', { name: '利用量', exact: true })).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      await expectNoPageOverflow(page);
+    });
+
     test('rproxy features and settings fit the width', async ({ page }) => {
       await page.goto('/system');
       await expect(page.getByRole('heading', { name: 'rproxy の機能と設定' })).toBeVisible();

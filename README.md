@@ -105,6 +105,10 @@ RPROXY_API_TOKEN="[token]"
 # RPROXY_API_TLS_CERT="/etc/rproxy-ui/tls/client.pem"
 # RPROXY_API_TLS_KEY="/etc/rproxy-ui/tls/client.key"
 # RPROXY_API_TLS_CA="/etc/rproxy-ui/tls/rproxy-ca.pem"
+# 利用量の集計（README の「利用量」。db/migrations/010_usage.sql が要る）：間隔（秒。0 で止める）と残す日数
+# RPROXY_UI_USAGE_SECS=300
+# RPROXY_UI_USAGE_HOURLY_DAYS=32
+# RPROXY_UI_USAGE_DAILY_DAYS=400
 # 複数の rproxy（README の「複数の rproxy（ノードとグループ）」）。指定すると RPROXY_API_URL / RPROXY_API_TOKEN は使わない
 # RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
 ```
@@ -228,6 +232,7 @@ rproxy-api v0.4 の項目（`../rproxy-api/docs/API.md` の「v0.4 の設定」�
 | 編集（詳細の URL + `/edit`） | 変更フォーム |
 | インポート（`/rules/import`） | YAML / JSON のルールを読み込む（下の「エクスポートとインポート」） |
 | 変更の履歴（`/history`） | ルールの追加・変更・削除の履歴と、前の版への巻き戻し（下の「変更の履歴と巻き戻し」）。ルールの詳細画面にも、そのルールの履歴が出ます |
+| 利用量（`/usage`） | 月か日ごとの通信量の集計表（所有者・ラベル・ノード・ルールでまとめる）と CSV、通信量の推移（下の「利用量」） |
 | rproxy の機能と設定（`/system`） | ノードごとの rproxy-api の版、v0.4 の機能の印、`global.performance` で効く項目、設定ファイルの状態（読み取り専用） |
 
 rx はクライアントから転送先へ、tx は転送先からクライアントへのバイト数です（rproxy がルールを開始してからの累計。rproxy を再起動すると 0 に戻ります）。
@@ -314,6 +319,16 @@ rproxy の API を直接呼んで作ったルール（CI・スクリプト・Kub
   ルールが今もあれば置き換え（送信元 IP の扱い・ポート範囲・L4 / L7 が違う版は作り直し）、削除されていれば作り直します。巻き戻しも履歴に残ります。
 - rproxy の固定ルールは DB にないので、履歴にも出ません（同じキーの固定ルールがあるときは巻き戻せません）。
 - 履歴は DB の `forward_rules_log` です。列の追加はないので、migration は要りません。
+
+## 利用量（通信量の集計）
+
+rproxy の統計（接続数・rx / tx）は rproxy を再起動すると 0 に戻るので、UI が `RPROXY_UI_USAGE_SECS`（既定 300 秒、0 で止める）ごとに各ノードの `GET /rules` を取り、前に見た数との差を DB に貯めます（#101。`db/migrations/010_usage.sql`。適用しなければ集計しません）。
+
+- 時間ごと（`usage_hourly`、`RPROXY_UI_USAGE_HOURLY_DAYS` 日。既定 32）と日ごと（`usage_daily`、`RPROXY_UI_USAGE_DAILY_DAYS` 日。既定 400）に、ルール・ノードごとに貯め、月ごとは日ごとをまとめます。時刻は UTC の区切りです。古い行は UI が消します。
+- rproxy v0.4 の `stats.counters_since`（数え始め）が変わったら数え直したとみなし、今の数を全部足します（引き継ぎ（handoff）では変わらないので続けて数える）。古い rproxy では `started_at` で見分けます。
+- 各行に、そのときのルールの所有者（UI のルールを作った利用者）・ノード／グループ・ラベル（`labels`）・出どころ（UI・固定・API）を書きます。
+- ルールの詳細とダッシュボードに通信量のグラフ（24 時間・7 日・30 日・12 か月。rx と tx を積み上げ、表でも見られる）、「利用量」（`/usage`）に月か日ごとの集計表（所有者・ラベルのキー・ノード・ルールでまとめる）と CSV。管理者はすべてのルール、利用者は自分のルールだけです。
+- UI を複数動かしても、1 回の集計は DB のロックで 1 つの UI だけが行います。
 
 ## 複数の rproxy（ノードとグループ）
 
