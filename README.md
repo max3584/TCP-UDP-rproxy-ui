@@ -55,7 +55,8 @@ sudo apt update && sudo apt install rproxy-ui
 ```
 
 - 設定は `/etc/rproxy-ui/rproxy-ui.env`（600）。`NEXTAUTH_URL`、`KEYCLOAK_*`、`DB_*` を書いてから `sudo systemctl enable --now rproxy-ui` で起動する（インストールしただけでは起動しない）
-- `NEXTAUTH_SECRET` はインストール時に生成する。同じホストに rproxy-api があれば、そのトークンと API の URL も入れる
+- `NEXTAUTH_SECRET` はインストール時に生成する。同じホストに rproxy-api があれば、API の URL と、そのトークンファイル（`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`。1 行に 1 トークンの書き方のとき）も入れる
+- `rproxy-ui` ユーザーは rproxy-api と共有するグループ `rproxy` に入る（なければインストール時に作る。ユニットの `SupplementaryGroups=rproxy`）。rproxy-api のファイル（`rproxy-api:rproxy` や `root:rproxy` でグループが読めるトークンファイル・証明書・制御 API の Unix ソケット）を、コピーせずにそのまま読める。前の版で `RPROXY_API_TOKEN` にコピーしたトークンはそのまま使う
 - 既定の待ち受けは `127.0.0.1:3000`（`HOSTNAME` / `PORT`）。外から見せるときは rproxy の固定ルール（TLS の終端とサーバ名での振り分け、`allow_from`）を前に置く（rproxy-api の README「固定ルールと、ダッシュボードの公開」）
 - DB のテーブルは `/usr/share/rproxy-ui/db/schema.sql`（`db/README.md`）で作る
 - `/usr/lib/rproxy-ui` の `server.js`（Next.js の standalone 出力）を `rproxy-ui` ユーザーで動かす。ログは `journalctl -u rproxy-ui`
@@ -101,11 +102,13 @@ KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
+# トークンをファイルから読むとき（RPROXY_API_TOKEN が優先。最初の空でない・# でない行。ファイルを書き換えれば次の問い合わせから使う）
+# RPROXY_API_TOKEN_FILE="/etc/rproxy/tokens"
 # https:// の制御 API にクライアント証明書（mTLS。rproxy-api v0.4 の --tls-client-auth）で接続するとき。CA は rproxy の証明書を確かめる（省略時は OS の CA）
 # RPROXY_API_TLS_CERT="/etc/rproxy-ui/tls/client.pem"
 # RPROXY_API_TLS_KEY="/etc/rproxy-ui/tls/client.key"
 # RPROXY_API_TLS_CA="/etc/rproxy-ui/tls/rproxy-ca.pem"
-# 利用量の集計（README の「利用量」。db/migrations/010_usage.sql が要る）：間隔（秒。0 で止める）と残す日数
+# 利用量の集計（README の「利用量」。db/migrations/010_usage.sql と 011_usage_attr.sql が要る）：間隔（秒。0 で止める）と残す日数
 # RPROXY_UI_USAGE_SECS=300
 # RPROXY_UI_USAGE_HOURLY_DAYS=32
 # RPROXY_UI_USAGE_DAILY_DAYS=400
@@ -136,6 +139,7 @@ Keycloak のロールで、だれが何をできるかを決める（API route �
 - `RPROXY_UI_USER_PORTS=1024-65535` のように書くと、`rproxy-user` が使える待ち受けポートを制限できる（範囲の外は 403 `port_not_allowed`。`rproxy-admin` は制限されない）。既定は制限なし。
 - 複数の rproxy では `RPROXY_UI_USER_NODES=node1,node2` で `rproxy-user` が触れるノードを絞れる（下の「複数の rproxy（ノードとグループ）」）。
 - ロールはサインインしたときに読むので、Keycloak でロールを変えたら利用者にサインインし直してもらう。
+- 状態を変える API（`POST /api/forward/*`）は、ほかのサイトからの要求（`Sec-Fetch-Site` が same-origin でない、`Origin`（なければ `Referer`）の host が要求の `Host`・`X-Forwarded-Host`・`NEXTAUTH_URL` のどれとも違う）を 403 `csrf` で断る（SameSite=Lax の cookie に加えた CSRF の対策）。前に置くリバースプロキシは `Host` か `X-Forwarded-Host` を渡すか、`NEXTAUTH_URL` を利用者が開く URL にしておく。
 - 履歴（`forward_rules_log`）の `auth_id` は操作した利用者（管理者がほかの人のルールを変えたら管理者）。
 
 ## L7（HTTP）のルール
@@ -238,8 +242,8 @@ rproxy-api v0.4 の項目（`../rproxy-api/docs/API.md` の「v0.4 の設定」�
 - 保存の前に、rproxy と同じ規則で値を確かめます（範囲・単位・組み合わせ。最終的な判定は rproxy）。DB の `options` 列にも rproxy の API と同じ形で書くので、rproxy を再起動しても同じ内容に戻ります。
 - rproxy が `features.dry_run` を返すときは、追加・変更の画面に「差分を見る」が出ます。保存する前に、ノードごとに rproxy で何が変わるか（作成・変更、接続を切らずに変わるか・待ち受けを作り直すか、項目ごとの前と後）を rproxy の `?dry_run=true` で確かめます（DB も rproxy も変えません）。
 - 詳細画面に、設定した項目、制限で断った数、数え始めの時刻（`counters_since`）、宛先ごとの外している状態と回数、rproxy の `conditions`（Gateway API の形の状態）を出します（rproxy が返すとき）。
-- 「rproxy の機能と設定」（`/system`）に、ノードごとの rproxy-api の版、v0.4 の機能の印、設定ファイルの `global.performance` で効く項目、設定ファイルの状態を読み取り専用で出します。performance・GeoIP のデータベース・制御 API の守りは rproxy の設定ファイルと引数で変えます（画面からは変えません）。
-- 制御 API をクライアント証明書（mTLS）で守るときは、`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`（と、rproxy の証明書を確かめる `RPROXY_API_TLS_CA`）、複数の rproxy では `nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca` を書きます（`https://` の URL だけ。トークンファイルのエントリが `client_cert` だけならトークンは要りません）。
+- 「rproxy の機能と設定」（`/system`）に、ノードごとの rproxy-api の版、v0.4 の機能の印、設定ファイルの `global.performance` で効く項目、設定ファイルの状態を読み取り専用で出します。performance・GeoIP のデータベース・制御 API の守りは rproxy の設定ファイルと引数で変えます（画面からは変えません）。設定ファイルのパスと誤りの中身・バイナリの SHA-256・問い合わせの失敗の理由は管理者だけに出し（利用者には誤り・失敗があることだけ）、`RPROXY_UI_USER_NODES` の利用者には触れるノードだけを出します（ダッシュボードの設定ファイルの注意も同じ）。
+- 制御 API をクライアント証明書（mTLS）で守るときは、`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`（と、rproxy の証明書を確かめる `RPROXY_API_TLS_CA`）、複数の rproxy では `nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca` を書きます（`https://` の URL だけ。トークンファイルのエントリが `client_cert` だけならトークンは要りません）。`RPROXY_API_TLS_*` を `http://`・`unix:` の `RPROXY_API_URL` と一緒に書くと、トークンが平文で流れるので UI は起動しません（問い合わせもしません）。
 - UI の認証が続けて失敗して rproxy が UI を一時的に止めた（`429 locked_out`）ときは、トークン・証明書を確かめるように画面とログに出します（止める時間が過ぎると自動で解けます）。
 
 ## 使い方
@@ -274,6 +278,7 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 
 - プロファイルは `../rproxy-api/docs/PROFILES.md` の推奨設定をフォームに入れるだけです。アドレスと証明書のパスは環境に合わせて入力してください。
 - 証明書・秘密鍵・CA のパスは rproxy-api のサーバ上のパスです。読めないと `tls_config` のエラーになります。
+- rproxy-api は、証明書・秘密鍵・CA・秘密（htpasswd など）のファイルを、rproxy-api を動かす OS のユーザー（パッケージでは `rproxy-api`）が持つものだけ読みます（ほかの利用者の鍵のパスを書いて、その身元で接続・待ち受けできないように）。グループ `rproxy` の読み取りは構いません（例: `chown rproxy-api:rproxy`、`chmod 0640`）。持ち主が違うと rproxy が断り、画面はその理由と直し方を出します。
 - 証明書は、ファイル（certbot や cert-manager などで取得したもの）か ACME（rproxy-api v0.3.21 から。下の「ACME で証明書を取る」）を指定します。
   ファイルの場合、rproxy はファイルが変わったかを 60 秒ごと（rproxy の `RPROXY_CERT_CHECK_SECS`）に確かめ、更新された証明書を自動で読み直すので、更新のたびにルールを編集する必要はありません。
 - 中間 CA（任意）は、サーバ証明書を発行した CA からルートへ向かう順に 1 つの PEM ファイルに並べます（ルートは不要）。順番が違うと rproxy が `tls_config` で拒否します。
@@ -292,6 +297,7 @@ rproxy の API を直接呼んで作ったルール（CI・スクリプト・Kub
 - 編集・削除は rproxy の API（`PATCH` / `DELETE`）で行います（UI の DB には入れず、UI の履歴にも残りません。一時停止・コピー・送り直しはありません）。保存してあるルール（`origin: "api"`）への変更・削除は、UI のトークンに `persist` がなくても rproxy が `rproxy_rules` に書きます（rproxy はルールの出どころで決める）。rproxy が保存できなかった（応答の `persisted: false`）ときだけ「再起動で前の内容に戻る」と知らせます。rproxy が `features.dry_run` を返すときは「差分を見る」も使えます。
 - ルールの組（`ruleset`。Kubernetes のコントローラなどが `PUT /rulesets/{name}` で丸ごと渡すもの）のルールは「組: 名前」のバッジで読み取り専用です（rproxy も個別の変更を `409 owned` で断ります）。
 - UI のルールと同じキーを rproxy で API のルール・組のルールが使っている（UI のルールが動いていない）ときは、詳細画面に注意を出します。rproxy は起動時に UI のテーブルを優先するので、どちらかを消すかキーを変えてください。
+  その間、UI のルールの変更・再開・送り直し・差分は rproxy に送らずに `409 shadowed` で断り、停止・削除は UI の DB だけを変えます（UI のルールの操作で API のルールを書き換えたり消したりしない）。act / stb の自動の送り直しも、そのキーには送らず「API のルールと重なる」と出すだけです（昇格の判定は止めません）。管理者でない利用者には、そのキーで動いているルールの宛先・統計・状態・作ったトークンの名前・組の名前を見せません。
 - 複数の rproxy では、rproxy の `RPROXY_NODE_NAME` を `RPROXY_UI_NODES` のノードの名前に揃えます（`rproxy_rules` の `node` 列）。ノードごとのビュー（`db/node-view.mjs`）は、そのノードの行だけを書ける `rproxy_rules` のビューも作ります。
 
 ## ルールの一時停止
@@ -346,7 +352,8 @@ rproxy の統計（接続数・rx / tx）は rproxy を再起動すると 0 に�
 
 - 時間ごと（`usage_hourly`、`RPROXY_UI_USAGE_HOURLY_DAYS` 日。既定 32）と日ごと（`usage_daily`、`RPROXY_UI_USAGE_DAILY_DAYS` 日。既定 400）に、ルール・ノードごとに貯め、月ごとは日ごとをまとめます。時刻は UTC の区切りです。古い行は UI が消します。
 - rproxy v0.4 の `stats.counters_since`（数え始め）が変わったら数え直したとみなし、今の数を全部足します（引き継ぎ（handoff）では変わらないので続けて数える）。古い rproxy では `started_at` で見分けます。
-- 各行に、そのときのルールの所有者（UI のルールを作った利用者）・ノード／グループ・ラベル（`labels`）・出どころ（UI・固定・API）を書きます。
+- 各行に、そのときのルールの所有者（UI のルールを作った利用者）・ノード／グループ・ラベル（`labels`）・出どころ（UI・固定・API）を書きます。所有者・印が変われば（同じ日に別の人が同じキーでルールを作った・管理者が付け替えた・ラベルを変えた）別の行に足し、前の分を新しい所有者の行にしません（`db/migrations/011_usage_attr.sql`）。
+- 集計の失敗の理由（ノードの rproxy への接続の失敗など）は管理者だけに出します（利用者には失敗していることだけ）。CSV は、表計算ソフトが式として読む値（先頭の空白のあとの `=`・`+`・`-`・`@`・`|`・`%`、全角の `＝`・`＋`・`－`・`＠` など）の前に `'` を付けます。
 - ルールの詳細とダッシュボードに通信量のグラフ（24 時間・7 日・30 日・12 か月。rx と tx を積み上げ、表でも見られる）、「利用量」（`/usage`）に月か日ごとの集計表（所有者・ラベルのキー・ノード・ルールでまとめる）と CSV。管理者はすべてのルール、利用者は自分のルールだけです。
 - UI を複数動かしても、1 回の集計は DB のロックで 1 つの UI だけが行います。
 

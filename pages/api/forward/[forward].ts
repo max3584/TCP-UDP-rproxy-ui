@@ -60,6 +60,7 @@ import {
 } from '@/components/rproxy';
 import { aggregateNodeStates, ruleFromStatus } from '@/components/dashboard';
 import { StoredApiRule, apiRuleFromRow, apiRuleFromStatus, mergeExternalRules, shadowedBy } from '@/components/apirules';
+import type { ShadowedBy } from '@/components/lib';
 import { acmeStatusField } from '@/components/acme';
 import { NodesConfig, NodesConfigError, groupOf, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode } from '@/components/nodes';
 import { needsRecreateOnNode, ruleDrift } from '@/components/drift';
@@ -69,13 +70,14 @@ import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout
 import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
 import { localizedApi } from '@/i18n/server';
+import { rejectCrossSite } from '@/components/apiguard';
 import { translate } from '@/i18n/core';
 import { Access, RoleConfig, accessOf, nodesAllowed, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
 import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
 import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
 import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
-import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
+import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, isShadowing, liveRule, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
 import { V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
 import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
 
@@ -485,6 +487,28 @@ function staticRuleError(): HttpError {
   return new HttpError(409, 'このルールは rproxy の固定ルールです。', 'static');
 }
 
+// 同じキーを rproxy では API で作ったルール・ルールの組のルールが使っている（UI のルールは動いていない）。
+// UI のルールの操作をそのまま送ると、そのルールを書き換えたり消したりしてしまうので断る（管理者の API のルールを利用者が変えられないように）
+function shadowedError(): HttpError {
+  return new HttpError(409, '同じキーを rproxy では API で作ったルールかルールの組のルールが使っているため、この UI のルールの変更は rproxy に送れません。', 'shadowed');
+}
+
+// そのノード（withNode の中）の今のルールが API のルール・ルールの組のものなら 409 shadowed。今のルール（なければ null）を返す
+async function ensureNotShadowed(key: RproxyRuleKey): Promise<RproxyRuleStatus | null> {
+  const live = await liveRule(key);
+  if (isShadowing(live)) throw shadowedError();
+  return live;
+}
+
+// 置き場所のどのノードかで、同じキーを API のルール・ルールの組が使っていれば 409 shadowed（作り直し・移動の前に確かめる）
+async function ensureNotShadowedOnNodes(place: Place, rule: ForwardRule, overrides: Overrides): Promise<void> {
+  for (const node of place.nodes) {
+    const eff = effectiveRule(rule, overrides[node.name]);
+    if (isPaused(eff)) continue;
+    await withNode(node, () => ensureNotShadowed(toKey(eff)));
+  }
+}
+
 // 自分のルール（admin ならだれのルールでも）を行ロックして取得する。なければ 404（rproxy の固定ルールなら 409 static）
 async function lockOwnRule(conn: PoolConnection, actor: Actor, place: Place, key: ForwardRule, logger: AppLogger): Promise<ForwardRule> {
   const owner = ownerClause(actor);
@@ -500,9 +524,33 @@ async function lockOwnRule(conn: PoolConnection, actor: Actor, place: Place, key
   return fromRow({ ...rows[0], protocol: key.protocol, src_addr: key.srcAddr, src_port: key.srcPort, ...(place.target !== null ? { target: place.target } : {}) });
 }
 
+// 同じキーを API のルール・ルールの組が使っているときの印。管理者でなければ作ったトークンの名前とルールの組の名前を見せない
+function shadowField(status: RproxyRuleStatus | undefined, admin: boolean): { shadowedBy?: ShadowedBy } {
+  const sb = shadowedBy(status);
+  if (!sb) return {};
+  if (admin) return { shadowedBy: sb };
+  return { shadowedBy: { origin: sb.origin, ...(sb.ruleset !== undefined ? { ruleset: '' } : {}) } };
+}
+
 // DB のルールに rproxy の稼働情報を付ける。status が undefined なら rproxy にない（missing）、
-// live が false なら rproxy に問い合わせできなかった（unknown）。一時停止中なら paused
-function withLiveState(id: number, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined, owner?: string): ForwardRules {
+// live が false なら rproxy に問い合わせできなかった（unknown）。一時停止中なら paused。
+// 同じキーを API のルール・ルールの組が使っていれば（shadowedBy）、その稼働情報は管理者にだけ見せる（利用者には missing と印だけ）
+function withLiveState(id: number, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined, owner: string | undefined, admin: boolean): ForwardRules {
+  if (!admin && isShadowing(status)) {
+    return {
+      id: id,
+      origin: 'dynamic',
+      ...rule,
+      ...(owner !== undefined ? { owner: owner } : {}),
+      state: isPaused(rule) ? 'paused' : 'missing',
+      error: null,
+      connections: null,
+      stats: null,
+      startedAt: null,
+      resolved: [],
+      ...shadowField(status, admin),
+    };
+  }
   return {
     id: id,
     origin: 'dynamic',
@@ -518,7 +566,7 @@ function withLiveState(id: number, rule: ForwardRule, live: boolean, status: Rpr
     ...acmeStatusField(status?.acme),
     ...(Array.isArray(status?.conditions) ? { conditions: status.conditions } : {}),
     // 同じキーを rproxy では API のルール・ルールの組が使っている（UI のルールは動いていない）
-    ...(shadowedBy(status) ? { shadowedBy: shadowedBy(status) } : {}),
+    ...shadowField(status, admin),
   };
 }
 
@@ -550,7 +598,19 @@ async function fetchNodeLive(node: RproxyNode | null, logger: AppLogger): Promis
 }
 
 // ルールの 1 ノードでの稼働情報（withLiveState と同じ決め方）
-function nodeLiveState(node: string, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined): NodeLiveState {
+function nodeLiveState(node: string, rule: ForwardRule, live: boolean, status: RproxyRuleStatus | undefined, admin: boolean): NodeLiveState {
+  if (!admin && isShadowing(status)) {
+    return {
+      node: node,
+      state: isPaused(rule) ? 'paused' : 'missing',
+      error: null,
+      connections: null,
+      stats: null,
+      startedAt: null,
+      resolved: [],
+      ...shadowField(status, admin),
+    };
+  }
   return {
     node: node,
     state: isPaused(rule) ? 'paused' : !live ? 'unknown' : status ? status.state : 'missing',
@@ -563,7 +623,7 @@ function nodeLiveState(node: string, rule: ForwardRule, live: boolean, status: R
     ...acmeStatusField(status?.acme),
     ...(Array.isArray(status?.conditions) ? { conditions: status.conditions } : {}),
     // 同じキーを rproxy では API のルール・ルールの組が使っている（UI のルールは動いていない）
-    ...(shadowedBy(status) ? { shadowedBy: shadowedBy(status) } : {}),
+    ...shadowField(status, admin),
     // UI の定義との違い（rproxy にあるときだけ。停止中なのに動いていれば enabled）
     ...(status ? { drift: ruleDrift(rule, status) } : {}),
   };
@@ -651,7 +711,7 @@ async function listForwardingRules(actor: Actor, logger: AppLogger, withStatic: 
   const rules = rows.map((row: any): ForwardRules => {
     const rule = fromRow(row);
     const status = live?.get(ruleKeyString(rule.protocol, rule.srcAddr, rule.srcPort));
-    return withLiveState(Number(row.id), rule, live !== null, status, admin ? String(row.auth_id) : undefined);
+    return withLiveState(Number(row.id), rule, live !== null, status, admin ? String(row.auth_id) : undefined, admin);
   });
   return {
     reachable: live !== null,
@@ -693,7 +753,7 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
       // そのノードで動かす内容（上書きを重ねたもの）と、その待ち受けのキーで比べる
       const eff = effectiveRule(rule, ovs[m.name]);
       const key = ruleKeyString(eff.protocol, eff.srcAddr, eff.srcPort);
-      const st = nodeLiveState(m.name, eff, l.live !== null, l.live?.get(key));
+      const st = nodeLiveState(m.name, eff, l.live !== null, l.live?.get(key), admin);
       const sum = summaries.get(m.name)!;
       sum.rules += 1;
       if (st.state === 'failed' || st.state === 'missing') sum.failed += 1;
@@ -793,7 +853,7 @@ async function getForwardingRule(actor: Actor, query: NextApiRequest['query'], l
       live = false;
     }
   }
-  return withLiveState(Number(rows[0].id), rule, live, status, actor.access === 'admin' ? String(rows[0].auth_id) : undefined);
+  return withLiveState(Number(rows[0].id), rule, live, status, actor.access === 'admin' ? String(rows[0].auth_id) : undefined, actor.access === 'admin');
 }
 
 // rproxy_rules の 1 件（rproxy にない API のルール）。node が null なら 1 台の環境（ノードの名前を問わない）
@@ -841,14 +901,15 @@ async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | str
   const rule: ForwardRule = { ...fromRow(rows[0]), ...(Object.keys(ovs).length > 0 ? { overrides: ovs } : {}) };
   const held = place.target !== null && groupOf(actor.cfg, place.target)?.mode === 'active_standby'
     ? await fetchHeld(actor.cfg, place.nodes, logger) : new Map<string, Set<string> | null>();
+  const admin = actor.access === 'admin';
   const states = await Promise.all(place.nodes.map(async (node) => {
     const eff = effectiveRule(rule, ovs[node.name]);
     try {
-      return nodeLiveState(node.name, eff, true, await withNode(node, () => getRule(toKey(eff))));
+      return nodeLiveState(node.name, eff, true, await withNode(node, () => getRule(toKey(eff))), admin);
     } catch (err) {
-      if (isNotFound(err)) return nodeLiveState(node.name, eff, true, undefined);
+      if (isNotFound(err)) return nodeLiveState(node.name, eff, true, undefined, admin);
       logger.warn(`rproxy（${node.name}）からルールの状態を取得できません: ${err}`);
-      return nodeLiveState(node.name, eff, false, undefined);
+      return nodeLiveState(node.name, eff, false, undefined, admin);
     }
   }));
   const ha = applyHa(actor.cfg, place.target ?? undefined, rule, states, held);
@@ -1003,6 +1064,8 @@ async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule,
       const before = effectiveRule(current, ovs[node.name]);
       const after = effectiveRule(updated, ovs[node.name]);
       if (isPaused(after)) return async () => undefined;
+      // 同じキーを API のルール・ルールの組が使っていれば、それを書き換えないように断る
+      await ensureNotShadowed(toKey(after));
       try {
         await modifyRule(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0, before));
       } catch (err) {
@@ -1036,6 +1099,11 @@ async function deleteForwardingRule(actor: Actor, place: Place, key: ForwardRule
     return onNodes(place, logger, async (node) => {
       const eff = effectiveRule(current, ovs[node.name]);
       if (isPaused(eff)) return async () => undefined;
+      // 同じキーを API のルール・ルールの組が使っている（UI のルールは動いていない）：それを消さず、DB の行だけを消す
+      if (isShadowing(await liveRule(toKey(eff)))) {
+        logger.warn(`ノード ${node.name}: 同じキーを rproxy の API のルール・ルールの組が使っているため、DB のルールだけを削除します`);
+        return async () => undefined;
+      }
       try {
         await deleteRule(toKey(eff));
       } catch (err) {
@@ -1109,7 +1177,10 @@ async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ a
   if (action === 'delete') {
     return { action: action, results: await ask(place, async (node) => {
       const eff = effectiveRule(current, ovs[node.name]);
-      return isPaused(eff) ? null : planDelete(toKey(eff));
+      if (isPaused(eff)) return null;
+      // API のルール・ルールの組のルール（UI のルールの代わりに動いている）の内容（before）は返さない
+      await ensureNotShadowed(toKey(eff));
+      return planDelete(toKey(eff));
     }) };
   }
   const updated = mergeEdit(current, rule, {
@@ -1121,6 +1192,7 @@ async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ a
     const after = effectiveRule(updated, ovs[node.name]);
     // 停止中のルールは rproxy にないので聞けない（再開のときにこの内容で作る）
     if (isPaused(after)) return null;
+    await ensureNotShadowed(toKey(after));
     try {
       return await planModify(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0, before));
     } catch (err) {
@@ -1222,6 +1294,11 @@ async function pauseForwardingRule(actor: Actor, place: Place, key: ForwardRule,
     return onNodes(place, logger, async (node) => {
       const eff = effectiveRule(current, ovs[node.name]);
       if (isPaused(eff)) return async () => undefined;
+      // 同じキーを API のルール・ルールの組が使っている（UI のルールは動いていない）：それを消さず、DB の印だけを付ける
+      if (isShadowing(await liveRule(toKey(eff)))) {
+        logger.warn(`ノード ${node.name}: 同じキーを rproxy の API のルール・ルールの組が使っているため、DB のルールだけを停止にします`);
+        return async () => undefined;
+      }
       try {
         await deleteRule(toKey(eff));
       } catch (err) {
@@ -1253,6 +1330,7 @@ async function resumeForwardingRule(actor: Actor, place: Place, key: ForwardRule
     return onNodes(place, logger, async (node) => {
       const eff = effectiveRule(resumed, ovs[node.name]);
       if (isPaused(eff)) return async () => undefined;
+      await ensureNotShadowed(toKey(eff));
       await addRule(toRproxyRule(eff));
       return () => deleteRule(toKey(eff));
     });
@@ -1290,6 +1368,8 @@ async function replaceForwardingRule(actor: Actor, place: Place, rule: ForwardRu
   }
   // 置き換え（インポート・巻き戻し）でも停止・再開の状態は今のまま
   rule = { ...rule, enabled: current.enabled !== false };
+  // 同じキーを API のルール・ルールの組が使っていれば、DB の行を消してから作れずに失う前に断る
+  if (!isPaused(current)) await ensureNotShadowedOnNodes(place, current, currentOverrides);
   await deleteForwardingRule(actor, place, rule, logger);
   try {
     await addForwardingRule(actor, place, rule, logger, ownerId, nextOverrides);
@@ -1616,6 +1696,8 @@ async function resendToNode(actor: Actor, body: any, logger: AppLogger): Promise
     const eff = effectiveRule(current, ovs[node.name]);
     await insertLog(conn, actor.id, place, eff, 'RESEND', node.name);
     result = await withNode(node, () => resendOne(eff));
+    // 同じキーを API のルール・ルールの組が使っている：何も送っていない（履歴も残さない）
+    if (result === 'shadowed') throw shadowedError();
     return { undo: async () => undefined, results: [{ node: node.name, ok: true }] };
   });
   return { node: node.name, result: result };
@@ -1661,6 +1743,12 @@ async function applyNodeChange(before: ForwardRule, after: ForwardRule, logger: 
     }
   };
   if (isPaused(before) && isPaused(after)) return async () => undefined;
+  // 同じキーを API のルール・ルールの組が使っていれば、それを消したり書き換えたりしない（止めるだけなら DB だけ、ほかは 409 shadowed）
+  if (!isPaused(before) && isShadowing(await liveRule(toKey(before)))) {
+    if (isPaused(after)) return async () => undefined;
+    throw shadowedError();
+  }
+  if (!isPaused(after) && (isPaused(before) || before.srcAddr !== after.srcAddr)) await ensureNotShadowed(toKey(after));
   if (isPaused(after)) {
     await quietDelete(before);
     return () => addRule(toRproxyRule(before));
@@ -1814,6 +1902,7 @@ async function copyRule(actor: Actor, body: any, logger: AppLogger): Promise<{ r
     return { result: 'copied', target: toName };
   }
   if (targetsOverlap(actor.cfg, from.target!, toName)) {
+    if (!isPaused(rule)) await ensureNotShadowedOnNodes(from, rule, allOvs);
     await deleteForwardingRule(actor, from, rule, logger);
     try {
       await addForwardingRule(actor, to, placed, logger, ownerId, keep);
@@ -1982,6 +2071,8 @@ function done(actor: Actor, message: string, results: NodeResult[]) {
 }
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // ほかのサイトからの変更の要求（CSRF）は、サインインを確かめる前に断る（apiguard.ts）
+  if (rejectCrossSite(req, res)) return;
   const session: sessionUser | null = await getServerSession(req, res, authOptions);
   const query = req.query.forward;
 

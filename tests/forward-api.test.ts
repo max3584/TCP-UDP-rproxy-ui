@@ -85,6 +85,7 @@ beforeEach(() => {
   pool.getConnection.mockResolvedValue(conn);
   conn.query.mockResolvedValue({ affectedRows: 1 });
   conn.rollback.mockResolvedValue(undefined);
+  mocks.getRule.mockReset();
 });
 
 
@@ -143,8 +144,14 @@ describe('rproxy の API のルール（#76）', () => {
   it('UI のルールと同じキーを API のルールが使っていれば shadowedBy', async () => {
     poolRows([{ id: 1, auth_id: 'user-1', protocol: 'tcp', src_addr: '0.0.0.0', src_port: 9000, src_port_end: null, dist_addr: '10.0.0.9', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: null }], []);
     mocks.listRules.mockResolvedValue([live({ origin: 'api', created_by: 'ci-deploy' })]);
+    // 利用者には API のルールの稼働情報・作ったトークンの名前を見せない（UI のルールは動いていないので missing）
     const { body } = await call('dashboard', undefined, 'GET');
-    expect(body.rules[0]).toMatchObject({ origin: 'dynamic', shadowedBy: { origin: 'api', createdBy: 'ci-deploy' } });
+    expect(body.rules[0]).toMatchObject({ origin: 'dynamic', state: 'missing', stats: null, connections: null, resolved: [], shadowedBy: { origin: 'api' } });
+    expect(body.rules[0].shadowedBy.createdBy).toBeUndefined();
+    // 管理者には API のルールの状態と作ったトークン
+    mocks.getServerSession.mockResolvedValue(admin);
+    const asAdmin = await call('dashboard', undefined, 'GET');
+    expect(asAdmin.body.rules[0]).toMatchObject({ origin: 'dynamic', state: 'running', connections: 1, shadowedBy: { origin: 'api', createdBy: 'ci-deploy' } });
   });
 
   it('1 件：管理者には API のルール、利用者には 404', async () => {
@@ -204,5 +211,87 @@ describe('rproxy の API のルール（#76）', () => {
     const { body } = await call('plan', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 9000, distAddr: '10.0.0.9', distPort: 80, labels: { a: 'b' }, action: 'api-modify' });
     expect(body.results[0].plan.change).toBe('in_place');
     expect(mocks.planModify.mock.calls[0][1]).toMatchObject({ remote_addr: '10.0.0.9', labels: { a: 'b' } });
+  });
+});
+
+// セキュリティレビュー H1：UI のルールのキーを API のルール・ルールの組のルールが使っているとき（shadow）、
+// 利用者の UI のルールの操作がそのルールを書き換えたり消したりしない
+describe('shadow された UI のルール（API のルール・ルールの組が同じキー）', () => {
+  const key = { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 9000 };
+  const dbRow = (options: string | null = null) => ({ src_port_end: null, dist_addr: '10.0.0.9', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: options });
+  const apiLive = live({ origin: 'api', created_by: 'admin-token', remote_addr: '10.9.9.9', resolved: ['10.9.9.9:80'], stats: { total_connections: 5, rx_bytes: 1, tx_bytes: 2 } });
+
+  for (const [label, shadow] of [['API のルール', apiLive], ['ルールの組', live({ origin: 'dynamic', ruleset: 'k8s/default/web' })]] as const) {
+    it(`${label}：modify は 409 shadowed で rproxy に送らない`, async () => {
+      conn.query.mockResolvedValueOnce([dbRow()]);
+      mocks.getRule.mockResolvedValue(shadow);
+      const { status, body } = await call('modify', { ...key, distAddr: '10.0.0.66', distPort: 8080 });
+      expect(status).toBe(409);
+      expect(body.code).toBe('shadowed');
+      expect(mocks.modifyRule).not.toHaveBeenCalled();
+      expect(mocks.addRule).not.toHaveBeenCalled();
+      expect(conn.rollback).toHaveBeenCalled();
+      expect(conn.commit).not.toHaveBeenCalled();
+    });
+  }
+
+  it('delete と pause は DB だけを変え、API のルールを消さない', async () => {
+    mocks.getRule.mockResolvedValue(apiLive);
+    conn.query.mockResolvedValueOnce([dbRow()]);
+    const del = await call('delete', key);
+    expect(del.status).toBe(200);
+    expect(sqlCalls().some(([sql]) => sql.startsWith('DELETE FROM forward_rules'))).toBe(true);
+    expect(conn.commit).toHaveBeenCalled();
+
+    conn.query.mockClear();
+    conn.query.mockResolvedValue({ affectedRows: 1 });
+    conn.query.mockResolvedValueOnce([dbRow()]);
+    const paused = await call('pause', key);
+    expect(paused.status).toBe(200);
+    expect(sqlCalls().some(([sql, params]) => sql.startsWith('UPDATE forward_rules SET options') && String(params[0]).includes('"enabled":false'))).toBe(true);
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+  });
+
+  it('resume は 409 shadowed で rproxy に作らない', async () => {
+    mocks.getRule.mockResolvedValue(apiLive);
+    conn.query.mockResolvedValueOnce([dbRow(JSON.stringify({ enabled: false }))]);
+    const { status, body } = await call('resume', key);
+    expect(status).toBe(409);
+    expect(body.code).toBe('shadowed');
+    expect(mocks.addRule).not.toHaveBeenCalled();
+    expect(conn.commit).not.toHaveBeenCalled();
+  });
+
+  it('plan（modify / delete）は API のルールの内容（before）を聞かず、shadowed を返す', async () => {
+    mocks.getRule.mockResolvedValue(apiLive);
+    conn.query.mockResolvedValueOnce([dbRow()]);
+    const modify = await call('plan', { ...key, distAddr: '10.0.0.66', distPort: 8080, action: 'modify' });
+    expect(modify.status).toBe(200);
+    expect(modify.body.results[0]).toMatchObject({ code: 'shadowed' });
+    expect(modify.body.results[0].plan).toBeUndefined();
+    conn.query.mockResolvedValueOnce([dbRow()]);
+    const del = await call('plan', { ...key, action: 'delete' });
+    expect(del.body.results[0]).toMatchObject({ code: 'shadowed' });
+    expect(mocks.planModify).not.toHaveBeenCalled();
+    expect(mocks.planDelete).not.toHaveBeenCalled();
+  });
+
+  it('1 件の取得：利用者には API のルールの解決済みの宛先・統計・トークンの名前を返さない', async () => {
+    pool.query.mockResolvedValue([{ id: 1, auth_id: 'user-1', protocol: 'tcp', src_addr: '0.0.0.0', src_port: 9000, src_port_end: null, dist_addr: '10.0.0.9', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: null }]);
+    mocks.getRule.mockResolvedValue({ ...apiLive, conditions: [{ type: 'Ready', status: 'True' }], cert_status: [] });
+    const { status, body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '9000' });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ origin: 'dynamic', state: 'missing', stats: null, resolved: [], shadowedBy: { origin: 'api' } });
+    expect(body.conditions).toBeUndefined();
+    expect(body.certStatus).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('admin-token');
+    expect(JSON.stringify(body)).not.toContain('10.9.9.9');
+  });
+
+  it('利用者にはルールの組の名前も見せない（組のルールが使っていることだけ）', async () => {
+    pool.query.mockResolvedValue([{ id: 1, auth_id: 'user-1', protocol: 'tcp', src_addr: '0.0.0.0', src_port: 9000, src_port_end: null, dist_addr: '10.0.0.9', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: null }]);
+    mocks.getRule.mockResolvedValue(live({ origin: 'dynamic', ruleset: 'k8s/secret-team/web' }));
+    const { body } = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '9000' });
+    expect(body.shadowedBy).toEqual({ origin: 'dynamic', ruleset: '' });
   });
 });

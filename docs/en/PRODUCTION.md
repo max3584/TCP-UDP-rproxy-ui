@@ -86,6 +86,7 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
 
 - `003_auth_id_to_keycloak.sql` is a template used only when moving users from Auth0 to Keycloak. Write the mapping of Auth0 subs to Keycloak subs (the user's "ID") in VALUES, run it inside a transaction as the file describes, confirm that no unconverted rows remain, and then COMMIT.
 - Running a migration that was already applied fails (the column already exists). Check how far you have applied with `SHOW COLUMNS FROM forward_rules`.
+- If you use usage accounting (`010_usage.sql`), also apply `011_usage_attr.sql` before upgrading the UI to v0.4.0 (it splits usage rows by owner and marks; without it collection stops and `/usage` shows why).
 
 ## 3. Keycloak
 
@@ -114,6 +115,19 @@ RPROXY_LOG_FILE=/var/log/rproxy/rproxy.log
 If the UI and rproxy-api are on the same host, the control API can also be served on a Unix socket (anyone on the same host can connect to loopback TCP, but a socket can be restricted by file mode and group).
 On the rproxy side, set `RPROXY_API_SOCKET=/run/rproxy/api.sock` and `RPROXY_API_SOCKET_GROUP=<group>` (the mode is 660 by default; `RPROXY_API_PORT=0` closes TCP);
 on the UI side, set `RPROXY_API_URL=unix:/run/rproxy/api.sock` and add the `rproxy-ui` user to that group (`sudo usermod -aG <group> rproxy-ui`, then `systemctl restart rproxy-ui`). The token is still required, as with TCP.
+The packaged `rproxy-ui` is in the group `rproxy` shared with rproxy-api (`SupplementaryGroups=rproxy`), so with `RPROXY_API_SOCKET_GROUP=rproxy` nothing needs to be added.
+
+### File owners (OS users and groups)
+
+rproxy-api runs as the OS user `rproxy-api` and has the group `rproxy`, shared with the UI (`rproxy-ui`); either package creates the group when it is missing, so the install order does not matter.
+rproxy-api only reads the certificate, private key, CA and secret (htpasswd and so on) files of rules when they are owned by itself (`rproxy-api`), so that a UI user cannot name someone else's key and listen or connect with that identity. With another owner rproxy refuses the rule, and the UI explains why and how to fix it.
+
+| File | Owner and mode |
+|---|---|
+| Certificates, intermediate CAs, CAs, private keys, htpasswd (`/etc/rproxy/tls/` and so on) | `rproxy-api:rproxy` 0640 (0600 for keys is fine) |
+| Token file `/etc/rproxy/tokens` | `root:rproxy` 0640 (the UI reads it through the group `rproxy`; `RPROXY_API_TOKEN_FILE`) |
+| The UI's control API client certificate (`RPROXY_API_TLS_*`) | `root:rproxy-ui` 0640, or `rproxy-api:rproxy` 0640 when it belongs to rproxy-api |
+
 
 If the UI is on a different host, the control API has to listen on something other than loopback, and a token and TLS become mandatory (`RPROXY_TLS_CERT` / `RPROXY_TLS_KEY`; it does not start without them). On the UI side, set `RPROXY_API_URL=https://...`, and for a self-signed certificate or an internal CA, make it trusted with `NODE_EXTRA_CA_CERTS`.
 
@@ -141,7 +155,7 @@ If the UI is on a different host, the control API has to listen on something oth
 ]
 ```
 
-Put the certificate and key in `/etc/rproxy/tls/` with `root:rproxy` 640. From rproxy-api v0.3.21, rproxy can also obtain and renew certificates itself with ACME (`global.acme` in rproxy's settings file; see rproxy-api's docs/en/ACME.md and "Obtaining certificates with ACME" in the README). For files, obtain certificates with certbot, acme.sh or similar (on Kubernetes, mount cert-manager's Secret).
+Put the certificate and key in `/etc/rproxy/tls/` with `rproxy-api:rproxy` 640 (see "File owners" above; rproxy-api does not read keys owned by other users). From rproxy-api v0.3.21, rproxy can also obtain and renew certificates itself with ACME (`global.acme` in rproxy's settings file; see rproxy-api's docs/en/ACME.md and "Obtaining certificates with ACME" in the README). For files, obtain certificates with certbot, acme.sh or similar (on Kubernetes, mount cert-manager's Secret).
 rproxy checks the files' size, modification time and inode every 60 seconds (`RPROXY_CERT_CHECK_SECS`; `0` disables it) and automatically reloads only the certificates that changed (replacing a symbolic link is also detected). To apply a change immediately, run `sudo systemctl reload rproxy-api`.
 
 To obtain certificates with certbot's http-01, use an L7 (`http`) rule on port 80 to route `/.well-known/acme-challenge/` to certbot's standalone server (e.g. `--http-01-port 8888`) or a server that serves the webroot (other paths are redirected to HTTPS):
@@ -158,7 +172,7 @@ To obtain certificates with certbot's http-01, use an L7 (`http`) rule on port 8
       to-https: {redirect_scheme: {scheme: https, permanent: true}}
 ```
 
-For the certificate files, certbot's `/etc/letsencrypt/live/<name>/fullchain.pem` and `privkey.pem` can be specified as they are (or copy them to `/etc/rproxy/tls/` with a `deploy-hook` so that the rproxy user can read them).
+For the certificate files, certbot's `/etc/letsencrypt/live/<name>/fullchain.pem` and `privkey.pem` can be specified as they are (rproxy-api does not read files owned by other users, so copy them to `/etc/rproxy/tls/` with certbot's `deploy-hook` and `chown rproxy-api:rproxy`).
 
 ## 5. rproxy-ui
 
@@ -178,8 +192,11 @@ DB_DATABASE=rproxy
 DB_USER=rproxy_ui
 DB_PASSWORD=<password>
 RPROXY_API_URL=http://127.0.0.1:8080   # for a Unix socket, unix:/run/rproxy/api.sock (see 4.)
-RPROXY_API_TOKEN=<filled in from /etc/rproxy/tokens at install time>
+RPROXY_API_TOKEN=                       # a token copied by an earlier version stays here (used when set)
+RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # filled in at install time (when it holds one token per line; read through the group rproxy)
 ```
+
+`RPROXY_API_TOKEN_FILE` reads the first non-empty line not starting with `#` as the token and uses a changed file from the next request (no change to the UI's settings needed). A YAML token file (below) holds only SHA-256 values, so then put the UI's token in `RPROXY_API_TOKEN`, or on one line in a file only the UI reads (`root:rproxy-ui` 0640) and point `RPROXY_API_TOKEN_FILE` at it.
 
 If the rproxy token file has permissions (YAML), give the UI's token the scopes `rules:read` and `rules:write` (`metrics:read` is not used; `GET /capabilities` can be read with any token).
 With `allow_listen_ports`, rules outside that range cannot be created, changed or deleted from the UI. If something is missing, rproxy returns 403 `forbidden`, and the screen asks you to check the scopes.

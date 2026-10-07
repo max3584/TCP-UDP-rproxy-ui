@@ -414,7 +414,7 @@ export interface NodeReadiness {
   // 調べたルールの数（そのノードを含む active_standby のグループのルール）
   checked: number;
   // 揃っていないもの（state は missing / drift / unknown（ノードに問い合わせできない））
-  issues: { target: string; key: string; state: 'missing' | 'drift' | 'unknown'; fields?: string[]; error?: string }[];
+  issues: { target: string; key: string; state: 'missing' | 'drift' | 'unknown' | 'shadowed'; fields?: string[]; error?: string }[];
 }
 
 export interface PageAuthrized {

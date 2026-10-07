@@ -123,6 +123,7 @@ beforeEach(() => {
   conn.rollback.mockResolvedValue(undefined);
   pool.query.mockResolvedValue([]);
   mocks.getInterfaces.mockResolvedValue({ interfaces: [], reserved: [] });
+  mocks.getRule.mockReset();
 });
 
 describe('nodes and groups (#98)', () => {
@@ -364,6 +365,18 @@ describe('nodes and groups (#98)', () => {
     mocks.getRule.mockResolvedValue(status(8001));
     expect((await call('resend', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', node: 'a' })).body.result).toBe('unchanged');
     expect(mocks.modifyRule).toHaveBeenCalledTimes(1);
+  });
+
+  // セキュリティレビュー H1：同じキーを API のルールが使っていれば、送り直しで消したり書き換えたりしない（409 shadowed、履歴なし）
+  it('resend: refuses (409 shadowed) when an API rule uses the key on that node', async () => {
+    conn.query.mockImplementation(async (q: string) => (q.includes('FOR UPDATE') && q.includes('forward_rules WHERE') ? [row(1, 'ha', { options: JSON.stringify({ enabled: false }) })] : q.startsWith('SELECT') ? [] : { affectedRows: 1 }));
+    mocks.getRule.mockResolvedValue(status(8001, { origin: 'api', remote_port: 99 }));
+    const { status: code, body } = await call('resend', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', node: 'a' });
+    expect(code).toBe(409);
+    expect(body.code).toBe('shadowed');
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    expect(conn.commit).not.toHaveBeenCalled();
   });
 
   it('resend: the node must belong to the rule', async () => {

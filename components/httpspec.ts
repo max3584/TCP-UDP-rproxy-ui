@@ -6,7 +6,7 @@
 import { BALANCES, type Balance } from './lib';
 import type { HttpSpec } from './lib';
 import type { HttpOutlierSpec } from './v04';
-import { normalizeHttpOutlier, parseDurationMs } from './v04';
+import { MAX_GEOIP_ITEMS, normalizeHttpOutlier, parseDurationMs } from './v04';
 import { joinList } from '@/i18n/core';
 
 // ルートの時間の上限（rproxy の Gateway API 向けの項目、#227。features.http_options の route_timeouts）。0s は上限なし
@@ -412,6 +412,11 @@ function checkMiddlewareConfig(name: string, kind: string, c: Record<string, unk
       }
     }
   }
+  if (kind === 'geoip') {
+    for (const key of ['allow_countries', 'deny_countries', 'allow_asns', 'deny_asns']) {
+      if (Array.isArray(c[key]) && (c[key] as unknown[]).length > MAX_GEOIP_ITEMS) errors.push(`${label}の ${key} は ${MAX_GEOIP_ITEMS} 件までです。`);
+    }
+  }
   if (kind === 'cors') {
     const origins = strings(c.allow_origins);
     if (origins === null || origins.length === 0) errors.push(`${label}に許可するオリジン（allow_origins）を 1 つ以上書いてください。`);
@@ -425,11 +430,18 @@ function checkMiddlewareConfig(name: string, kind: string, c: Record<string, unk
         errors.push(`${label}の ${key} は文字列の一覧にしてください。`);
         continue;
       }
+      if (list.length > MAX_CORS_ITEMS) {
+        errors.push(`${label}の ${key} は ${MAX_CORS_ITEMS} 件までです。`);
+        continue;
+      }
       for (const v of list) if (!HEADER_VALUE.test(v) || v.includes(',')) errors.push(`${label}の「${v}」はヘッダの値に使えません（カンマや制御文字を含めない）。`);
     }
     if (c.max_age !== undefined && !(Number.isInteger(c.max_age) && (c.max_age as number) >= 0)) errors.push(`${label}の max_age は 0 以上の整数（秒）にしてください。`);
   }
 }
+
+// CORS の一覧（allow_origins など）の件数の上限（DB の options と rproxy に送る量を抑える。セキュリティレビュー L7）
+export const MAX_CORS_ITEMS = 256;
 
 // サービスの tls（rproxy の ServiceTlsSpec::validate と同じ）
 function checkServiceTls(name: string, t: ServiceTlsSpec, errors: string[]): void {

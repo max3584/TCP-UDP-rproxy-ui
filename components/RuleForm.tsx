@@ -26,7 +26,7 @@ import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normali
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
 import { SOURCE_IP_DOC_URL, proxyProtocolHint, transparentHint } from './sourceip';
-import { ACME_NOT_CONFIGURED_NOTE, ACME_UNSUPPORTED_NOTE } from './messages';
+import { ACME_NOT_CONFIGURED_NOTE, ACME_UNSUPPORTED_NOTE, FILE_OWNER_NOTE } from './messages';
 import { AcmeInfo, splitAcmeDomains } from './acme';
 import AcmeCertificateEditor, { acmeRowProblem } from './AcmeCertificateEditor';
 import HttpEditor from './HttpEditor';
@@ -1420,6 +1420,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 </div>
               )}
             </div>
+            <p className={helpClass} data-testid="file-owner-note">{FILE_OWNER_NOTE}</p>
           </>
         )}
         {errors.tls && <p className={errorClass} role="alert">{errors.tls}</p>}

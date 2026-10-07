@@ -75,6 +75,10 @@ describe('v0.4 の値の検証（rproxy と同じ規則）', () => {
     expect(() => normalizeGeoip({ allow_countries: ['JPN'] })).toThrow(/国のコード/);
     expect(() => normalizeGeoip({ allow_countries: ['JP'], deny_countries: ['JP'] })).toThrow(/両方/);
     expect(() => normalizeGeoip({ allow_asns: [0] })).toThrow(/AS 番号/);
+    // 件数の上限（セキュリティレビュー L7）
+    expect(normalizeGeoip({ allow_asns: Array.from({ length: 256 }, (_, i) => i + 1) })?.allow_asns).toHaveLength(256);
+    expect(() => normalizeGeoip({ allow_asns: Array.from({ length: 257 }, (_, i) => i + 1) })).toThrow(/256 件まで/);
+    expect(() => normalizeGeoip({ deny_countries: Array.from({ length: 257 }, () => 'JP') })).toThrow(/256 件まで/);
   });
 
   it('outlier_detection（L4 と L7）', () => {

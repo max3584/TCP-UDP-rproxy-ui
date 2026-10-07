@@ -96,12 +96,14 @@ CREATE TABLE IF NOT EXISTS usage_counters (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 1 時間ごとの通信量（hour は UTC の時の始まり）。owner・target・labels・origin はそのときのルールの持ち主と印
+-- （持ち主・印が変われば attr の違う別の行。migration 011）
 CREATE TABLE IF NOT EXISTS usage_hourly (
   hour        DATETIME        NOT NULL,
   node        VARCHAR(255)    NOT NULL,
   protocol    VARCHAR(3)      NOT NULL,
   listen_addr VARCHAR(45)     NOT NULL,
   listen_port INT UNSIGNED    NOT NULL,
+  attr        CHAR(64)        NOT NULL DEFAULT '' COMMENT '持ち主・置き場所・origin・ラベルの SHA-256（migration 011）',
   target      VARCHAR(32)     NULL COMMENT 'UI のノード／グループ（UI のルールのとき）',
   owner       VARCHAR(255)    NULL COMMENT 'UI のルールの持ち主（Keycloak の sub）',
   origin      VARCHAR(16)     NOT NULL COMMENT 'dynamic（UI）・static・api',
@@ -109,7 +111,7 @@ CREATE TABLE IF NOT EXISTS usage_hourly (
   rx_bytes    BIGINT UNSIGNED NOT NULL DEFAULT 0,
   tx_bytes    BIGINT UNSIGNED NOT NULL DEFAULT 0,
   connections BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  PRIMARY KEY (hour, node, protocol, listen_addr, listen_port),
+  PRIMARY KEY (hour, node, protocol, listen_addr, listen_port, attr),
   KEY usage_hourly_rule (protocol, listen_addr, listen_port, hour),
   KEY usage_hourly_owner (owner, hour)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -121,6 +123,7 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   protocol    VARCHAR(3)      NOT NULL,
   listen_addr VARCHAR(45)     NOT NULL,
   listen_port INT UNSIGNED    NOT NULL,
+  attr        CHAR(64)        NOT NULL DEFAULT '' COMMENT '持ち主・置き場所・origin・ラベルの SHA-256（migration 011）',
   target      VARCHAR(32)     NULL,
   owner       VARCHAR(255)    NULL,
   origin      VARCHAR(16)     NOT NULL,
@@ -128,7 +131,7 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   rx_bytes    BIGINT UNSIGNED NOT NULL DEFAULT 0,
   tx_bytes    BIGINT UNSIGNED NOT NULL DEFAULT 0,
   connections BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  PRIMARY KEY (day, node, protocol, listen_addr, listen_port),
+  PRIMARY KEY (day, node, protocol, listen_addr, listen_port, attr),
   KEY usage_daily_rule (protocol, listen_addr, listen_port, day),
   KEY usage_daily_owner (owner, day)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

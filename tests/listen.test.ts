@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listenOptions, reservedClash, type InterfacesInfo } from '@/components/listen';
-import { CERT_EXPIRED_MESSAGE, FORBIDDEN_MESSAGE, STATIC_RULE_MESSAGE, explainError, ruleErrorText } from '@/components/messages';
+import { CERT_EXPIRED_MESSAGE, FILE_OWNER_MESSAGE, FORBIDDEN_MESSAGE, SHADOWED_RULE_MESSAGE, STATIC_RULE_MESSAGE, explainError, isFileOwnerRefusal, ruleErrorText } from '@/components/messages';
 
 const info: InterfacesInfo = {
   interfaces: [
@@ -59,6 +59,21 @@ describe('explainError', () => {
     expect(explainError('static', 'rule is static')).toContain(STATIC_RULE_MESSAGE);
     // 詳細が説明と同じなら繰り返さない
     expect(explainError('static', STATIC_RULE_MESSAGE)).toBe(STATIC_RULE_MESSAGE);
+  });
+
+  // セキュリティレビュー M2：rproxy は rproxy を動かすユーザーのファイルだけを読む
+  it('explains a refusal because of the file owner', () => {
+    const detail = 'tls: key_file /home/alice/client.key is owned by uid 1001, not by the user rproxy runs as (rproxy-api)';
+    expect(isFileOwnerRefusal(detail)).toBe(true);
+    expect(isFileOwnerRefusal('cert_file /etc/rproxy/a.pem must be owned by rproxy-api')).toBe(true);
+    expect(isFileOwnerRefusal('failed to read /etc/rproxy/a.pem: No such file or directory')).toBe(false);
+    const msg = explainError('tls_config', detail);
+    expect(msg).toContain(FILE_OWNER_MESSAGE);
+    expect(msg).toContain('uid 1001');
+  });
+
+  it('explains a shadowed UI rule (409 shadowed)', () => {
+    expect(explainError('shadowed', 'x')).toContain(SHADOWED_RULE_MESSAGE);
   });
 
   it('explains known codes and keeps the detail', () => {

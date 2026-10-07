@@ -17,7 +17,7 @@ interface GroupView extends Partial<HaStatus> {
   readiness: NodeReadiness[];
 }
 
-const STATE_TEXT: Record<string, string> = { missing: '未登録', drift: 'ずれ', unknown: '問い合わせできない' };
+const STATE_TEXT: Record<string, string> = { missing: '未登録', drift: 'ずれ', unknown: '問い合わせできない', shadowed: '同じキーを API のルール・ルールの組が使っている（送り直さない）' };
 
 function formatAt(iso: string | null): string {
   if (!iso) return '-';
@@ -26,12 +26,14 @@ function formatAt(iso: string | null): string {
 }
 
 const ReadyCell: React.FC<{ r: NodeReadiness }> = ({ r }) => (
-  r.ready
+  r.ready && r.issues.length === 0
     ? <span className="badge bg-green-100 text-green-900 border border-green-300">揃っています</span>
     : (
       <details>
         <summary className="cursor-pointer">
-          <span className="badge bg-amber-100 text-amber-900 border border-amber-300">{t('{n} 件が揃っていません', { n: r.issues.length })}</span>
+          {r.ready
+            ? <span className="badge bg-green-100 text-green-900 border border-green-300">{t('揃っています（API のルールと重なるもの {n} 件）', { n: r.issues.length })}</span>
+            : <span className="badge bg-amber-100 text-amber-900 border border-amber-300">{t('{n} 件が揃っていません', { n: r.issues.length })}</span>}
         </summary>
         <ul className="mt-1 space-y-0.5 text-xs text-gray-800">
           {r.issues.map((i) => (

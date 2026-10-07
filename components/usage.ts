@@ -203,10 +203,14 @@ export function labelKeys(rows: Pick<UsageRow, 'labels'>[]): string[] {
   return [...keys].sort();
 }
 
-function csvCell(v: string | number | null): string {
+// 表計算ソフトが式として読む先頭の文字（= + - @、全角の ＝ ＋ － ＠、DDE の | と %、タブ・改行）。先頭の空白は飛ばして見る
+// （LibreOffice などは " =cmd" や全角の「＝」で始まる値も式にすることがある）
+const FORMULA_START = /^[\s\u3000]*[=+\-@|%\uFF1D\uFF0B\uFF0D\uFF20\u2212]/;
+
+export function csvCell(v: string | number | null): string {
   const s = v === null ? '' : String(v);
-  // 表計算ソフトが式として読まないように、= + - @ で始まる値は ' を前に付ける
-  const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  // 数（バイト数など）はそのまま。文字列で式として読まれうるものは ' を前に付ける
+  const safe = typeof v === 'string' && (FORMULA_START.test(s) || /^[\t\r\n]/.test(s)) ? `'${s}` : s;
   return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
@@ -236,6 +240,9 @@ export function parsePeriod(value: unknown): { kind: 'month' | 'day'; from: stri
   }
   return null;
 }
+
+// 管理者でない利用者に見せる集計の失敗（集計の失敗の文はノードごとの rproxy の通信の失敗で、内部のアドレスを含むので管理者だけ）
+export const USAGE_ERROR_HIDDEN = '利用量の集計に失敗しています（詳しい理由は管理者だけが見られます）。';
 
 // ---- 設定（環境変数） ----
 

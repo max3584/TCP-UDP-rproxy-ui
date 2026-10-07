@@ -8,6 +8,9 @@ After=network-online.target rproxy-api.service mariadb.service
 Type=simple
 User=rproxy-ui
 Group=rproxy-ui
+# rproxy-api's files that the UI may read (its token file, a control API socket, client certificates) are
+# rproxy-api:rproxy and group-readable; the postinst creates the group and adds rproxy-ui to it
+SupplementaryGroups=rproxy
 Environment=NODE_ENV=production
 # NEXTAUTH_*, KEYCLOAK_*, DB_*, RPROXY_API_*, HOSTNAME, PORT
 EnvironmentFile=/etc/rproxy-ui/rproxy-ui.env

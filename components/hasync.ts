@@ -11,7 +11,7 @@ import { NodesConfig, GroupConfig, loadNodes, toRproxyNode } from './nodes';
 import { RproxyRuleStatus, getInterfaces, listRules, withNode } from './rproxy';
 import { effectiveRule } from './overrides';
 import { ruleDrift } from './drift';
-import { ResendResult, fromRow, getPool, isPaused, loadOverrides, resendOne, ruleOptions } from './ruledb';
+import { ResendResult, fromRow, getPool, isPaused, isShadowing, loadOverrides, resendOne, ruleOptions } from './ruledb';
 import { haStatus, interfaceAddrs } from './ha';
 
 // 自動の送り直しの履歴の操作者
@@ -86,6 +86,12 @@ async function inspectNode(cfg: NodesConfig, node: string, groups: GroupConfig[]
     const status = live.get(keyOf(eff));
     const base = { target: String(row.target), key: keyOf(rule) };
     let issue: NodeReadiness['issues'][number] | null = null;
+    if (isShadowing(status)) {
+      // 同じキーを API のルール・ルールの組のルールが使っている：送り直すとそれを消す・書き換えるので送り直さず、知らせるだけ
+      // （UI からは直せないので、昇格の判定（ready）は止めない。停止中の UI のルールなら知らせることもない）
+      if (!isPaused(eff)) readiness.issues.push({ ...base, state: 'shadowed' });
+      continue;
+    }
     if (isPaused(eff)) {
       if (status) issue = { ...base, state: 'drift', fields: ['enabled'] };
     } else if (!status) {
@@ -99,7 +105,7 @@ async function inspectNode(cfg: NodesConfig, node: string, groups: GroupConfig[]
       todo.push({ id: Number(row.id), target: base.target, key: base.key });
     }
   }
-  readiness.ready = readiness.issues.length === 0;
+  readiness.ready = readiness.issues.every((i) => i.state === 'shadowed');
   return { readiness: readiness, todo: todo };
 }
 
@@ -132,7 +138,8 @@ async function resendLocked(cfg: NodesConfig, cand: Candidate, node: string, act
     const eff: ForwardRule = effectiveRule(fromRow(rows[0]), ov);
     const cfgNode = cfg.nodes.find((n) => n.name === node)!;
     const result = await withNode(toRproxyNode(cfgNode), () => resendOne(eff));
-    if (result === 'unchanged') {
+    // shadowed：同じキーを API のルール・ルールの組のルールが使っている（何も変えていない）
+    if (result === 'unchanged' || result === 'shadowed') {
       await conn.rollback();
       return result;
     }
@@ -163,7 +170,8 @@ export async function syncNode(cfg: NodesConfig, node: string, opts: { onlyAuto:
       const result = await resendLocked(cfg, cand, node, opts.actor ?? SYSTEM_ACTOR);
       results.push({ target: cand.target, key: cand.key, result: result });
       failures.delete(fkey);
-      if (result !== 'unchanged') logger.info(`ノード ${node} に ${cand.key}（${cand.target}）を送り直しました（${result}）`);
+      if (result === 'shadowed') logger.warn(`ノード ${node} の ${cand.key}（${cand.target}）は、同じキーを rproxy の API のルール・ルールの組が使っているため送り直しません`);
+      else if (result !== 'unchanged') logger.info(`ノード ${node} に ${cand.key}（${cand.target}）を送り直しました（${result}）`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const prev = failures.get(fkey);
@@ -190,6 +198,8 @@ export async function runHaSyncOnce(logger: AppLogger = Logger('info', { action:
   if (groups.length === 0) return 'disabled';
   st.running = true;
   let lock: PoolConnection | null = null;
+  // RELEASE_LOCK に失敗した接続は pool に返さずに捨てる（ロックを持ったまま使い回されないように）
+  let lockStuck = false;
   try {
     lock = await getPool().getConnection();
     const got = await lock.query('SELECT GET_LOCK(?, 0) AS got', [LOCK_NAME]);
@@ -199,14 +209,18 @@ export async function runHaSyncOnce(logger: AppLogger = Logger('info', { action:
       for (const node of nodes) await syncNode(cfg, node, { onlyAuto: true, logger: logger });
       st.lastRun = new Date().toISOString();
     } finally {
-      await lock.query('SELECT RELEASE_LOCK(?)', [LOCK_NAME]).catch(() => undefined);
+      await lock.query('SELECT RELEASE_LOCK(?)', [LOCK_NAME]).catch((err) => {
+        lockStuck = true;
+        logger.warn(`act/stb の自動の送り直しのロックを解放できないため、接続を捨てます: ${err}`);
+      });
     }
     return 'done';
   } catch (err) {
     logger.warn(`act/stb の自動の送り直しで失敗しました: ${err}`);
     return 'skipped';
   } finally {
-    lock?.release();
+    if (lockStuck) lock?.destroy();
+    else lock?.release();
     st.running = false;
   }
 }

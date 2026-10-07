@@ -70,3 +70,21 @@ export function nodeSystemView(node: string, caps: Capabilities | null, config: 
     },
   };
 }
+
+// 管理者でない利用者に見せる形（セキュリティレビュー M3）：設定ファイルのパス・読み込みの誤り（中身の一部を含むことがある）・
+// バイナリのハッシュ・通信の失敗の文（内部のアドレスを含む）は管理者だけ。版・機能の印・performance の項目は見せる
+export const SYSTEM_ERROR_HIDDEN = '問い合わせできません（詳しい理由は管理者だけが見られます）。';
+export const SYSTEM_CONFIG_ERROR_HIDDEN = '設定ファイルに誤りがあります（詳しい内容は管理者だけが見られます）。';
+
+export function userSystemView(v: NodeSystemView): NodeSystemView {
+  return {
+    ...v,
+    error: v.error !== null ? SYSTEM_ERROR_HIDDEN : null,
+    build: v.build?.version ? { version: v.build.version } : null,
+    config: {
+      ...v.config,
+      path: null,
+      error: v.config.error !== null ? SYSTEM_CONFIG_ERROR_HIDDEN : null,
+    },
+  };
+}

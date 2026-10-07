@@ -236,8 +236,9 @@ export function envClientTls(): ClientTls | undefined {
   return Object.keys(tls).length > 0 ? tls : undefined;
 }
 
-// ファイルの組と更新時刻ごとに接続を使い回す（証明書を入れ替えたら、次の問い合わせから新しいファイルで接続する）
-const tlsAgents = new Map<string, Agent>();
+// ファイルの組ごとに接続を使い回し、更新時刻が変われば作り直す（証明書を入れ替えたら、次の問い合わせから新しいファイルで接続する）。
+// 作り直したら古い Agent は閉じて捨てる（入れ替えのたびにソケットとメモリが増えないように。セキュリティレビュー L4）
+const tlsAgents = new Map<string, { id: string; agent: Agent }>();
 
 function mtime(path: string | undefined): number {
   if (!path) return 0;
@@ -249,14 +250,62 @@ function mtime(path: string | undefined): number {
 }
 
 export function tlsAgent(tls: ClientTls): Agent {
-  const id = JSON.stringify([tls.cert, mtime(tls.cert), tls.key, mtime(tls.key), tls.ca, mtime(tls.ca)]);
-  let agent = tlsAgents.get(id);
-  if (!agent) {
-    const read = (path: string | undefined) => (path ? readFileSync(path) : undefined);
-    agent = new Agent({ connect: { cert: read(tls.cert), key: read(tls.key), ca: read(tls.ca) } });
-    tlsAgents.set(id, agent);
-  }
+  const files = JSON.stringify([tls.cert, tls.key, tls.ca]);
+  const id = JSON.stringify([mtime(tls.cert), mtime(tls.key), mtime(tls.ca)]);
+  const cur = tlsAgents.get(files);
+  if (cur?.id === id) return cur.agent;
+  const read = (path: string | undefined) => (path ? readFileSync(path) : undefined);
+  const agent = new Agent({ connect: { cert: read(tls.cert), key: read(tls.key), ca: read(tls.ca) } });
+  tlsAgents.set(files, { id: id, agent: agent });
+  // 古い Agent は使い終わった接続から閉じる（進行中の問い合わせは終わるまで待つ）
+  if (cur) void cur.agent.close().catch(() => undefined);
   return agent;
+}
+
+// テストのため：今ある mTLS の Agent の数
+export function tlsAgentCount(): number {
+  return tlsAgents.size;
+}
+
+// RPROXY_API_TLS_* を設定したのに RPROXY_API_URL が https:// でない（mTLS のつもりで、トークンが平文で流れる）。問題なければ null
+export function envClientTlsProblem(env: Record<string, string | undefined> = process.env): string | null {
+  const set = ['RPROXY_API_TLS_CERT', 'RPROXY_API_TLS_KEY', 'RPROXY_API_TLS_CA'].filter((k) => (env[k] ?? '').trim() !== '');
+  if (set.length === 0) return null;
+  const url = (env.RPROXY_API_URL ?? '').trim();
+  if (url.startsWith('https://')) return null;
+  return `${set.join('・')} は https:// の RPROXY_API_URL でだけ使えます（今の RPROXY_API_URL: ${url || '(なし)'}）。http:// や unix: ではクライアント証明書を使わずに接続し、トークンが平文で流れます。`;
+}
+
+// withNode の外で使うトークン：RPROXY_API_TOKEN、なければ RPROXY_API_TOKEN_FILE の最初のトークン（空行と # の行は飛ばす）。
+// ファイルは更新時刻が変わったら読み直す（rproxy のトークンファイル（1 行に 1 トークンの書き方）を、グループ rproxy の読み取りで
+// そのまま使える。トークンを入れ替えても UI の設定を書き換えなくてよい）。YAML の書き方（tokens:）はトークンそのものがないので使えない
+let tokenFileCache: { path: string; mtime: number; token: string } | null = null;
+
+export function readTokenFile(text: string, path: string): string {
+  const line = text.split(/\r?\n/).map((l) => l.trim()).find((l) => l !== '' && !l.startsWith('#'));
+  if (!line) throw new Error(`RPROXY_API_TOKEN_FILE（${path}）にトークンがありません`);
+  if (/^tokens\s*:/.test(line)) {
+    throw new Error(`RPROXY_API_TOKEN_FILE（${path}）は YAML の書き方（tokens:）で、トークンそのものがありません。UI のトークンを 1 行だけ書いたファイルを指定するか、RPROXY_API_TOKEN に書いてください`);
+  }
+  return line;
+}
+
+export function envApiToken(env: Record<string, string | undefined> = process.env): string | undefined {
+  const direct = env.RPROXY_API_TOKEN;
+  if (direct) return direct;
+  const path = (env.RPROXY_API_TOKEN_FILE ?? '').trim();
+  if (path === '') return undefined;
+  const at = mtime(path);
+  if (tokenFileCache?.path === path && tokenFileCache.mtime === at && at !== 0) return tokenFileCache.token;
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    throw new Error(`RPROXY_API_TOKEN_FILE（${path}）を読めません: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const token = readTokenFile(text, path);
+  tokenFileCache = { path: path, mtime: at, token: token };
+  return token;
 }
 
 // withNode の中（await の先を含む）の問い合わせは、そのノードに送る。外では RPROXY_API_URL / RPROXY_API_TOKEN。
@@ -276,14 +325,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const node = nodeContext.getStore();
   const clientTls = node ? node.tls : envClientTls();
   const headers: Record<string, string> = { Accept: 'application/json' };
-  const token = node ? node.token : process.env.RPROXY_API_TOKEN;
-  if (token) headers['Authorization'] = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
   let res: FetchResponse;
   try {
+    const token = node ? node.token : envApiToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     const target = apiTarget(node ? node.url : process.env.RPROXY_API_URL);
     if (target.socketPath === '') throw new Error('RPROXY_API_URL の unix: のあとにソケットのパスを書いてください');
+    // クライアント証明書を設定したのに https でない：トークンを平文で送らずに断る（起動時の確認 checkNodesAtStartup と同じ）
+    if (clientTls && target.socketPath === undefined && !target.base.startsWith('https://')) {
+      throw new Error(node ? `ノード ${node.name} の tls_cert・tls_key・tls_ca は https:// の url でだけ使えます` : envClientTlsProblem() ?? 'RPROXY_API_TLS_* は https:// の RPROXY_API_URL でだけ使えます');
+    }
     const init = {
       method,
       headers,
