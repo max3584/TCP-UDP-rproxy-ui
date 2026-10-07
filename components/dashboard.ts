@@ -165,7 +165,8 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
   const starttls = status.starttls ?? null;
   return {
     id: id,
-    origin: status.origin === 'static' ? 'static' : 'dynamic',
+    // api（rproxy v0.4 が rproxy_rules に保存したルール）。知らない値は dynamic と同じ
+    origin: status.origin === 'static' ? 'static' : status.origin === 'api' ? 'api' : 'dynamic',
     protocol: String(status.protocol).toLowerCase() as Protocol,
     srcAddr: status.listen_addr,
     srcPort: status.listen_port,

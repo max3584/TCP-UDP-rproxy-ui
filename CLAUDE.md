@@ -112,6 +112,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/v04form.ts` / `components/LimitsEditor.tsx` | RuleForm の「制限・GeoIP」タブ（欄の文字列と v0.4 の項目の行き来 `toV04Form` / `buildV04`。rproxy の `features` が使えると言う項目だけ編集し、使えない項目は読み取り専用で残す） |
 | `components/PlanView.tsx` | 変更前の差分（`POST /api/forward/plan` の応答。ノードごとの action・change・項目ごとの前と後・warnings・断り） |
 | `components/tlserror.ts` | `TlsError`（tls.ts と v04.ts が使う。tls.ts から再び export している） |
+| `components/apirules.ts` | rproxy の API で作ったルール（UI の DB にない。`origin: 'api'`。#76）：rproxy の応答（`apiRuleFromStatus`）と `rproxy_rules` の行（`apiRuleFromRow`）から画面の行を作り、ダッシュボードに固定ルールと一緒に足す（`mergeExternalRules`。API のルールは管理者だけ）。UI のルールの代わりに動いているもの（`shadowedBy`） |
 | `components/system.ts` / `pages/system.tsx` / `pages/api/forward/system.ts` | rproxy の機能と設定（`/system`。読み取り専用）：ノードごとの版・v0.4 の機能の印・`features.performance`・`GET /config` の状態 |
 
 ## データの流れ
@@ -172,6 +173,9 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
   `features.dry_run` のときは追加・変更の画面に「差分を見る」（`POST /api/forward/plan {action, ...}`：add は本文、modify は DB の今の内容に本文を重ねた内容（`mergeEdit`。`editForwardingRule` と同じ）で、置き場所のノードごとに rproxy の `?dry_run=true` を聞く。DB も rproxy も変えない。rproxy にないルールは作るときの差分。断りはノードごとの `error`）。
   詳細画面に v0.4 の項目・`stats.limited`・`stats.counters_since`・宛先の `ejected_until` / `ejections`・`conditions`（グループでは False のあるノード）を出す。履歴の差分は項目ごとに「〜を変更」。ずれ（`DriftField`）にも v0.4 の項目を足した。
   制御 API の mTLS（#167）：`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`・`RPROXY_API_TLS_CA`、`RPROXY_UI_NODES` の `tls_cert`・`tls_key`・`tls_ca`（https だけ。`checkClientTls` が起動時にファイルを読めるか確かめる）。https でこれがあれば undici の `fetch` と `Agent({ connect: { cert, key, ca } })`（ファイルの更新時刻ごとに作り直す）。rproxy の 429 `locked_out`（UI の送信元が止められた）は 502 `rproxy_locked_out` と `lockedOutText`（`Retry-After` の秒）。
+  API で作ったルール（#76）：rproxy の `GET /rules` の static でない UI の DB にないルールと、`rproxy_rules`（migration 009。rproxy が書き、UI は読むだけ。テーブルがない（errno 1146）なら空）にあって動いていないルールを、管理者にだけ `origin: 'api'` の行で出す（`rule` も管理者だけ。利用者は 404）。
+  編集は `api-modify`（rproxy の今の内容を `ruleFromStatus` で画面の形にして `mergeEdit` で本文を重ね、PATCH だけ。DB にも履歴にも書かない。保存されていたルールを rproxy が保存しなかったら `warning`）、削除は `api-delete`。どちらも管理者だけ（403 `forbidden_admin`）、ノードを設定していれば `target` はノードの名前、ルールの組のものは 409 `owned`、同じキーの UI のルールがあれば 409 `ui_rule`。`plan` の `api-modify` も同じ。
+  UI のルールの live の状態が `origin: api` か `ruleset` なら `shadowedBy`（UI のルールの代わりに動いている。rproxy は起動時に UI のテーブルを優先する）。`rproxy_rules` の `node` は UI のノードの名前（1 台の環境ではノードの名前を問わない）。`db/node-view.mjs` はノードの行だけを書ける `rproxy_rules` のビューも作る（`--without-rproxy-rules`）。
   `KNOWN_RPROXY_MINOR` は 0.4。`MIN_RPROXY_VERSION` は上げていない（v0.4 の項目は `features` で判断する）。
 
 - v0.3 の形（rproxy-api の docs/API.md「v0.3 の設定」）：ルールの `http`（L7）、`tls.certificates[]` の ACME（`acme` / `domains`）、`tls.options`（`min_version` / `cipher_suites`）、`GET /capabilities` の `features`。

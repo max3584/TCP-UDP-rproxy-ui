@@ -2,7 +2,7 @@
 // ノードごとのデータベースと forward_rules ビュー（#98）の SQL を出す。
 //
 //   node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>]
-//                         [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>]
+//                         [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules]
 //
 // 出した SQL は、UI のテーブルを読める管理者（root など）で流す（ビューはその人の権限で元のテーブルを読む）:
 //   node db/node-view.mjs node1 --password 'secret' | mariadb -u root -p
@@ -13,6 +13,9 @@
 // ビューは forward_rule_targets（UI が RPROXY_UI_NODES に合わせて書き直す）で絞るので、
 // グループの構成を変えてもビューを作り直す必要はない（ノードを足したときだけ、そのノードの分を流す）。
 // --password を付けなければ CREATE USER は出さない（ユーザーは別に作る）。
+// rproxy-api v0.4 が API で作ったルールを保存する rproxy_rules（migration 009）も、そのノードの行だけの書けるビュー
+// （WITH CHECK OPTION）にして、読み書きの権限を渡す（rproxy の RPROXY_NODE_NAME をノードの名前にする）。
+// 009 を適用していなければ --without-rproxy-rules で出さない。
 // 依存のない JavaScript（.deb の /usr/share/rproxy-ui/db/ からも node で動く）。テストは tests/nodeview.test.ts
 
 // components/nodes.ts の NAME_PATTERN と同じ（データベース名・ユーザー名に使うので英小文字・数字・_ だけ）
@@ -23,6 +26,9 @@ const HOST = /^[A-Za-z0-9_.:%-]{1,255}$/;
 // rproxy-api（src/config/db.rs）が forward_rules から読む列。ビューはこの列だけを出す
 export const RPROXY_COLUMNS = ['protocol', 'src_addr', 'src_port', 'src_port_end', 'dist_addr', 'dist_port', 'source_ip', 'udp_idle_secs', 'options'];
 
+// rproxy_rules の列（migration 009。rproxy-api の src/config/persist.rs）
+export const RPROXY_RULES_COLUMNS = ['node', 'protocol', 'listen_addr', 'listen_port', 'spec', 'spec_version', 'created_by', 'created_at', 'updated_by', 'updated_at'];
+
 // ' は '' にする（sql_mode の NO_BACKSLASH_ESCAPES に関係なく同じ意味になるように、\ は受け付けない）
 function quoteString(value) {
   const s = String(value);
@@ -31,7 +37,7 @@ function quoteString(value) {
 }
 
 /**
- * @param {{ node: string, database?: string, viewDatabase?: string, user?: string, host?: string, password?: string }} opts
+ * @param {{ node: string, database?: string, viewDatabase?: string, user?: string, host?: string, password?: string, withoutRproxyRules?: boolean }} opts
  * @returns {string}
  */
 export function nodeViewSql(opts) {
@@ -72,6 +78,17 @@ export function nodeViewSql(opts) {
     lines.push(`CREATE USER IF NOT EXISTS ${account} IDENTIFIED BY ${quoteString(opts.password)};`);
   }
   lines.push(`GRANT SELECT ON \`${viewDatabase}\`.\`forward_rules\` TO ${account};`);
+  if (!opts.withoutRproxyRules) {
+    // rproxy が書く rproxy_rules（v0.4）：自分のノードの行だけを見せ、ほかのノードの行は書けない（WITH CHECK OPTION）
+    lines.push(
+      `CREATE OR REPLACE SQL SECURITY DEFINER VIEW \`${viewDatabase}\`.\`rproxy_rules\` AS`,
+      `  SELECT ${RPROXY_RULES_COLUMNS.map((c) => `\`${c}\``).join(', ')}`,
+      `    FROM \`${database}\`.\`rproxy_rules\``,
+      `   WHERE \`node\` = ${quoteString(node)}`,
+      '  WITH CHECK OPTION;',
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON \`${viewDatabase}\`.\`rproxy_rules\` TO ${account};`,
+    );
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -79,7 +96,7 @@ const FLAGS = { '--database': 'database', '--view-database': 'viewDatabase', '--
 
 /** @param {string[]} argv */
 export function parseArgs(argv) {
-  /** @type {Record<string, string>} */
+  /** @type {Record<string, string | boolean>} */
   const opts = {};
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
@@ -87,6 +104,8 @@ export function parseArgs(argv) {
     if (a in FLAGS) {
       if (i + 1 >= argv.length) throw new Error(`${a} の値がありません`);
       opts[FLAGS[a]] = argv[++i];
+    } else if (a === '--without-rproxy-rules') {
+      opts.withoutRproxyRules = true;
     } else if (a.startsWith('--')) {
       throw new Error(`知らないオプション: ${a}`);
     } else {
@@ -102,7 +121,7 @@ if (process.argv[1] && process.argv[1].endsWith('node-view.mjs')) {
     process.stdout.write(nodeViewSql(parseArgs(process.argv.slice(2))));
   } catch (err) {
     console.error(`node-view.mjs: ${err instanceof Error ? err.message : err}`);
-    console.error('使い方: node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>] [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>]');
+    console.error('使い方: node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>] [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules]');
     process.exit(2);
   }
 }

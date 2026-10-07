@@ -36,7 +36,7 @@ import { ruleErrorText } from '@/components/messages';
 import { acmeProblem, worstAcmeState } from '@/components/acme';
 import { NodeVersionCell, VersionNotice, VersionsCard } from '@/components/VersionInfo';
 import { joinList, joinSentences, localeTag, t, translate } from '@/i18n/core';
-import { AcmeBadge, AllowFromBadge, acmeBadgeShown, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
+import { AcmeBadge, AllowFromBadge, acmeBadgeShown, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, ApiBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
 
 function formatAt(iso: string): string {
   const d = new Date(iso);
@@ -274,6 +274,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = 
               <StateBadge state={r.state} />
               <span className="badge bg-gray-100 text-gray-800 uppercase">{r.protocol}</span>
               {r.origin === 'static' && <StaticBadge />}
+              <ApiBadge rule={r} />
               <CertBadge state={worstCertState(r)} />
               <AcmeBadge state={worstAcmeState(r)} />
               {showTarget && <TargetBadge target={r.target} />}
@@ -298,7 +299,8 @@ const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = 
 // 一覧の行の一時停止・再開のボタン（詳細画面を開かずに切り替える。停止は確認してから）
 const PauseResumeButton: React.FC<{ rule: ForwardRules; onDone: () => void; onError: (message: string) => void }> = ({ rule, onDone, onError }) => {
   const [busy, setBusy] = useState(false);
-  if (rule.origin === 'static') return null;
+  // 固定ルールと rproxy の API のルール（UI の DB にない）は一時停止できない
+  if (rule.origin === 'static' || rule.origin === 'api') return null;
   const paused = rule.state === 'paused';
   const run = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -395,9 +397,10 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; showTarget: boo
                     <Link href={href} className="link" title={listenLabel(r)} onClick={(e) => e.stopPropagation()}>
                       {listenPortLabel(r)}
                     </Link>
-                    {(r.origin === 'static' || r.allowFrom.length > 0 || acmeBadgeShown(worstAcmeState(r))) && (
+                    {(r.origin === 'static' || r.origin === 'api' || r.allowFrom.length > 0 || acmeBadgeShown(worstAcmeState(r))) && (
                       <div className="mt-0.5 flex flex-wrap gap-1 font-sans">
                         {r.origin === 'static' && <StaticBadge />}
+                        <ApiBadge rule={r} />
                         <AllowFromBadge allowFrom={r.allowFrom} />
                         <CertBadge state={worstCertState(r)} />
                         <AcmeBadge state={worstAcmeState(r)} />

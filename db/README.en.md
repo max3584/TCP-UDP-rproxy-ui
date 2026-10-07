@@ -15,6 +15,7 @@ Definitions of the tables shared by the UI and rproxy-api.
 | `migrations/006_nodes.sql` | Several rproxy instances (#98): adds a `target` column to both tables, makes the key `(target, protocol, src_addr, src_port)` and adds the `forward_rule_targets` table. A single-node setup without `RPROXY_UI_NODES` works without it |
 | `migrations/007_log_node.sql` | Several rproxy instances (#98): adds the column for the node a rule was resent to (`node`) to `forward_rules_log`. Needed with `RPROXY_UI_NODES` |
 | `migrations/008_overrides.sql` | Several rproxy instances (#98): per-node overrides of group rules (`forward_rule_overrides`). Recreate the per-node views with `node-view.mjs` after applying it |
+| `migrations/009_rproxy_rules.sql` | `rproxy_rules`, where rproxy-api v0.4 stores rules created through its API (#76; only rproxy writes it). With several rproxy instances, recreate the per-node views after applying it |
 | `node-view.mjs` | Prints the SQL for a per-node database with a `forward_rules` view and a read-only DB user (see "Several rproxy instances (a view per node)" below) |
 
 On existing environments, apply them in order starting from `002`. When you change `schema.sql`, also add a migration that makes the same change.
@@ -49,6 +50,9 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `forward_rule_overrides`: per-node overrides of group rules (unique on `rule_id`, `node`; deleted with the rule). `src_addr`, `dist_addr` and `dist_port` hold a value only when overridden (`dist_addr` is `''` for multiple targets), and `options` is a patch merged into `forward_rules.options` with `JSON_MERGE_PATCH` (`allow_from`, `extra_listen_addrs`, `targets`, `balance`, `health_check`, `enabled`; null removes a key).
   `forward_rules_log` has a `target` column too. An override change has `update_action` `OVERRIDE` with the node in `node`; its contents are what runs on that node (it cannot be reverted). A resend to one node has `update_action` `RESEND` and records that node in `node` (007); the contents are the rule that was sent.
 
+- `rproxy_rules` (009): rproxy-api v0.4 stores here the rules created or changed through its API with a `persist: true` token (unique on `(node, protocol, listen_addr, listen_port)`; `spec` is JSON in the shape of the `POST /rules` body; `created_by` / `updated_by` are token names). Only rproxy writes it; the UI reads it and shows those rules as "API" rules on administrators' dashboards (changes go through the rproxy API).
+  `node` is rproxy's `RPROXY_NODE_NAME` (default: the host name). With several rproxy instances, match the node names in the UI's `RPROXY_UI_NODES`. At startup rproxy restores the rows of its own `node` after the UI's table; on the same key the UI's row wins.
+
 ## DB users
 
 Give the UI's user read and write privileges on both tables.
@@ -60,6 +64,8 @@ GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@
 -- with RPROXY_UI_NODES
 GRANT SELECT, INSERT, DELETE         ON rproxy.forward_rule_targets TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overrides TO 'rproxy_ui'@'10.0.0.%';
+-- to show rproxy-api v0.4 API rules (009; the UI only reads)
+GRANT SELECT                         ON rproxy.rproxy_rules TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api only reads `forward_rules` at startup, so use a read-only user.
@@ -69,6 +75,8 @@ The columns it reads are `protocol`, `src_addr`, `src_port`, `src_port_end`, `di
 ```sql
 CREATE USER 'rproxy'@'127.0.0.1' IDENTIFIED BY '<password>';
 GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
+-- when rproxy-api v0.4 stores API rules (009; the user of rproxy's RPROXY_DATABASE_URL)
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rules TO 'rproxy'@'127.0.0.1';
 ```
 
 (The examples use `rproxy` as the database name. Adjust it to match `DB_DATABASE`.)
@@ -94,7 +102,15 @@ CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`forward_rules` 
    WHERE r.`target` IN (SELECT t.`target` FROM `rproxy`.`forward_rule_targets` t WHERE t.`node` = 'node1');
 CREATE USER IF NOT EXISTS 'rproxy_node1'@'10.0.0.11' IDENTIFIED BY '<password>';
 GRANT SELECT ON `rproxy_node_node1`.`forward_rules` TO 'rproxy_node1'@'10.0.0.11';
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_rules` AS
+  SELECT `node`, `protocol`, `listen_addr`, `listen_port`, `spec`, `spec_version`, `created_by`, `created_at`, `updated_by`, `updated_at`
+    FROM `rproxy`.`rproxy_rules`
+   WHERE `node` = 'node1'
+  WITH CHECK OPTION;
+GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_node1`.`rproxy_rules` TO 'rproxy_node1'@'10.0.0.11';
 ```
+
+`rproxy_rules` (009, where rproxy-api v0.4 stores API rules) becomes a view that can write only that node's rows (`WITH CHECK OPTION` refuses other nodes' rows; set that rproxy's `RPROXY_NODE_NAME` to the node name). Without 009 applied, pass `--without-rproxy-rules` to leave it out.
 
 Set that rproxy's `RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB host>/rproxy_node_node1`.
 Changing groups needs no new view, since the UI updates `forward_rule_targets`. Run it only for a node you add.

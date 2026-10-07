@@ -34,11 +34,11 @@ import {
   targetChoices,
 } from '@/components/dashboard';
 import OverrideEditor from '@/components/OverrideEditor';
-import { AllowFromBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
+import { AllowFromBadge, ApiBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
 import Tabs, { tabPanelProps } from '@/components/Tabs';
 import { DRIFT_LABELS } from '@/components/drift';
 import type { NodeLiveState } from '@/components/lib';
-import { STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
+import { OWNED_RULE_MESSAGE, STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
 import AcmeStatus from '@/components/AcmeStatus';
 import { acmeStatusFor } from '@/components/acme';
 import HttpSummary from '@/components/HttpSummary';
@@ -384,6 +384,25 @@ const ConditionsSection: React.FC<{ conditions: Condition[] }> = ({ conditions }
   </Section>
 );
 
+// rproxy の API で作ったルール（UI の DB にない。rproxy v0.4、#76）の出どころ
+const ApiRuleSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
+  <Section id="section-api-rule" title="rproxy の API のルール">
+    <div data-testid="api-rule">
+      <Fields items={[
+        ['出どころ', <ApiBadge key="b" rule={rule} />],
+        ['保存', rule.persisted ? 'rproxy_rules に保存（rproxy を再起動しても残る）' : '保存していない（rproxy を再起動すると消える）'],
+        ['作ったトークン', rule.createdBy ? <Mono key="c">{rule.createdBy}</Mono> : null],
+        ['作った時刻', rule.createdAt !== undefined ? formatTimestamp(rule.createdAt) : null],
+        ...(rule.ruleset ? [['ルールの組', <Mono key="r">{rule.ruleset}</Mono>] as [string, React.ReactNode]] : []),
+      ]} />
+      <p className="mt-2 text-xs text-gray-600">
+        UI の DB にはないルールです。変更・削除は rproxy の API（PATCH / DELETE）で行い、UI の履歴には残りません。
+        {rule.ruleset ? '' : '保存されたルールの変更を rproxy が保存するかは、UI のトークンの persist によります（保存しなければ再起動で前の内容に戻ります）。'}
+      </p>
+    </div>
+  </Section>
+);
+
 // 「全体」のタブ：ノードごとの値を並べる（act と stb の通信量を比べる）
 const NodeCompare: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
   <Section id="section-node-compare" title="ノードごとの比較">
@@ -440,7 +459,7 @@ const NodeCompare: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
 // ノードのタブ：UI の定義とこのノードの実際のルールの違いと、送り直し
 const DriftSection: React.FC<{ rule: ForwardRules; node: NodeLiveState; busy: boolean; onResend: () => void; notice: string }> = ({ rule, node, busy, onResend, notice }) => {
   const drift = node.drift ?? [];
-  const canResend = rule.origin !== 'static' && (node.state === 'missing' || drift.length > 0);
+  const canResend = rule.origin === 'dynamic' && (node.state === 'missing' || drift.length > 0);
   return (
     <Section id="section-drift" title="UI の定義との違い">
       <div data-testid="drift-section" className="space-y-2 text-sm text-gray-900">
@@ -577,7 +596,8 @@ const RuleDetailPage: React.FC = () => {
     if (!rule) return;
     setDeleting(true);
     try {
-      await postRule('delete', toRule(rule));
+      if (rule.origin === 'api') await postRule('api-delete', { protocol: rule.protocol, srcAddr: rule.srcAddr, srcPort: rule.srcPort, target: rule.target });
+      else await postRule('delete', toRule(rule));
       await router.push('/');
     } catch (err) {
       setError(`ルールの削除に失敗しました: ${err instanceof Error ? err.message : err}`);
@@ -612,7 +632,19 @@ const RuleDetailPage: React.FC = () => {
             {STATIC_RULE_NOTE}
           </p>
         )}
-        {rule && key && rule.origin !== 'static' && (
+        {rule && key && rule.origin === 'api' && rule.ruleset && (
+          <p className="inline-flex flex-wrap items-center gap-2 text-sm text-gray-800" data-testid="owned-note">
+            <ApiBadge rule={rule} />
+            {OWNED_RULE_MESSAGE}
+          </p>
+        )}
+        {rule && key && rule.origin === 'api' && !rule.ruleset && (
+          <div className="flex flex-wrap gap-2">
+            <Link href={ruleEditHref({ ...key, ...(rule.target !== undefined ? { target: rule.target } : {}) })} className="btn-primary">編集</Link>
+            <button type="button" className="btn-danger" onClick={() => setConfirming(true)}>削除</button>
+          </div>
+        )}
+        {rule && key && rule.origin === 'dynamic' && (
           <div className="flex flex-wrap gap-2">
             <Link href={ruleEditHref(key)} className="btn-primary">編集</Link>
             {manyNodes && rule.target !== undefined && <button type="button" className="btn-secondary" onClick={() => { setCopyTo(''); setCopyMove(false); setCopying(true); }}>コピー・移動</button>}
@@ -639,10 +671,19 @@ const RuleDetailPage: React.FC = () => {
       {view && rule && (
         <div {...(nodeTabs ? tabPanelProps('rule-nodes', tab) : { className: 'space-y-4' })}>
           {nodeTabs && tab === 'all' && <NodeCompare rule={rule} />}
+          {rule.origin === 'api' && <ApiRuleSection rule={rule} />}
+          {rule.origin === 'dynamic' && rule.shadowedBy && (
+            <p role="status" className="rounded-sm border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900" data-testid="shadowed-note">
+              {rule.shadowedBy.ruleset
+                ? `同じキーを rproxy ではルールの組 ${rule.shadowedBy.ruleset} のルールが使っているため、この UI のルールは動いていません。`
+                : `同じキーを rproxy では API で作ったルール${rule.shadowedBy.createdBy ? `（${rule.shadowedBy.createdBy}）` : ''}が使っているため、この UI のルールは動いていません。`}
+              rproxy を再起動すると UI のルールが使われます（rproxy_rules の同じキーの行は使われません）。どちらかを消すか、キーを変えてください。
+            </p>
+          )}
           {nodeTabs && tab !== 'all' && view.nodes?.[0] && (
             <DriftSection rule={rule} node={view.nodes[0]} busy={resending} onResend={() => void handleResend(tab)} notice={resendNotice} />
           )}
-          {nodeTabs && tab !== 'all' && rule.origin !== 'static' && nodesInfo?.groups.some((g) => g.name === rule.target) && (
+          {nodeTabs && tab !== 'all' && rule.origin === 'dynamic' && nodesInfo?.groups.some((g) => g.name === rule.target) && (
             <OverrideEditor key={`${tab}|${JSON.stringify(rule.overrides?.[tab] ?? null)}`} rule={rule} node={tab}
               onSaved={(m) => { setNotice(m); void load(); }} onError={setError} />
           )}
@@ -787,7 +828,7 @@ const RuleDetailPage: React.FC = () => {
       )}
 
       {/* 変更の履歴（#61）。固定ルールは DB にないので履歴もない */}
-      {key && !(rule && rule.origin === 'static') && (
+      {key && !(rule && rule.origin !== 'dynamic') && (
         <Section id="section-history" title="変更の履歴">
           <HistoryList filter={{ protocol: key.protocol, addr: key.addr, port: key.port, ...((key.target ?? rule?.target) !== undefined ? { target: key.target ?? rule?.target } : {}) }} onReverted={() => void load()} />
         </Section>

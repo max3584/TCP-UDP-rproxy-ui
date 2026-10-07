@@ -6,7 +6,8 @@ import RuleForm from '@/components/RuleForm';
 import type { ForwardRule } from '@/components/lib';
 import { hostPort, parseRuleKey, portsLabel, ruleHref, toRule } from '@/components/dashboard';
 import { ErrorBanner, goBack, postPlan, postRule, useRule } from '@/components/ui';
-import { STATIC_RULE_MESSAGE } from '@/components/messages';
+import { t } from '@/i18n/core';
+import { OWNED_RULE_MESSAGE, STATIC_RULE_MESSAGE } from '@/components/messages';
 
 const EditRulePage: React.FC = () => {
   const router = useRouter();
@@ -26,7 +27,13 @@ const EditRulePage: React.FC = () => {
     setSubmitting(true);
     setError('');
     try {
-      await postRule('modify', data);
+      // rproxy の API のルール（UI の DB にない）は rproxy の PATCH で変える
+      if (rule?.origin === 'api') {
+        const out = await postRule('api-modify', { ...data, target: rule.target });
+        if (typeof out.warning === 'string') window.alert(t(out.warning));
+      } else {
+        await postRule('modify', data);
+      }
       await router.push(ruleHref(key));
     } catch (err) {
       setError(`ルールの変更に失敗しました: ${err instanceof Error ? err.message : err}`);
@@ -62,12 +69,23 @@ const EditRulePage: React.FC = () => {
           <Link href={ruleHref(key)} className="link">ルールの詳細へ戻る</Link>
         </div>
       )}
-      {initial && key && rule?.origin !== 'static' && (
+      {rule && key && rule.origin === 'api' && rule.ruleset && (
+        <div className="card p-4 text-gray-900">
+          <p>{OWNED_RULE_MESSAGE}</p>
+          <Link href={ruleHref(key)} className="link">ルールの詳細へ戻る</Link>
+        </div>
+      )}
+      {rule?.origin === 'api' && !rule.ruleset && (
+        <p className="text-sm text-gray-800 rounded-sm border border-teal-300 bg-teal-50 px-3 py-2" data-testid="api-edit-note">
+          rproxy の API で作ったルールです。保存すると rproxy の API で変えます（UI の DB には入らず、履歴にも残りません）。
+        </p>
+      )}
+      {initial && key && rule?.origin !== 'static' && !(rule?.origin === 'api' && rule.ruleset) && (
         <RuleForm
           initialData={initial}
           submitting={submitting}
           onSubmit={handleSubmit}
-          onPlan={(r) => postPlan('modify', r)}
+          onPlan={(r) => (rule?.origin === 'api' ? postPlan('api-modify', { ...r, target: rule.target }) : postPlan('modify', r))}
           onCancel={() => goBack(router, ruleHref(key))}
         />
       )}

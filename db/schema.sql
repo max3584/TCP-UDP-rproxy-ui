@@ -62,3 +62,19 @@ CREATE TABLE IF NOT EXISTS forward_rule_overrides (
   PRIMARY KEY (rule_id, node),
   CONSTRAINT fk_forward_rule_overrides_rule FOREIGN KEY (rule_id) REFERENCES forward_rules (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- rproxy-api が API で作ったルール（rproxy-api v0.4 の #144）。書くのは rproxy だけで、UI は読むだけ（変えるときは rproxy の API）。
+-- 列は rproxy-api の docs/DESIGN-v0.4.md 11. と同じ。node は rproxy の RPROXY_NODE_NAME（UI のノードの名前と揃える）
+CREATE TABLE IF NOT EXISTS rproxy_rules (
+  node        VARCHAR(255) NOT NULL,   -- どの rproxy のルールか（RPROXY_NODE_NAME、既定はホスト名）
+  protocol    VARCHAR(3)   NOT NULL,
+  listen_addr VARCHAR(45)  NOT NULL,
+  listen_port INT UNSIGNED NOT NULL,
+  spec        JSON         NOT NULL,   -- POST /rules の本文と同じ形（RuleRequest）
+  spec_version INT UNSIGNED NOT NULL DEFAULT 1,
+  created_by  VARCHAR(255) NOT NULL,   -- トークンの名前
+  created_at  DATETIME(3)  NOT NULL,
+  updated_by  VARCHAR(255) NOT NULL,
+  updated_at  DATETIME(3)  NOT NULL,
+  PRIMARY KEY (node, protocol, listen_addr, listen_port)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

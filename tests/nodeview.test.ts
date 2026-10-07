@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RPROXY_COLUMNS, nodeViewSql, parseArgs } from '../db/node-view.mjs';
+import { RPROXY_COLUMNS, RPROXY_RULES_COLUMNS, nodeViewSql, parseArgs } from '../db/node-view.mjs';
 import { NAME_PATTERN } from '@/components/nodes';
 import { NAME_PATTERN as VIEW_NAME_PATTERN } from '../db/node-view.mjs';
 
@@ -29,6 +29,16 @@ describe('db/node-view.mjs', () => {
     expect(sql).toContain("LEFT JOIN `rproxy`.`forward_rule_overrides` o ON o.`rule_id` = r.`id` AND o.`node` = 'n1'");
     expect(sql).toContain('COALESCE(o.`src_addr`, r.`src_addr`) AS `src_addr`');
     expect(sql).toContain("JSON_MERGE_PATCH(COALESCE(r.`options`, '{}'), o.`options`)");
+  });
+
+  it('adds a writable rproxy_rules view of this node only (rproxy-api v0.4, migration 009) unless asked not to', () => {
+    const sql = nodeViewSql({ node: 'n1' });
+    expect(sql).toContain('CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_n1`.`rproxy_rules` AS');
+    expect(sql).toContain("WHERE `node` = 'n1'\n  WITH CHECK OPTION;");
+    expect(sql).toContain("GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_n1`.`rproxy_rules` TO 'rproxy_n1'@'127.0.0.1';");
+    for (const c of RPROXY_RULES_COLUMNS) expect(sql).toContain(`\`${c}\``);
+    expect(nodeViewSql({ node: 'n1', withoutRproxyRules: true })).not.toContain('rproxy_rules');
+    expect(parseArgs(['n1', '--without-rproxy-rules'])).toEqual({ node: 'n1', withoutRproxyRules: true });
   });
 
   it('takes the database, user and host; omits CREATE USER without a password', () => {
