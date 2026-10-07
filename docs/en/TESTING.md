@@ -176,6 +176,7 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 - `i18n.spec.ts`: switching to English and the cookie, the space before a parenthetical that is a separate child
 - `responsive.spec.ts`, `contrast.spec.ts`, `version.spec.ts`: no overflow at 375px / 768px, no white text on white, the version display
 - `api-rules.spec.ts`: a rule created by calling the rproxy API directly is hidden from users (404), shown to administrators as "API" on the dashboard and details, editing changes the target in rproxy and deleting removes it from rproxy (any rproxy version)
+- `usage.spec.ts`: traffic through a new rule raises its usage after the UI collects (`RPROXY_UI_USAGE_SECS=30` in E2E) and appears in the detail chart, the usage report and the CSV (skipped without the 010 tables)
 - `v04.spec.ts`: v0.4 rule settings (only when rproxy's `features` report them; skipped otherwise). Adds a rule with a label and one concurrent connection per source from the "Limits & GeoIP" tab, checks the label on the details and that a second connection is closed at once. With `features.dry_run`, "Show the difference" shows the create and change plans (changes without cutting connections, `labels`)
 - `acme.spec.ts` (only with `UI_E2E_ACME=1`): ACME (rproxy-api v0.3.21). When rproxy-api has `docs/ACME.md`, CI runs apk's pebble (the ACME test CA) in the same container, and `scripts/ci-pebble.sh` makes Pebble's HTTPS certificate (openssl), the names in `/etc/hosts` and rproxy's settings file (`global.acme` in `RPROXY_CONFIG`).
   The form offers the resolvers and refuses wildcards (dns-01 only) and names outside `allowed_names` before saving; for the saved rule rproxy obtains a certificate from Pebble (http-01, `http01_listen`), the details show "valid" and Pebble's certificate is actually served; the edit page shows the resolver and the names.
@@ -219,6 +220,16 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 | /api/forward | Administrators' dashboards show running API rules, rule-set rules and stored rules that are not running; users do not see them; works without `rproxy_rules`; `shadowedBy`; getting one rule; `api-modify` only PATCHes (no DB write) and warns when the change is no longer stored; `api-delete`; administrators only; 409 `owned` / `ui_rule`; `plan` with `api-modify` |
 
 `tests/nodeview.test.ts` also checks that the per-node SQL creates an `rproxy_rules` view that can write only that node's rows (`WITH CHECK OPTION`) with its grant (left out with `--without-rproxy-rules`).
+
+## Unit tests: usage (`tests/usage.test.ts`, `tests/usage-route.test.ts`)
+
+| Test | What it checks |
+|---|---|
+| Differences | Same counting start gives the difference; a changed `counters_since` adds everything; a live upgrade keeps counting; old rproxy uses `started_at`; a newly seen rule is added in full only when created after the previous collection |
+| Buckets and chart | Hour, day and month buckets (UTC), empty buckets as 0, totals, axis maximum |
+| Report and CSV | Grouping by owner, label and rule; label keys; CSV (not read as formulas); period and settings (environment variables) |
+| collectNode | Values added to the hourly and daily tables, owner and marks, updating the baseline, dropping baselines of rules that disappeared |
+| /api/forward/usage | Users see only their rules; rule filter; `available: false` without the tables; report and CSV; bad period |
 
 ## Not yet tested
 

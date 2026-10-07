@@ -15,6 +15,7 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrations/006_nodes.sql` | 複数の rproxy（#98）：両テーブルに `target` 列、キーを `(target, protocol, src_addr, src_port)` に、`forward_rule_targets` 表を追加。`RPROXY_UI_NODES` を使わない 1 台の環境では適用しなくても動く |
 | `migrations/007_log_node.sql` | 複数の rproxy（#98）：`forward_rules_log` に送り直したノード（`node`）の列を追加。`RPROXY_UI_NODES` を使うときに必要 |
 | `migrations/008_overrides.sql` | 複数の rproxy（#98）：グループのルールのノードごとの上書き（`forward_rule_overrides`）。適用したらノードごとのビューを `node-view.mjs` で作り直す |
+| `migrations/010_usage.sql` | 利用量の集計（#101）：`usage_counters`（差分を取るための最後に見た数）・`usage_hourly`・`usage_daily`。書くのも読むのも UI だけ。適用しなければ集計しない |
 | `migrations/009_rproxy_rules.sql` | rproxy-api v0.4 が API で作ったルールを保存する `rproxy_rules`（#76。書くのは rproxy だけ）。複数の rproxy では適用したらノードごとのビューを作り直す |
 | `node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけの DB ユーザーの SQL を出す（下の「複数の rproxy（ノードごとのビュー）」） |
 
@@ -53,6 +54,8 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `rproxy_rules`（009）：rproxy-api v0.4 が、`persist: true` のトークンで API から作った・変えたルールを保存する（`(node, protocol, listen_addr, listen_port)` で一意。`spec` は `POST /rules` の本文と同じ形の JSON、`created_by` / `updated_by` はトークンの名前）。書くのは rproxy だけで、UI は読んで管理者のダッシュボードに「API」のルールとして出す（変えるときは rproxy の API）。
   `node` は rproxy の `RPROXY_NODE_NAME`（既定はホスト名）。複数の rproxy では UI の `RPROXY_UI_NODES` のノードの名前と揃える。rproxy は起動時に自分の `node` の行を UI のテーブルのあとに復元し、同じキーが両方にあれば UI の行を使う。
 
+- `usage_counters`・`usage_hourly`・`usage_daily`（010）：利用量の集計。UI が rproxy の統計を取り、`usage_counters` に最後に見た数（と `counters_since`・`started_at`）、その差を `usage_hourly`（`hour` は UTC の時の始まり）と `usage_daily`（`day` は UTC の日付）に、ルール・ノードごとに足す。各行の `owner`・`target`・`labels`・`origin` はそのときのルールの持ち主と印。古い行は UI が消す（`RPROXY_UI_USAGE_HOURLY_DAYS`・`RPROXY_UI_USAGE_DAILY_DAYS`）。
+
 ## DB ユーザー
 
 UI 用のユーザーには両テーブルへの読み書き権限を与える。
@@ -64,6 +67,10 @@ GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@
 -- RPROXY_UI_NODES を使うとき
 GRANT SELECT, INSERT, DELETE         ON rproxy.forward_rule_targets TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overrides TO 'rproxy_ui'@'10.0.0.%';
+-- 利用量の集計（010）
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_counters TO 'rproxy_ui'@'10.0.0.%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_hourly   TO 'rproxy_ui'@'10.0.0.%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_daily    TO 'rproxy_ui'@'10.0.0.%';
 -- rproxy-api v0.4 の API のルールを見せるとき（009。UI は読むだけ）
 GRANT SELECT                         ON rproxy.rproxy_rules TO 'rproxy_ui'@'10.0.0.%';
 ```

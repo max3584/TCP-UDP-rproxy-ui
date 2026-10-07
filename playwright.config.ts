@@ -42,6 +42,8 @@ export default defineConfig({
       KEYCLOAK_CLIENT_ID: 'rproxy-ui',
       KEYCLOAK_CLIENT_SECRET: 'unused',
       KEYCLOAK_ISSUER: 'http://keycloak.invalid/realms/e2e',
+      // 利用量の集計（#101）を早く回す（tests/ui/usage.spec.ts。30 秒が最短）
+      RPROXY_UI_USAGE_SECS: process.env.RPROXY_UI_USAGE_SECS ?? '30',
     },
   },
 });

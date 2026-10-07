@@ -1,4 +1,5 @@
 // ダッシュボード（Traefik のダッシュボードのように、プロトコルごとのカードと全ルールの表を出す）
+import UsagePanel from '@/components/UsageChart';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
@@ -670,6 +671,8 @@ const DashboardPage: React.FC = () => {
           {manyNodes && tab === 'all' && <NodesCard nodes={nodes} groups={data.groups ?? []} rules={allRules} haLink={data.haSync !== undefined} />}
 
           <AttentionCard rules={attention} showTarget={manyNodes} />
+
+          {tab === 'all' && <UsagePanel id="card-usage" title={data.admin ? '通信量（すべてのルール）' : '通信量（自分のルール）'} />}
 
           <RulesTable rules={rules} now={now} showTarget={manyNodes} onChanged={() => void load()} onError={setError} />
         </div>

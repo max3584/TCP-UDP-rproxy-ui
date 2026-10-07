@@ -105,6 +105,10 @@ RPROXY_API_TOKEN="[token]"
 # RPROXY_API_TLS_CERT="/etc/rproxy-ui/tls/client.pem"
 # RPROXY_API_TLS_KEY="/etc/rproxy-ui/tls/client.key"
 # RPROXY_API_TLS_CA="/etc/rproxy-ui/tls/rproxy-ca.pem"
+# usage accounting (see "Usage"; needs db/migrations/010_usage.sql): interval (seconds, 0 turns it off) and days to keep
+# RPROXY_UI_USAGE_SECS=300
+# RPROXY_UI_USAGE_HOURLY_DAYS=32
+# RPROXY_UI_USAGE_DAILY_DAYS=400
 # several rproxy instances (see "Several rproxy instances (nodes and groups)"). When set, RPROXY_API_URL / RPROXY_API_TOKEN are not used
 # RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
 ```
@@ -228,6 +232,7 @@ The rproxy-api v0.4 settings (`../rproxy-api/docs/API.md`, "v0.4 settings") are 
 | Edit (details URL + `/edit`) | The change form |
 | Import (`/rules/import`) | Load rules from YAML / JSON (see "Export and import" below) |
 | Change history (`/history`) | History of adding, changing and deleting rules, and reverting to an earlier version (see "Change history and revert" below). The rule details screen also shows the history of that rule |
+| Usage (`/usage`) | Traffic report per month or day (grouped by owner, label, node or rule) with CSV, and traffic over time (see "Usage" below) |
 | rproxy features & settings (`/system`) | Per node: the rproxy-api version, v0.4 feature flags, which `global.performance` keys take effect, the settings file state (read-only) |
 
 rx is the number of bytes from the client to the target, tx from the target to the client (cumulative since rproxy started the rule; reset to 0 when rproxy restarts).
@@ -314,6 +319,16 @@ You can filter by protocol, listen address, port, operation and period (`rproxy-
   If the rule still exists it is replaced (a version that differs in source IP handling, port range or L4 / L7 is recreated); if it was deleted it is recreated. Reverts are also recorded in the history.
 - rproxy static rules are not in the DB, so they do not appear in the history (a revert is not possible when a static rule with the same key exists).
 - The history is the DB's `forward_rules_log`. No columns were added, so no migration is needed.
+
+## Usage (traffic accounting)
+
+rproxy's statistics (connections, rx / tx) go back to 0 when rproxy restarts, so every `RPROXY_UI_USAGE_SECS` (default 300 seconds, 0 turns it off) the UI reads each node's `GET /rules` and stores the difference from the previous reading in the DB (#101; `db/migrations/010_usage.sql`; without it nothing is collected).
+
+- Stored per rule and node hourly (`usage_hourly`, `RPROXY_UI_USAGE_HOURLY_DAYS` days, default 32) and daily (`usage_daily`, `RPROXY_UI_USAGE_DAILY_DAYS` days, default 400); months add up the daily rows. Buckets follow UTC. The UI deletes old rows.
+- When rproxy v0.4's `stats.counters_since` (when counting started) changes, the counters were reset and the current values are added in full (a live upgrade (handoff) keeps it, so counting continues). Older rproxy versions are told apart by `started_at`.
+- Each row records the rule's owner at that time (the user who created the UI rule), node / group, labels (`labels`) and origin (UI, static, API).
+- Rule details and the dashboard show a traffic chart (24 hours, 7 days, 30 days, 12 months; rx and tx stacked, also as a table), and "Usage" (`/usage`) shows a report per month or day (grouped by owner, a label key, node or rule) with CSV export. Administrators see all rules, users only their own.
+- With several UI instances, each collection runs in only one of them (a DB lock).
 
 ## Several rproxy instances (nodes and groups)
 

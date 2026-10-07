@@ -43,6 +43,7 @@ import AcmeStatus from '@/components/AcmeStatus';
 import { acmeStatusFor } from '@/components/acme';
 import HttpSummary from '@/components/HttpSummary';
 import HistoryList from '@/components/HistoryList';
+import UsagePanel from '@/components/UsageChart';
 import { joinList, translate } from '@/i18n/core';
 import { CONDITION_LABELS, asnLabel, conditionProblem, rateLabel, v04Fields } from '@/components/v04';
 import type { Condition } from '@/components/v04';
@@ -786,6 +787,11 @@ const RuleDetailPage: React.FC = () => {
             <Section id="section-http" title="L7 (HTTP)">
               <HttpSummary http={view.http} />
             </Section>
+          )}
+
+          {rule.origin !== 'static' && (
+            <UsagePanel id="section-usage" title="通信量（集計）"
+              query={new URLSearchParams({ protocol: rule.protocol, addr: rule.srcAddr, port: String(rule.srcPort), ...(rule.target !== undefined ? { target: tab !== 'all' ? tab : rule.target } : {}) }).toString()} />
           )}
 
           {view.stats?.http && <HttpStatsSection http={view.stats.http} />}

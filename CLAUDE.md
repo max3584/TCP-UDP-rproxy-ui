@@ -112,6 +112,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/v04form.ts` / `components/LimitsEditor.tsx` | RuleForm の「制限・GeoIP」タブ（欄の文字列と v0.4 の項目の行き来 `toV04Form` / `buildV04`。rproxy の `features` が使えると言う項目だけ編集し、使えない項目は読み取り専用で残す） |
 | `components/PlanView.tsx` | 変更前の差分（`POST /api/forward/plan` の応答。ノードごとの action・change・項目ごとの前と後・warnings・断り） |
 | `components/tlserror.ts` | `TlsError`（tls.ts と v04.ts が使う。tls.ts から再び export している） |
+| `components/usage.ts` / `components/usagecollect.ts` / `components/UsageChart.tsx` / `pages/usage.tsx` / `pages/api/forward/usage.ts` | 利用量（#101、migration 010）：差分の取り方（`usageDelta`：`counters_since`（なければ `started_at`）が同じなら差、変われば全部）、区切り（UTC）・グラフの値（`fillSeries`）・所有者／ラベルでの集計（`groupUsage`）・CSV（`reportCsv`）・設定（`usageConfig`）。集計は instrumentation から `startUsage`（`RPROXY_UI_USAGE_SECS` ごと、`GET_LOCK` で 1 つの UI だけ。ノードごとに 1 トランザクション、古い行を消す）。グラフは SVG の積み上げ棒（rx 青・tx 橙、表でも見られる）。`/api/forward/usage` は利用者なら `owner = ?` で絞る |
 | `components/apirules.ts` | rproxy の API で作ったルール（UI の DB にない。`origin: 'api'`。#76）：rproxy の応答（`apiRuleFromStatus`）と `rproxy_rules` の行（`apiRuleFromRow`）から画面の行を作り、ダッシュボードに固定ルールと一緒に足す（`mergeExternalRules`。API のルールは管理者だけ）。UI のルールの代わりに動いているもの（`shadowedBy`） |
 | `components/system.ts` / `pages/system.tsx` / `pages/api/forward/system.ts` | rproxy の機能と設定（`/system`。読み取り専用）：ノードごとの版・v0.4 の機能の印・`features.performance`・`GET /config` の状態 |
 
