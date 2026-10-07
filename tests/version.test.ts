@@ -61,8 +61,8 @@ describe('versionStatus', () => {
   });
 
   it('a newer minor or major than the UI knows', () => {
-    expect(KNOWN_RPROXY_MINOR).toBe('0.3');
-    expect(versionStatus('0.4.0', true)).toBe('newer');
+    expect(KNOWN_RPROXY_MINOR).toBe('0.4');
+    expect(versionStatus('0.5.0', true)).toBe('newer');
     expect(versionStatus('1.0.0', true)).toBe('newer');
   });
 

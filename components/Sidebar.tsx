@@ -9,6 +9,7 @@ const NAV: { href: string; label: string; active: (pathname: string) => boolean 
   { href: '/rules/new', label: '新規ルール', active: (p) => p === '/rules/new' },
   { href: '/rules/import', label: 'インポート', active: (p) => p === '/rules/import' },
   { href: '/history', label: '変更の履歴', active: (p) => p === '/history' },
+  { href: '/system', label: 'rproxy の機能と設定', active: (p) => p === '/system' },
   { href: '/profile', label: 'Profile', active: (p) => p === '/profile' },
 ];
 

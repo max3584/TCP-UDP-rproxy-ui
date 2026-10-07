@@ -175,6 +175,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 - `settings.spec.ts`：TLS のオプション（最小バージョン 1.3 で TLS 1.3 のスイートがないと送る前に断る・保存すると TLS 1.2 のクライアントを断る・編集画面に今の値）、basic_auth の realm・user_header・keep_authorization（401 の `WWW-Authenticate`、転送先に届く利用者の名前）、UDP の sni が版の注意なしで選べること。自己署名の証明書は openssl で作る（CI では apk の openssl）
 - `i18n.spec.ts`：英語への切り替えと cookie、別の子になった括弧の前の空白
 - `responsive.spec.ts`・`contrast.spec.ts`・`version.spec.ts`：375px / 768px ではみ出さないこと、白地に白文字がないこと、版の表示
+- `v04.spec.ts`：v0.4 の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームの「制限・GeoIP」でラベルと送信元ごとの同時接続 1 を付けて追加し、詳細画面にラベルが出て、2 本目の接続がすぐ閉じられること。`features.dry_run` のときは「差分を見る」で作成・変更の差分（接続を切らずに変わる、`labels`）が出ること
 - `acme.spec.ts`（`UI_E2E_ACME=1` のときだけ）：ACME（rproxy-api v0.3.21）。CI は rproxy-api に `docs/ACME.md` があれば、apk の pebble（ACME の試験用の CA）を同じコンテナで動かし、`scripts/ci-pebble.sh` が Pebble の HTTPS の証明書（openssl）・`/etc/hosts` の名前・rproxy の設定ファイル（`RPROXY_CONFIG` の `global.acme`）を作る。
   フォームで resolver を選び、ワイルドカード（dns-01 だけ）と `allowed_names` の外の名前を保存の前に断ること、保存したルールに rproxy が Pebble から証明書を取り（http-01、`http01_listen`）、詳細画面が「有効」になって実際に Pebble の証明書を返すこと、編集画面に resolver と名前が入っていること。
   rproxy が許可の外の名前を `400 invalid` で断ること。届かない CA の resolver では、詳細画面に「失敗」と仮の証明書（実際に `rproxy ACME placeholder` を返す）、ダッシュボードの要確認に「ACME 失敗」が出ること（375px でもはみ出さない・白地に白文字がない）
@@ -189,6 +190,25 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 | rule detail・form | `AcmeStatus`（取得待ちの仮の証明書、期限・更新の予定・次の試み・最後の誤り、古い rproxy の注意）、`AcmeCertificateEditor`（challenge つきの resolver、許可する名前、入力中の誤り） |
 | explainError | rproxy の断り（許可の外の名前・ワイルドカード・resolver・`global.acme` がない・udp・古い rproxy・`acme:write`）の説明 |
 | TLS・export / import | 名前の正規化、udp の ACME は `tls_config`、ACME の証明書が書き出して読み込んでも同じ |
+
+## 単体テスト：v0.4 のルールの項目（`tests/v04.test.ts`・`tests/forward-v04.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| v0.4 の値の検証 | 単位（時間・速さ・量）、labels・limits・bandwidth・geoip・outlier_detection（L4 と L7）の範囲と組み合わせ（rproxy の `src/core/limits.rs` などのテストと同じ例）。L7 のルールにルールの outlier_detection は付けない |
+| PATCH と DB と rproxy の形 | POST の本文と DB の `options` に rproxy と同じ形で書いて読み戻せる、使わなければ `options` は NULL のまま、PATCH はあるものを置き換え・なくなったものを `{}` で外し・どちらもないものは送らない、エクスポートから読み込める、ずれ・履歴・表示 |
+| フォームの欄 | 値と欄の行き来、rproxy が使えない項目は今の値を残す、欄の誤り、TCP のデータグラムの速さと L7 のルールの outlier_detection は送らない |
+| L7 のサービス | サービスの `outlier_detection` が保存する形に残り、誤りは `validateHttp` が出す |
+| /api/forward（add・modify・plan） | 追加は v0.4 の項目を rproxy と DB に、形の誤りは 400 で rproxy に送らない、変更は送られた項目だけ置き換え（null で外す）、`plan` は DB を変えずに rproxy の `?dry_run=true` を聞く（rproxy にないときは作るときの差分、断りはノードごとの誤り、削除） |
+| 429 locked_out | rproxy の一時停止は 502 `rproxy_locked_out` と説明（Retry-After の秒）、ダッシュボードにも出す |
+
+## 単体テスト：制御 API の mTLS（`tests/mtls.test.ts`）と rproxy の機能と設定（`tests/system.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| クライアント証明書の設定 | `RPROXY_API_TLS_*`、`nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca`（https だけ・証明書と鍵は両方・読めないファイルは誤り）、429 の `Retry-After` |
+| https の制御 API | openssl で作った CA・サーバ・クライアントの証明書で、クライアント証明書を求める https のサーバに接続でき、証明書がなければ断られる（openssl がなければ飛ばす） |
+| /system | v0.4 の rproxy の機能の印・performance・設定ファイル、v0.3 の rproxy・届かない rproxy |
 
 ## まだテストしていないこと
 

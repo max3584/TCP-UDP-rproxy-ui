@@ -5,7 +5,7 @@ import { useRouter } from 'next/router';
 import RuleForm from '@/components/RuleForm';
 import type { ForwardRule } from '@/components/lib';
 import { ruleHref, ruleKeyOf } from '@/components/dashboard';
-import { ErrorBanner, goBack, postRule } from '@/components/ui';
+import { ErrorBanner, goBack, postPlan, postRule } from '@/components/ui';
 
 const NewRulePage: React.FC = () => {
   const router = useRouter();
@@ -34,7 +34,7 @@ const NewRulePage: React.FC = () => {
       </nav>
       <h1 className="text-2xl font-bold text-gray-900">新規ルール</h1>
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
-      <RuleForm submitting={submitting} onSubmit={handleSubmit} onCancel={() => goBack(router, '/')} />
+      <RuleForm submitting={submitting} onSubmit={handleSubmit} onPlan={(r) => postPlan('add', r)} onCancel={() => goBack(router, '/')} />
     </div>
   );
 };

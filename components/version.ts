@@ -10,7 +10,7 @@ export const UI_VERSION: string = process.env.RPROXY_UI_VERSION ?? '';
 export const MIN_RPROXY_VERSION = '0.3.5';
 
 // この UI が知っている rproxy-api のマイナー（これより新しいマイナーは、知らない形があるかもしれないので知らせるだけ）
-export const KNOWN_RPROXY_MINOR = '0.3';
+export const KNOWN_RPROXY_MINOR = '0.4';
 
 // ok: 問題なし / old: MIN_RPROXY_VERSION より古い / unknown: 版を返さない（v0.3.18 より前の rproxy-api）か読めない
 // newer: UI が知らない新しいマイナー（知らせるだけ） / unreachable: rproxy に問い合わせできない（接続の表示は別にある）

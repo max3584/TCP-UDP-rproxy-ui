@@ -65,6 +65,20 @@ export const NO_ROLE_MESSAGE =
 export const RPROXY_UNAUTHORIZED_MESSAGE =
   'rproxy が UI のトークンを受け付けませんでした。UI サーバの RPROXY_API_TOKEN が rproxy のトークンファイルにあるか、期限（expires）が切れていないかを確認してください。';
 
+// rproxy が UI の送信元を 429 locked_out で断ったとき（rproxy v0.4 の api_lockout、#167）：UI のトークン・証明書で認証に失敗し続けたので、
+// rproxy がこの UI の IP を一時的に止めている。利用者の操作の問題ではないので code は rproxy_locked_out にする
+export const RPROXY_LOCKED_OUT_MESSAGE =
+  'rproxy が UI からの問い合わせを一時的に止めています（認証の失敗が続いたため）。UI サーバの RPROXY_API_TOKEN・クライアント証明書が rproxy のトークンファイルと合っているかを確かめてください。止める時間が過ぎると自動で解けます。';
+
+// 何秒後に解けるか（rproxy の Retry-After）を添える
+export function lockedOutText(retryAfter?: number): string {
+  return retryAfter !== undefined ? `${RPROXY_LOCKED_OUT_MESSAGE}（あと約 ${retryAfter} 秒）` : RPROXY_LOCKED_OUT_MESSAGE;
+}
+
+// ルールの組（ruleset。k8s のコントローラなど）に属するルールは、個別に変えられない（rproxy の 409 owned。v0.4）
+export const OWNED_RULE_MESSAGE =
+  'このルールは rproxy のルールの組（ruleset）に属しているため、画面からは変更・削除できません。組を管理しているもの（Kubernetes のコントローラなど）で変えてください。';
+
 const EXPLAIN: Record<string, string> = {
   resolve_failed: '転送先のホスト名を名前解決できませんでした。DNS に登録されているか、ホスト名の綴りを確認してください（IP アドレスでも指定できます）。',
   bind_failed: '待ち受けポートを開けませんでした。ほかのプログラムがそのポートを使っていないか確認してください。',
@@ -78,6 +92,9 @@ const EXPLAIN: Record<string, string> = {
   rproxy_unauthorized: RPROXY_UNAUTHORIZED_MESSAGE,
   no_role: NO_ROLE_MESSAGE,
   port_not_allowed: 'この待ち受けポートは管理者だけが使えます。',
+  rproxy_locked_out: RPROXY_LOCKED_OUT_MESSAGE,
+  locked_out: RPROXY_LOCKED_OUT_MESSAGE,
+  owned: OWNED_RULE_MESSAGE,
 };
 
 // 1024 未満のポートは、rproxy に CAP_NET_BIND_SERVICE がないと開けない

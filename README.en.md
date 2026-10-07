@@ -101,6 +101,10 @@ KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
+# connect to an https:// control API with a client certificate (mTLS; rproxy-api v0.4 --tls-client-auth). The CA verifies rproxy's certificate (default: the OS CAs)
+# RPROXY_API_TLS_CERT="/etc/rproxy-ui/tls/client.pem"
+# RPROXY_API_TLS_KEY="/etc/rproxy-ui/tls/client.key"
+# RPROXY_API_TLS_CA="/etc/rproxy-ui/tls/rproxy-ca.pem"
 # several rproxy instances (see "Several rproxy instances (nodes and groups)"). When set, RPROXY_API_URL / RPROXY_API_TOKEN are not used
 # RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
 ```
@@ -195,6 +199,25 @@ On the TLS / DTLS tab, choose "terminate", then "+ Add ACME certificate" and giv
 - Certificates that cannot be obtained or keep failing to renew are listed under "Needs attention" on the dashboard (the reason and the next attempt; the days left when renewals keep failing within 14 days of expiry). The list shows "ACME failed" / "ACME pending" badges.
 - Export and import write and read ACME certificates (`{"acme": "<resolver>", "domains": [...]}`) as they are.
 
+## v0.4 rule settings (limits, bandwidth, GeoIP, labels)
+
+The rproxy-api v0.4 settings (`../rproxy-api/docs/API.md`, "v0.4 settings") are edited on the "Limits & GeoIP" tab of the form. Only the items that rproxy reports in `GET /capabilities` `features` can be edited; on an rproxy that cannot run them the tab only explains (a value already set is kept read-only and sent as it is). All of them are optional and change without cutting connections.
+
+| Item | What it does |
+|---|---|
+| Labels (`labels`) | Marks such as `tenant=act` (up to 16). They do not change behaviour; rproxy shows them in logs and `/metrics`, and the UI uses them for usage reports |
+| L4 limits (`limits`) | Concurrent connections (UDP: sessions) of the whole rule and per source, new connections per source, UDP datagrams per source. Connections over a limit are closed before TLS and counted as "Refused by limits" |
+| Bandwidth limits (`bandwidth`) | Upload and download of the whole rule and per source (like `10Mbps`). TCP waits, UDP drops what is over |
+| GeoIP (`geoip`) | Allow and deny lists of countries (ISO 3166-1 alpha-2) and ASes. Needs `global.geoip` (MaxMind mmdb) in rproxy's settings file. L7 rules can also use the `geoip` middleware |
+| Passive health checks (`outlier_detection`) | Ejects targets that keep failing for a while (L4 rules). L7 rules set it per service on the "L7 (HTTP)" tab |
+
+- Values are checked with the same rules as rproxy before saving (ranges, units, combinations; rproxy decides in the end). They are also stored in the DB `options` column in rproxy's API shape, so a restarted rproxy comes back with the same contents.
+- When rproxy reports `features.dry_run`, the add and edit screens show "Show the difference". Before saving, it asks rproxy with `?dry_run=true` what would change on each node (create or update, whether it changes without cutting connections or recreates the listener, and each field before and after) without changing the DB or rproxy.
+- The detail screen shows the settings, the count refused by limits, when counting started (`counters_since`), which targets are ejected and how often, and rproxy's `conditions` (Gateway API style status), when rproxy reports them.
+- "rproxy features & settings" (`/system`) shows, read-only and per node, the rproxy-api version, the v0.4 feature flags, which `global.performance` keys of the settings file take effect, and the settings file state. Performance, GeoIP databases and control API hardening are changed in rproxy's settings file and arguments (not from the UI).
+- To protect the control API with client certificates (mTLS), set `RPROXY_API_TLS_CERT` and `RPROXY_API_TLS_KEY` (and `RPROXY_API_TLS_CA` to verify rproxy's certificate), or `tls_cert`, `tls_key` and `tls_ca` in `nodes.yaml` for several rproxy instances (`https://` URLs only; when the token file entry has only `client_cert`, no token is needed).
+- When rproxy temporarily locks the UI out after repeated authentication failures (`429 locked_out`), the screen and the log say to check the token and certificate (the lockout ends by itself).
+
 ## Usage
 
 | Screen | Contents |
@@ -205,6 +228,7 @@ On the TLS / DTLS tab, choose "terminate", then "+ Add ACME certificate" and giv
 | Edit (details URL + `/edit`) | The change form |
 | Import (`/rules/import`) | Load rules from YAML / JSON (see "Export and import" below) |
 | Change history (`/history`) | History of adding, changing and deleting rules, and reverting to an earlier version (see "Change history and revert" below). The rule details screen also shows the history of that rule |
+| rproxy features & settings (`/system`) | Per node: the rproxy-api version, v0.4 feature flags, which `global.performance` keys take effect, the settings file state (read-only) |
 
 rx is the number of bytes from the client to the target, tx from the target to the client (cumulative since rproxy started the rule; reset to 0 when rproxy restarts).
 "Refused" is the number of connections dropped because they were outside the allowed sources (allow_from), or because of the setting that drops connections matching no server name (unmatched: reject).
@@ -220,6 +244,7 @@ The form is divided into tabs.
 | L7 (HTTP) | Routes, services, middlewares and "When no route matches" (L7 rules; TCP, when rproxy supports L7) |
 | TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), backends per server name and "Connections matching no server name" (Send to the default backend / Disconnect), certificates, TLS options (minimum version and cipher suites; TCP terminate), client certificate verification (mTLS), ALPN, re-encryption to the backend |
 | Mail (STARTTLS) | STARTTLS for SMTP / IMAP / POP3 (only for TCP with "terminate") |
+| Limits & GeoIP | Labels, L4 limits, bandwidth limits, GeoIP, passive health checks (rproxy-api v0.4; see "v0.4 rule settings" above) |
 | Advanced | Source IP handling (source_ip), UDP idle timeout, allowed sources (allow_from) |
 
 - A profile only fills the form with the recommended settings from `../rproxy-api/docs/PROFILES.md`. Enter the addresses and certificate paths for your environment.
@@ -293,6 +318,8 @@ nodes:
   - name: node1                      # up to 32 lowercase letters, digits or _ (node and group names must all differ)
     url: http://10.0.0.11:8080       # http(s):// or unix:/run/rproxy/api.sock
     token_file: /etc/rproxy-ui/tokens/node1   # tokens are read from files (never stored in the DB)
+    # tls_cert: /etc/rproxy-ui/tls/node1.pem  # client certificate (mTLS) for an https:// url (with tls_key; tls_ca is rproxy's CA)
+    # tls_key: /etc/rproxy-ui/tls/node1.key
   - name: node2
     url: http://10.0.0.12:8080
     token_file: /etc/rproxy-ui/tokens/node2

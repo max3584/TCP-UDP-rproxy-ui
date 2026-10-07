@@ -120,7 +120,7 @@ describe('options JSON with allow_from', () => {
     expect(parseOptions(JSON.stringify({ tls: { mode: 'sni' }, starttls: null, starttls_required: true })).allowFrom).toEqual([]);
     expect(parseOptions(null)).toEqual({
       tls: { mode: 'passthrough' }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false,
-      balancing: { targets: [], balance: 'round_robin', healthCheck: null }, extraListenAddrs: [], enabled: true,
+      balancing: { targets: [], balance: 'round_robin', healthCheck: null }, extraListenAddrs: [], enabled: true, v04: {},
     });
     expect(() => parseOptions(JSON.stringify({ ...stored, extra: 1 }))).toThrow(/不明な項目/);
   });

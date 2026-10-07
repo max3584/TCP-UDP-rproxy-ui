@@ -7,6 +7,8 @@ import { extraAddrs, remoteFields, starttlsFields, toRproxyRule } from './settin
 import { Overrides, overrideFromRow } from './overrides';
 import { needsRecreateOnNode, ruleDrift } from './drift';
 import { ruleFromStatus } from './dashboard';
+import { v04Of, v04PatchFields } from './v04';
+import type { V04Settings } from './v04';
 
 // MariaDBのコネクションプールを作成
 function createPool() {
@@ -37,8 +39,9 @@ export function toKey(rule: ForwardRule): RproxyRuleKey {
 // http のルールは http を付けて L7 の設定も丸ごと置き換える。範囲と source_ip は変えられないので送らない。
 // crowdsec は有効なとき、または有効から無効にするとき（wasOn）だけ付ける（古い rproxy は知らない項目を拒否する）。
 // 宛先を複数から単一に戻すとき（wasMulti）は targets: [] も付けて、rproxy の宛先の一覧を外す。
-// 追加の待ち受けアドレスは、あるとき、またはあったものを外すとき（hadExtra）だけ付ける
-export function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false, hadExtra = false): RproxyRulePatch {
+// 追加の待ち受けアドレスは、あるとき、またはあったものを外すとき（hadExtra）だけ付ける。
+// v0.4 の項目は、あるとき（丸ごと置き換え）と、前（before）にあったものを外すとき（{}）だけ付ける
+export function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false, hadExtra = false, before?: V04Settings): RproxyRulePatch {
   return {
     ...remoteFields(rule),
     ...(wasMulti && rule.http === null && rule.targets.length === 0 ? { targets: [] } : {}),
@@ -48,6 +51,7 @@ export function toRproxyPatch(rule: ForwardRule, wasOn = false, wasMulti = false
     allow_from: rule.allowFrom,
     ...(rule.crowdsec || wasOn ? { crowdsec: rule.crowdsec } : {}),
     ...(extraAddrs(rule).length > 0 || hadExtra ? { extra_listen_addrs: extraAddrs(rule) } : {}),
+    ...v04PatchFields(rule, before),
   };
 }
 
@@ -80,6 +84,7 @@ export function fromRow(row: any): ForwardRule {
     healthCheck: opts.balancing.healthCheck,
     extraListenAddrs: opts.extraListenAddrs,
     enabled: opts.enabled,
+    ...opts.v04,
   };
 }
 
@@ -131,7 +136,7 @@ export async function resendOne(rule: ForwardRule): Promise<ResendResult> {
     return 'recreated';
   }
   const actual = ruleFromStatus(live, 0);
-  await modifyRule(key, toRproxyPatch(rule, actual.crowdsec, actual.targets.length > 0, (actual.extraListenAddrs ?? []).length > 0));
+  await modifyRule(key, toRproxyPatch(rule, actual.crowdsec, actual.targets.length > 0, (actual.extraListenAddrs ?? []).length > 0, actual));
   return 'modified';
 }
 
@@ -141,5 +146,5 @@ export function ruleOptions(rule: ForwardRule): string | null {
     targets: rule.targets,
     balance: rule.balance,
     healthCheck: rule.healthCheck,
-  }, extraAddrs(rule), rule.enabled !== false);
+  }, extraAddrs(rule), rule.enabled !== false, v04Of(rule));
 }

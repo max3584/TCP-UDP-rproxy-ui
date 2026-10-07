@@ -38,6 +38,7 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
     （rproxy は `targets` と `remote_addr` を一緒に受け付けないため。一覧に出す先頭の宛先は `targets[0]`）。
     `extra_listen_addrs`（同じポートで追加で待ち受ける IP アドレスの配列、最大 16 件。rproxy-api v0.3.3 から）は空なら省く。
     `enabled`（UI での一時停止）は `false` のときだけ書く。rproxy-api v0.3.5 から、rproxy は起動時にこの行を作らない（rproxy の API には送らない項目）。
+    v0.4 の `labels`・`limits`・`bandwidth`・`geoip`・`outlier_detection`（rproxy-api の docs/API.md の「v0.4 の設定」と同じ形）は使うときだけ書く（rproxy-api v0.4 から読める）。
     `<TLS>` の `routes[]` は `server_name` か `server_names`（どちらか一方）と、true のときだけ `passthrough` を持つ（rproxy-api v0.3.3 から）。
     passthrough で既定値のまま、STARTTLS なし、allow_from なし、http なし、crowdsec なし、宛先が 1 つのルールは NULL を保存する。列の型は変わらないので、migration は不要。
   - rproxy の固定ルール（`--static-rules` のファイル）はこのテーブルに入らない。

@@ -101,6 +101,10 @@ KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
+# https:// の制御 API にクライアント証明書（mTLS。rproxy-api v0.4 の --tls-client-auth）で接続するとき。CA は rproxy の証明書を確かめる（省略時は OS の CA）
+# RPROXY_API_TLS_CERT="/etc/rproxy-ui/tls/client.pem"
+# RPROXY_API_TLS_KEY="/etc/rproxy-ui/tls/client.key"
+# RPROXY_API_TLS_CA="/etc/rproxy-ui/tls/rproxy-ca.pem"
 # 複数の rproxy（README の「複数の rproxy（ノードとグループ）」）。指定すると RPROXY_API_URL / RPROXY_API_TOKEN は使わない
 # RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
 ```
@@ -195,6 +199,25 @@ TLS / DTLS タブで「終端」を選び、「＋ ACME の証明書を追加」
 - 取れない・更新に失敗している証明書は、ダッシュボードの「要確認」に出ます（失敗の理由と次の試みの時刻。更新できないまま期限まで 14 日以内なら残りの日数）。一覧には「ACME 失敗」「ACME 取得待ち」のバッジが付きます。
 - エクスポート・インポートは ACME の証明書（`{"acme": "<resolver>", "domains": [...]}`）をそのまま書き出し・読み込みます。
 
+## v0.4 のルールの項目（制限・帯域・GeoIP・ラベル）
+
+rproxy-api v0.4 の項目（`../rproxy-api/docs/API.md` の「v0.4 の設定」）は、フォームの「制限・GeoIP」タブで編集します。rproxy が `GET /capabilities` の `features` で使えると言う項目だけを編集でき、使えない rproxy では説明だけを出します（その項目に値があれば読み取り専用で残し、そのまま送ります）。どれも省略でき、接続を切らずに変えられます。
+
+| 項目 | 内容 |
+|---|---|
+| ラベル（`labels`） | `tenant=act` のような印（16 個まで）。動きには使わず、rproxy のログ・`/metrics` と、UI の利用量の集計に使う |
+| L4 の制限（`limits`） | ルール全体と送信元ごとの同時接続数（UDP はセッション数）、送信元ごとの新しい接続の速さ、UDP のデータグラムの速さ。超えた接続は TLS より前に閉じ、統計の「制限で断った接続」に数える |
+| 帯域の上限（`bandwidth`） | ルール全体と送信元ごとの上り・下り（`10Mbps` の形）。TCP は待たせ、UDP は超えた分を捨てる |
+| GeoIP（`geoip`） | 国（ISO 3166-1 alpha-2）と AS の許可・拒否のリスト。rproxy の設定ファイルの `global.geoip`（MaxMind の mmdb）が要る。L7 のルールではミドルウェアの `geoip` も選べる |
+| 受け身のヘルスチェック（`outlier_detection`） | 続けて失敗した転送先をしばらく外す（L4 のルール）。L7 のルールは「L7 (HTTP)」タブのサービスごと |
+
+- 保存の前に、rproxy と同じ規則で値を確かめます（範囲・単位・組み合わせ。最終的な判定は rproxy）。DB の `options` 列にも rproxy の API と同じ形で書くので、rproxy を再起動しても同じ内容に戻ります。
+- rproxy が `features.dry_run` を返すときは、追加・変更の画面に「差分を見る」が出ます。保存する前に、ノードごとに rproxy で何が変わるか（作成・変更、接続を切らずに変わるか・待ち受けを作り直すか、項目ごとの前と後）を rproxy の `?dry_run=true` で確かめます（DB も rproxy も変えません）。
+- 詳細画面に、設定した項目、制限で断った数、数え始めの時刻（`counters_since`）、宛先ごとの外している状態と回数、rproxy の `conditions`（Gateway API の形の状態）を出します（rproxy が返すとき）。
+- 「rproxy の機能と設定」（`/system`）に、ノードごとの rproxy-api の版、v0.4 の機能の印、設定ファイルの `global.performance` で効く項目、設定ファイルの状態を読み取り専用で出します。performance・GeoIP のデータベース・制御 API の守りは rproxy の設定ファイルと引数で変えます（画面からは変えません）。
+- 制御 API をクライアント証明書（mTLS）で守るときは、`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`（と、rproxy の証明書を確かめる `RPROXY_API_TLS_CA`）、複数の rproxy では `nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca` を書きます（`https://` の URL だけ。トークンファイルのエントリが `client_cert` だけならトークンは要りません）。
+- UI の認証が続けて失敗して rproxy が UI を一時的に止めた（`429 locked_out`）ときは、トークン・証明書を確かめるように画面とログに出します（止める時間が過ぎると自動で解けます）。
+
 ## 使い方
 
 | 画面 | 内容 |
@@ -205,6 +228,7 @@ TLS / DTLS タブで「終端」を選び、「＋ ACME の証明書を追加」
 | 編集（詳細の URL + `/edit`） | 変更フォーム |
 | インポート（`/rules/import`） | YAML / JSON のルールを読み込む（下の「エクスポートとインポート」） |
 | 変更の履歴（`/history`） | ルールの追加・変更・削除の履歴と、前の版への巻き戻し（下の「変更の履歴と巻き戻し」）。ルールの詳細画面にも、そのルールの履歴が出ます |
+| rproxy の機能と設定（`/system`） | ノードごとの rproxy-api の版、v0.4 の機能の印、`global.performance` で効く項目、設定ファイルの状態（読み取り専用） |
 
 rx はクライアントから転送先へ、tx は転送先からクライアントへのバイト数です（rproxy がルールを開始してからの累計。rproxy を再起動すると 0 に戻ります）。
 「拒否」は、接続を許可する送信元（allow_from）の範囲外か、どのサーバ名にも一致しない接続を切断する設定（unmatched: reject）のために切断した接続の数です。
@@ -220,6 +244,7 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 | L7 (HTTP) | ルート・サービス・ミドルウェア・どのルートにも一致しないとき（L7 のルール。TCP で、rproxy が L7 に対応しているとき） |
 | TLS / DTLS | passthrough / sni / 終端（UDP では DTLS）、サーバ名ごとの転送先と、どのサーバ名にも一致しない接続の扱い（基本の転送先へ送る / 切断する）、証明書、TLS のオプション（最小バージョンと暗号スイート。TCP の終端）、クライアント証明書の検証（mTLS）、ALPN、転送先への再暗号化 |
 | メール (STARTTLS) | SMTP / IMAP / POP3 の STARTTLS（TCP で「終端」のときだけ） |
+| 制限・GeoIP | ラベル、L4 の制限、帯域の上限、GeoIP、受け身のヘルスチェック（rproxy-api v0.4。上の「v0.4 のルールの項目」） |
 | 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、接続を許可する送信元（allow_from） |
 
 - プロファイルは `../rproxy-api/docs/PROFILES.md` の推奨設定をフォームに入れるだけです。アドレスと証明書のパスは環境に合わせて入力してください。
@@ -293,6 +318,8 @@ nodes:
   - name: node1                      # 英小文字・数字・_ の 32 文字まで（ノードとグループで重ならないこと）
     url: http://10.0.0.11:8080       # http(s):// か unix:/run/rproxy/api.sock
     token_file: /etc/rproxy-ui/tokens/node1   # トークンはファイルから読む（DB には置かない）
+    # tls_cert: /etc/rproxy-ui/tls/node1.pem  # https:// でクライアント証明書（mTLS）を使うとき（tls_key と両方。tls_ca は rproxy の CA）
+    # tls_key: /etc/rproxy-ui/tls/node1.key
   - name: node2
     url: http://10.0.0.12:8080
     token_file: /etc/rproxy-ui/tokens/node2

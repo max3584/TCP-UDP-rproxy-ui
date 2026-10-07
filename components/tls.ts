@@ -27,15 +27,13 @@ import {
   MAX_EXTRA_LISTEN_ADDRS,
 } from './lib';
 import { checkAllowFrom, parseCidr } from './cidr';
+import { V04_KEYS, normalizeV04, v04Fields } from './v04';
+import type { V04Settings } from './v04';
 
-export type TlsErrorCode = 'invalid' | 'tls_config' | 'unsupported';
-
-export class TlsError extends Error {
-  constructor(message: string, public readonly code: TlsErrorCode) {
-    super(message);
-    this.name = 'TlsError';
-  }
-}
+import { TlsError } from './tlserror';
+// TlsError は v04.ts（tls.ts を読み込まない）からも使うので別のファイルに置く
+export { TlsError } from './tlserror';
+export type { TlsErrorCode } from './tlserror';
 
 export const DEFAULT_TLS: TlsSpec = { mode: 'passthrough' };
 
@@ -507,7 +505,8 @@ export function normalizeExtraListenAddrs(value: unknown, listenAddr?: string): 
 // rproxy は deny_unknown_fields で読むので、これ以外のキーを入れてはいけない
 // （crowdsec は rproxy v0.3.2、targets / balance / health_check / extra_listen_addrs は v0.3.3 から。extra_listen_addrs は空なら省く）
 // enabled は UI での一時停止（false のときだけ保存する。rproxy は起動時にその行を作らない。rproxy の API には送らない）
-export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec', 'targets', 'balance', 'health_check', 'extra_listen_addrs', 'enabled'];
+// v0.4 の labels・limits・bandwidth・geoip・outlier_detection は rproxy の API と同じ形で、使うときだけ書く（rproxy v0.4 から読める）
+export const OPTIONS_KEYS = ['tls', 'starttls', 'starttls_required', 'allow_from', 'http', 'crowdsec', 'targets', 'balance', 'health_check', 'extra_listen_addrs', 'enabled', ...V04_KEYS];
 
 export function optionsJson(
   tls: TlsSpec,
@@ -519,9 +518,12 @@ export function optionsJson(
   balancing: Balancing = NO_BALANCING,
   extraListenAddrs: string[] = [],
   enabled = true,
+  v04: V04Settings = {},
 ): string | null {
   const multi = balancing.targets.length > 0;
-  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec && !multi && extraListenAddrs.length === 0 && enabled) {
+  const extra = v04Fields(v04);
+  if (isDefaultTls(tls) && starttls === null && allowFrom.length === 0 && http === null && !crowdsec && !multi && extraListenAddrs.length === 0 && enabled
+    && Object.keys(extra).length === 0) {
     return null;
   }
   return JSON.stringify({
@@ -536,6 +538,7 @@ export function optionsJson(
     ...(multi && balancing.healthCheck !== null ? { health_check: balancing.healthCheck } : {}),
     ...(extraListenAddrs.length > 0 ? { extra_listen_addrs: extraListenAddrs } : {}),
     ...(enabled ? {} : { enabled: false }),
+    ...extra,
   });
 }
 
@@ -571,6 +574,8 @@ export interface RuleOptions {
   extraListenAddrs: string[];
   // false なら UI で一時停止中（rproxy には作らない）
   enabled: boolean;
+  // v0.4 の項目（ないものは省く）
+  v04: V04Settings;
 }
 
 // options 列を読む。ドライバによっては JSON がオブジェクトで返るので両方を受け付ける
@@ -579,6 +584,7 @@ export function parseOptions(value: unknown): RuleOptions {
     tls: { ...DEFAULT_TLS }, starttls: null, starttlsRequired: true, allowFrom: [], http: null, crowdsec: false, balancing: { ...NO_BALANCING },
     extraListenAddrs: [],
     enabled: true,
+    v04: {},
   });
   if (value === undefined || value === null || value === '') return empty();
   const data = typeof value === 'string' ? JSON.parse(value) : value;
@@ -601,5 +607,6 @@ export function parseOptions(value: unknown): RuleOptions {
     },
     extraListenAddrs: normalizeExtraListenAddrs(data.extra_listen_addrs),
     enabled: normalizeEnabled(data.enabled),
+    v04: normalizeV04(data, undefined, data.http !== undefined && data.http !== null),
   };
 }

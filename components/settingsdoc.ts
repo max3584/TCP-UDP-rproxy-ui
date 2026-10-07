@@ -7,6 +7,7 @@ import type { ForwardRule } from './lib';
 import type { RproxyRule } from './rproxy';
 import { TlsError, isDefaultTls } from './tls';
 import { settingsOverridesToBody, toSettingsOverride } from './overrides';
+import { v04Fields } from './v04';
 
 // starttls / starttls_required は STARTTLS を使うときだけ付ける
 export function starttlsFields(rule: ForwardRule) {
@@ -47,6 +48,8 @@ export function toRproxyRule(rule: ForwardRule): RproxyRule {
     // 古い rproxy（v0.3.2 より前）は知らない項目を拒否するので、使うときだけ付ける
     ...(rule.crowdsec ? { crowdsec: true } : {}),
     ...(extraAddrs(rule).length > 0 ? { extra_listen_addrs: extraAddrs(rule) } : {}),
+    // v0.4 の項目（使うときだけ。古い rproxy は知らない項目を断る）
+    ...v04Fields(rule),
   };
 }
 
@@ -111,6 +114,12 @@ const FIELD_MAP: Record<string, string> = {
   balance: 'balance',
   health_check: 'healthCheck',
   extra_listen_addrs: 'extraListenAddrs',
+  // v0.4（rproxy の API と同じ形）
+  labels: 'labels',
+  limits: 'limits',
+  bandwidth: 'bandwidth',
+  geoip: 'geoip',
+  outlier_detection: 'outlierDetection',
   // UI での一時停止（エクスポートした停止中のルール）。rproxy の設定ファイルにはない項目
   enabled: 'enabled',
   // ノードごとの上書き（UI のエクスポートだけ）

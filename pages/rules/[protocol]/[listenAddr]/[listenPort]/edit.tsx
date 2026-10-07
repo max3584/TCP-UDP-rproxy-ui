@@ -5,7 +5,7 @@ import { useRouter } from 'next/router';
 import RuleForm from '@/components/RuleForm';
 import type { ForwardRule } from '@/components/lib';
 import { hostPort, parseRuleKey, portsLabel, ruleHref, toRule } from '@/components/dashboard';
-import { ErrorBanner, goBack, postRule, useRule } from '@/components/ui';
+import { ErrorBanner, goBack, postPlan, postRule, useRule } from '@/components/ui';
 import { STATIC_RULE_MESSAGE } from '@/components/messages';
 
 const EditRulePage: React.FC = () => {
@@ -67,6 +67,7 @@ const EditRulePage: React.FC = () => {
           initialData={initial}
           submitting={submitting}
           onSubmit={handleSubmit}
+          onPlan={(r) => postPlan('modify', r)}
           onCancel={() => goBack(router, ruleHref(key))}
         />
       )}

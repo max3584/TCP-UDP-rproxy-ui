@@ -175,6 +175,7 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 - `settings.spec.ts`: TLS options (minimum version 1.3 without a TLS 1.3 suite is refused before sending; once saved, TLS 1.2 clients are refused; the edit page shows the current values), basic_auth realm, user_header and keep_authorization (the 401 `WWW-Authenticate` and the user name the backend receives), and UDP sni offered without the version note. The self-signed certificate is made with openssl (apk's openssl in CI)
 - `i18n.spec.ts`: switching to English and the cookie, the space before a parenthetical that is a separate child
 - `responsive.spec.ts`, `contrast.spec.ts`, `version.spec.ts`: no overflow at 375px / 768px, no white text on white, the version display
+- `v04.spec.ts`: v0.4 rule settings (only when rproxy's `features` report them; skipped otherwise). Adds a rule with a label and one concurrent connection per source from the "Limits & GeoIP" tab, checks the label on the details and that a second connection is closed at once. With `features.dry_run`, "Show the difference" shows the create and change plans (changes without cutting connections, `labels`)
 - `acme.spec.ts` (only with `UI_E2E_ACME=1`): ACME (rproxy-api v0.3.21). When rproxy-api has `docs/ACME.md`, CI runs apk's pebble (the ACME test CA) in the same container, and `scripts/ci-pebble.sh` makes Pebble's HTTPS certificate (openssl), the names in `/etc/hosts` and rproxy's settings file (`global.acme` in `RPROXY_CONFIG`).
   The form offers the resolvers and refuses wildcards (dns-01 only) and names outside `allowed_names` before saving; for the saved rule rproxy obtains a certificate from Pebble (http-01, `http01_listen`), the details show "valid" and Pebble's certificate is actually served; the edit page shows the resolver and the names.
   rproxy refuses names outside the allowlist with `400 invalid`. With a resolver whose CA cannot be reached, the details show "failed" and the stand-in (`rproxy ACME placeholder` is actually served), and the dashboard's attention list shows "ACME failed" (no overflow at 375px, no white text on white)
@@ -189,6 +190,25 @@ Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
 | rule detail, form | `AcmeStatus` (the stand-in while pending, expiry, renewal time, next attempt, last error, the note for an older rproxy), `AcmeCertificateEditor` (resolvers with their challenge, allowed names, errors while typing) |
 | explainError | Explanations of rproxy's refusals (names outside the allowlist, wildcards, resolvers, no `global.acme`, udp, an older rproxy, `acme:write`) |
 | TLS, export / import | Normalizing names, ACME on udp is `tls_config`, ACME certificates are the same after export and import |
+
+## Unit tests: v0.4 rule settings (`tests/v04.test.ts`, `tests/forward-v04.test.ts`)
+
+| Test | What it checks |
+|---|---|
+| Validating v0.4 values | Units (durations, rates, sizes), ranges and combinations of labels, limits, bandwidth, geoip and outlier_detection (L4 and L7), with the same examples as rproxy's `src/core/limits.rs` and others. L7 rules get no rule-level outlier_detection |
+| PATCH, DB and rproxy shapes | Written to the POST body and the DB `options` in rproxy's shape and read back; `options` stays NULL when unused; PATCH replaces what is present, removes what disappeared with `{}` and sends nothing else; import from an export; drift, history and display |
+| Form fields | Values and fields round-trip; items rproxy cannot run keep their current value; field errors; TCP datagram rates and L7 rule-level outlier_detection are not sent |
+| L7 services | A service's `outlier_detection` stays in the stored shape and errors come from `validateHttp` |
+| /api/forward (add, modify, plan) | add sends v0.4 settings to rproxy and the DB, malformed values are a 400 without calling rproxy; modify replaces only the fields sent (null removes); `plan` asks rproxy with `?dry_run=true` without changing the DB (the create plan when rproxy lacks the rule, refusals as per-node errors, delete) |
+| 429 locked_out | An rproxy lockout is a 502 `rproxy_locked_out` with an explanation (Retry-After seconds), also on the dashboard |
+
+## Unit tests: control API mTLS (`tests/mtls.test.ts`) and rproxy features & settings (`tests/system.test.ts`)
+
+| Test | What it checks |
+|---|---|
+| Client certificate settings | `RPROXY_API_TLS_*`, `tls_cert` / `tls_key` / `tls_ca` in `nodes.yaml` (https only, certificate and key together, unreadable files are errors), `Retry-After` of a 429 |
+| https control API | With a CA, server and client certificate made by openssl, connects to an https server that requires client certificates, and is refused without one (skipped without openssl) |
+| /system | Feature flags, performance and settings file of a v0.4 rproxy; a v0.3 rproxy; an unreachable rproxy |
 
 ## Not yet tested
 

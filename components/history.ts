@@ -3,6 +3,7 @@
 import type { ForwardRule } from './lib';
 import { hostPort, portsLabel } from './dashboard';
 import { tc, translate } from '@/i18n/core';
+import { v04Fields } from './v04';
 
 // RESEND は 1 つのノードへの送り直し（#98。内容は変えない）、OVERRIDE はノードごとの上書きの変更（内容はそのノードで動かす内容）
 export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND' | 'OVERRIDE';
@@ -106,6 +107,14 @@ export function ruleChanges(prev: ForwardRule | null, next: ForwardRule | null):
   if (!same(prev.extraListenAddrs ?? [], next.extraListenAddrs ?? [])) {
     change('追加の待ち受けアドレス', value((prev.extraListenAddrs ?? []).join(', ')), value((next.extraListenAddrs ?? []).join(', ')));
   }
+  // v0.4 の項目（中身が大きいので変わったことだけ）
+  const pv = v04Fields(prev);
+  const nv = v04Fields(next);
+  if (!same(pv.labels, nv.labels)) note('ラベルを変更');
+  if (!same(pv.limits, nv.limits)) note('L4 の制限を変更');
+  if (!same(pv.bandwidth, nv.bandwidth)) note('帯域の上限を変更');
+  if (!same(pv.geoip, nv.geoip)) note('GeoIP を変更');
+  if (!same(pv.outlier_detection, nv.outlier_detection)) note('受け身のヘルスチェックを変更');
   // 一時停止・再開（#63）
   scalar('状態', ruleState(prev), ruleState(next));
   return out;

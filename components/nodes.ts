@@ -4,7 +4,8 @@
 import { readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { parse as parseYaml } from 'yaml';
-import type { RproxyNode } from './rproxy';
+import type { ClientTls, RproxyNode } from './rproxy';
+import { envClientTls } from './rproxy';
 import type { GroupMode, NodesInfo } from './lib';
 
 // RPROXY_UI_NODES がないときの 1 台の名前（DB の target 列の既定値と同じ）
@@ -23,6 +24,8 @@ export interface NodeConfig {
   tokenFile?: string;
   // token_file の中身（DB には置かない）
   token?: string;
+  // https:// の制御 API のクライアント証明書・秘密鍵・CA（rproxy v0.4 の mTLS、#167。tls_cert・tls_key・tls_ca）
+  tls?: ClientTls;
 }
 
 export interface GroupConfig {
@@ -53,7 +56,7 @@ export class NodesConfigError extends Error {
 }
 
 const TOP_KEYS = ['nodes', 'groups', 'default_target'];
-const NODE_KEYS = ['name', 'url', 'token_file'];
+const NODE_KEYS = ['name', 'url', 'token_file', 'tls_cert', 'tls_key', 'tls_ca'];
 const GROUP_KEYS = ['name', 'nodes', 'mode', 'vip', 'auto_resend'];
 
 // IPv6 は rproxy の GET /interfaces と同じ圧縮表記（小文字）に揃える
@@ -83,6 +86,26 @@ function checkUrl(value: unknown, where: string): string {
   throw new NodesConfigError(`${where}.url は http://・https://・unix:/ のどれかで始めてください。`);
 }
 
+// tls_cert・tls_key・tls_ca（クライアント証明書の mTLS。https:// のときだけ）。ファイルが読めるかも確かめる。readFile は読む関数
+export function checkClientTls(raw: Record<string, unknown>, where: string, url: string, readFile: (path: string) => string): ClientTls | undefined {
+  const tls: ClientTls = {};
+  for (const [key, field] of [['tls_cert', 'cert'], ['tls_key', 'key'], ['tls_ca', 'ca']] as const) {
+    const v = raw[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== 'string' || v.trim() === '') throw new NodesConfigError(`${where}.${key} にはファイルのパスを書いてください。`);
+    try {
+      readFile(v.trim());
+    } catch (err) {
+      throw new NodesConfigError(`${where}.${key}（${v.trim()}）を読めません: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    tls[field] = v.trim();
+  }
+  if (Object.keys(tls).length === 0) return undefined;
+  if (!url.startsWith('https://')) throw new NodesConfigError(`${where}: tls_cert・tls_key・tls_ca は https:// の url でだけ使えます。`);
+  if ((tls.cert === undefined) !== (tls.key === undefined)) throw new NodesConfigError(`${where}: tls_cert と tls_key は両方書いてください。`);
+  return tls;
+}
+
 // 設定ファイルの中身を確かめて読む。readToken は token_file を読む関数（テストで差し替える）
 export function parseNodesConfig(text: string, readToken: (path: string) => string): NodesConfig {
   let doc: unknown;
@@ -106,7 +129,8 @@ export function parseNodesConfig(text: string, readToken: (path: string) => stri
     if (names.has(name)) throw new NodesConfigError(`名前 ${name} が重なっています（ノードとグループの名前はすべて別にしてください）。`);
     names.add(name);
     const url = checkUrl(raw.url, where);
-    if (raw.token_file === undefined || raw.token_file === null) return { name: name, url: url };
+    const tls = checkClientTls(raw, where, url, readToken);
+    if (raw.token_file === undefined || raw.token_file === null) return { name: name, url: url, ...(tls ? { tls: tls } : {}) };
     if (typeof raw.token_file !== 'string' || raw.token_file.trim() === '') {
       throw new NodesConfigError(`${where}.token_file にはファイルのパスを書いてください。`);
     }
@@ -118,7 +142,7 @@ export function parseNodesConfig(text: string, readToken: (path: string) => stri
       throw new NodesConfigError(`${where}.token_file（${tokenFile}）を読めません: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (token === '') throw new NodesConfigError(`${where}.token_file（${tokenFile}）が空です。`);
-    return { name: name, url: url, tokenFile: tokenFile, token: token };
+    return { name: name, url: url, tokenFile: tokenFile, token: token, ...(tls ? { tls: tls } : {}) };
   });
 
   const nodeNames = new Set(nodes.map((n) => n.name));
@@ -169,7 +193,7 @@ export function parseNodesConfig(text: string, readToken: (path: string) => stri
 export function implicitConfig(): NodesConfig {
   return {
     configured: false,
-    nodes: [{ name: DEFAULT_NODE, url: process.env.RPROXY_API_URL ?? '', token: process.env.RPROXY_API_TOKEN || undefined }],
+    nodes: [{ name: DEFAULT_NODE, url: process.env.RPROXY_API_URL ?? '', token: process.env.RPROXY_API_TOKEN || undefined, ...(envClientTls() ? { tls: envClientTls() } : {}) }],
     groups: [],
     defaultTarget: DEFAULT_NODE,
   };
@@ -222,7 +246,7 @@ export function targetNodes(config: NodesConfig, target: string): NodeConfig[] |
 
 // rproxy のクライアントに渡すノード
 export function toRproxyNode(node: NodeConfig): RproxyNode {
-  return { name: node.name, url: node.url, ...(node.token !== undefined ? { token: node.token } : {}) };
+  return { name: node.name, url: node.url, ...(node.token !== undefined ? { token: node.token } : {}), ...(node.tls ? { tls: node.tls } : {}) };
 }
 
 // 2 つのノード／グループに共通のノードがあるか（同じキーのルールを両方に置くと、そのノードで重なる）

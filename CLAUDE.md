@@ -57,7 +57,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `pages/rules/new.tsx` | ルールの追加画面。保存したら詳細画面へ、キャンセルは前の画面へ |
 | `pages/rules/[protocol]/[listenAddr]/[listenPort]/index.tsx` | ルールの詳細（概要・待ち受け・転送先と解決したアドレス・TLS（routes と unmatched、証明書と中間 CA、クライアント認証、ALPN、upstream）・STARTTLS・詳細（allow_from を含む）・統計（拒否を含む）・L7 のルールでは HTTP のリクエスト（状態コード別、ルートごと、制限・遮断の数））。編集ボタンと、確認ダイアログつきの削除ボタン。固定ルールでは両方を出さず「固定ルール（rproxy の設定ファイルで管理）」と出す。`listenAddr` は URL エンコードする（IPv6 の `:` を含むため） |
 | `pages/rules/[protocol]/[listenAddr]/[listenPort]/edit.tsx` | ルールの変更画面。保存したら詳細画面へ。固定ルールではフォームを出さない |
-| `components/RuleForm.tsx` | ルールの入力フォームとクライアント側のバリデーション（追加・変更の画面で使う。旧 `Modal.tsx`）。タブ（基本 / L7 (HTTP) / TLS・DTLS / メール (STARTTLS) / 詳細）に分かれ、矢印キー / Home / End で移れる（WAI-ARIA の Tabs）。エラーのあるタブには件数の印が付く。「詳細」タブに allow_from（1 行に 1 件）、TLS タブに unmatched（tcp の sni / terminate で routes があるときだけ）。`source_ip`・TLS のモード・STARTTLS の選択肢と範囲の上限は `/api/forward/capabilities` から取得する。TLS タブの「TLS のオプション」（`tls.options` の最小バージョンと暗号スイート）は tcp の終端で `features.tls_options` が true のときだけ編集でき、それ以外は読み取り専用の注記で残して送る。中間 CA（`chain_file`）の欄は証明書ごと・クライアント認証・upstream に常に出す（3 階層以上の PKI を使うため） |
+| `components/RuleForm.tsx` | ルールの入力フォームとクライアント側のバリデーション（追加・変更の画面で使う。旧 `Modal.tsx`）。タブ（基本 / L7 (HTTP) / TLS・DTLS / メール (STARTTLS) / 制限・GeoIP / 詳細）に分かれ、矢印キー / Home / End で移れる（WAI-ARIA の Tabs）。エラーのあるタブには件数の印が付く。「詳細」タブに allow_from（1 行に 1 件）、TLS タブに unmatched（tcp の sni / terminate で routes があるときだけ）。`source_ip`・TLS のモード・STARTTLS の選択肢と範囲の上限は `/api/forward/capabilities` から取得する。TLS タブの「TLS のオプション」（`tls.options` の最小バージョンと暗号スイート）は tcp の終端で `features.tls_options` が true のときだけ編集でき、それ以外は読み取り専用の注記で残して送る。中間 CA（`chain_file`）の欄は証明書ごと・クライアント認証・upstream に常に出す（3 階層以上の PKI を使うため） |
 | `components/dashboard.ts` | 一覧の表示は待ち受けをポートだけ（`listenPortLabel`。アドレスは詳細画面と title の `listenLabel`）、転送先を代表の名前 1 つ（`listTarget` / `representativeHost`。L7 は最初のルートの `Host(...)`）にする。検索は表示していないアドレスや名前でも一致する。ダッシュボードと詳細画面の集計・整形（状態の集計、TLS の内訳、絞り込み、バイト数・時間の表示、ドーナツの `conic-gradient`、画面の URL）と、rproxy の応答から固定ルールの行を作る `ruleFromStatus` / `mergeStaticRules`。React に依存しない |
 | `components/RequireAuth.tsx` | 画面のサインインの確認。`_app.tsx` で `PUBLIC_PATHS`（`/profile` だけ）以外の全ページを包み、サインインしていなければ Keycloak のサインインへ移す（サインイン後は元のページに戻る）。ページを足したら、サインインなしで開けてよいかを決めて `PUBLIC_PATHS` を見直す |
 | `components/ui.tsx` | 状態・TLS・固定・IP 制限のバッジ、エラーのバナー、確認ダイアログ（`<dialog>`）、自動更新のフック、1 件取得のフック `useRule`、API への送信 |
@@ -108,6 +108,11 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `pages/history.tsx` | 変更の履歴（絞り込み） |
 | `keycloak/` | Keycloak のレルム定義（読み込み用の JSON。シークレットとユーザーは含めない） |
 | `db/` | テーブル定義（`schema.sql`）とマイグレーション。`db/README.md` を参照 |
+| `components/v04.ts` | v0.4 のルールの項目（rproxy-api の docs/API.md「v0.4 の設定」）：`labels`・`limits`・`bandwidth`・`geoip`・`outlier_detection`（L4 と L7 のサービス）の型と検証（rproxy の `src/core/limits.rs`・`bandwidth.rs`・`outlier.rs`・`net/geoip.rs`・`core/ruleset.rs` と同じ規則。`normalizeV04`）、rproxy・DB の形（`v04Fields`）と PATCH の形（`v04PatchFields`：あるものは置き換え、なくなったものは `{}`）、`conditions` と dry run の `RulePlan` の型と画面の名前。React と Node に依存しない |
+| `components/v04form.ts` / `components/LimitsEditor.tsx` | RuleForm の「制限・GeoIP」タブ（欄の文字列と v0.4 の項目の行き来 `toV04Form` / `buildV04`。rproxy の `features` が使えると言う項目だけ編集し、使えない項目は読み取り専用で残す） |
+| `components/PlanView.tsx` | 変更前の差分（`POST /api/forward/plan` の応答。ノードごとの action・change・項目ごとの前と後・warnings・断り） |
+| `components/tlserror.ts` | `TlsError`（tls.ts と v04.ts が使う。tls.ts から再び export している） |
+| `components/system.ts` / `pages/system.tsx` / `pages/api/forward/system.ts` | rproxy の機能と設定（`/system`。読み取り専用）：ノードごとの版・v0.4 の機能の印・`features.performance`・`GET /config` の状態 |
 
 ## データの流れ
 
@@ -159,6 +164,15 @@ HTTP の取り決めは `../rproxy-api/docs/API.md` が正。変更するとき�
 rproxy は起動時に `forward_rules` を読んでルールを復元する（読む列は `db/README.md` を参照）。複数のノードでは、各 rproxy はノードごとのデータベースの `forward_rules` ビュー（`db/node-view.mjs`。`forward_rule_targets` で自分とグループの行に絞る）を読む。rproxy-api は変えない。
 
 ## 注意点
+
+- v0.4 の形（rproxy-api の docs/API.md「v0.4 の設定」、docs/DESIGN-v0.4.md。UI の v0.4.0 は rproxy-api v0.4.0 と一緒に出す）：
+  ルールの `labels`・`limits`・`bandwidth`・`geoip`・`outlier_detection` は `ForwardRule` に同じ名前（outlier だけ `outlierDetection`）で、使うときだけ付く。DB の `options` にも rproxy と同じ形で使うときだけ書く（`OPTIONS_KEYS` に入れた。v0.3 の rproxy は知らないキーの行を断るので、使わなければ書かない）。
+  rproxy への POST は使うときだけ、PATCH はあるものと前にあって外すもの（`{}`）だけ付ける（`toRproxyPatch` の 5 番目の引数が前の値）。`modify` の body にない項目は DB の値を保ち、`null` は外す（フォームは編集できる項目で空にしたものを `null` で送る）。L7 のルールのルールの `outlier_detection` は `invalid`（L7 はサービスごと。`cleanHttp` が `outlier_detection` を残す）、`packets` は udp だけ。
+  フォームは `features` の `labels`・`limits`・`bandwidth`・`geoip`・`outlier_detection` が true の項目だけ編集でき、L7 のサービスの受け身のヘルスチェックは `features.services` に `outlier_detection`、ミドルウェアの `geoip` は `features.middlewares` にあるときだけ。
+  `features.dry_run` のときは追加・変更の画面に「差分を見る」（`POST /api/forward/plan {action, ...}`：add は本文、modify は DB の今の内容に本文を重ねた内容（`mergeEdit`。`editForwardingRule` と同じ）で、置き場所のノードごとに rproxy の `?dry_run=true` を聞く。DB も rproxy も変えない。rproxy にないルールは作るときの差分。断りはノードごとの `error`）。
+  詳細画面に v0.4 の項目・`stats.limited`・`stats.counters_since`・宛先の `ejected_until` / `ejections`・`conditions`（グループでは False のあるノード）を出す。履歴の差分は項目ごとに「〜を変更」。ずれ（`DriftField`）にも v0.4 の項目を足した。
+  制御 API の mTLS（#167）：`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`・`RPROXY_API_TLS_CA`、`RPROXY_UI_NODES` の `tls_cert`・`tls_key`・`tls_ca`（https だけ。`checkClientTls` が起動時にファイルを読めるか確かめる）。https でこれがあれば undici の `fetch` と `Agent({ connect: { cert, key, ca } })`（ファイルの更新時刻ごとに作り直す）。rproxy の 429 `locked_out`（UI の送信元が止められた）は 502 `rproxy_locked_out` と `lockedOutText`（`Retry-After` の秒）。
+  `KNOWN_RPROXY_MINOR` は 0.4。`MIN_RPROXY_VERSION` は上げていない（v0.4 の項目は `features` で判断する）。
 
 - v0.3 の形（rproxy-api の docs/API.md「v0.3 の設定」）：ルールの `http`（L7）、`tls.certificates[]` の ACME（`acme` / `domains`）、`tls.options`（`min_version` / `cipher_suites`）、`GET /capabilities` の `features`。
   L7 はフォームの「L7 (HTTP)」タブで作成・編集できる（`HttpEditor`。tcp で `features.http` が true のとき）。API route は `validateHttp` で形を確かめてから保存して rproxy に渡す（細かい検証は rproxy）。L4 と L7 の切り替えは作成時だけ（rproxy が PATCH で切り替えられないので `modify` は 400 `unsupported`）。`modify` の body に `http` がなければ DB の値を保つ。

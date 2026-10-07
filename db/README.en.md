@@ -38,6 +38,7 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
     (because rproxy does not accept `targets` and `remote_addr` together; the first target shown in the list is `targets[0]`).
     `extra_listen_addrs` (an array of IP addresses additionally listened on with the same port, up to 16; from rproxy-api v0.3.3) is omitted when empty.
     `enabled` (pausing in the UI) is written only when `false`. From rproxy-api v0.3.5, rproxy does not create this row at startup (a field not sent to rproxy's API).
+    The v0.4 `labels`, `limits`, `bandwidth`, `geoip` and `outlier_detection` (same shape as "v0.4 settings" in rproxy-api's docs/API.md) are written only when used (readable from rproxy-api v0.4).
     `routes[]` in `<TLS>` has `server_name` or `server_names` (one or the other), and `passthrough` only when true (from rproxy-api v0.3.3).
     A rule that is passthrough with default values, without STARTTLS, allow_from, http or crowdsec, and with a single target stores NULL. The column type does not change, so no migration is needed.)
   - rproxy static rules (the `--static-rules` file) are not stored in this table.

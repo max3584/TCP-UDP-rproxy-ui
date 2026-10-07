@@ -38,6 +38,11 @@ import { hostPort, http3PortConflicts, multiNode, targetChoices } from './dashbo
 import { useNodes } from './ui';
 import { joinList } from '@/i18n/core';
 import { compareVersions, parseVersion } from './version';
+import LimitsEditor from './LimitsEditor';
+import PlanView, { PlanResponse } from './PlanView';
+import { V04_KEYS, v04Of } from './v04';
+import type { V04Key } from './v04';
+import { buildV04, toV04Form } from './v04form';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -47,6 +52,8 @@ export interface RuleFormProps {
   initialData?: ForwardRule | null;
   // 送信中はボタンを押せなくする
   submitting?: boolean;
+  // 保存する前に rproxy で何が変わるかを聞く（rproxy v0.4 の ?dry_run=true。features.dry_run のときだけボタンを出す）
+  onPlan?: (data: ForwardRule) => Promise<PlanResponse>;
 }
 
 // 3 階層以上の PKI でも使えるように、中間 CA の欄は常に表示する
@@ -128,6 +135,10 @@ interface Caps {
     acme: boolean;
     // 実装済みのサービスの項目（health_check / sticky）。返さない rproxy では null
     services: string[] | null;
+    // v0.4 のルールの項目（labels・limits・bandwidth・geoip・outlier_detection）。返さない rproxy では false
+    v04: Record<V04Key, boolean>;
+    // 変更前の差分（?dry_run=true）
+    dryRun: boolean;
   } | null;
 }
 
@@ -144,8 +155,8 @@ const FALLBACK_CAPS: Caps = {
   features: null,
 };
 
-type TabId = 'basic' | 'http' | 'tls' | 'mail' | 'advanced';
-const TAB_IDS: TabId[] = ['basic', 'http', 'tls', 'mail', 'advanced'];
+type TabId = 'basic' | 'http' | 'tls' | 'mail' | 'limits' | 'advanced';
+const TAB_IDS: TabId[] = ['basic', 'http', 'tls', 'mail', 'limits', 'advanced'];
 
 type FieldErrors = {
   node: string;
@@ -161,6 +172,7 @@ type FieldErrors = {
   allowFrom: string;
   tls: string;
   http: string;
+  v04: string;
 };
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
@@ -169,6 +181,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
   http: ['http'],
   tls: ['tls'],
   mail: [],
+  limits: ['v04'],
   advanced: ['sourceIp', 'udpIdleSecs', 'allowFrom'],
 };
 
@@ -186,6 +199,7 @@ const EMPTY_ERRORS: FieldErrors = {
   allowFrom: '',
   tls: '',
   http: '',
+  v04: '',
 };
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
@@ -212,7 +226,9 @@ export function udpSniSupport(version: string | null): boolean | null {
 export const UDP_SNI_VERSION_NOTE =
   'UDP の sni には rproxy v0.3.8 以降が必要です。この rproxy は版を返さない（v0.3.18 より前）ので確かめられません。v0.3.7 以前の rproxy では保存するときに断られます。';
 
-const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false }) => {
+const NO_V04: Record<V04Key, boolean> = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false };
+
+const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
   const [profileId, setProfileId] = useState('');
   const [protocol, setProtocol] = useState<Protocol>(initialData?.protocol || 'tcp');
@@ -258,6 +274,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [allowFromText, setAllowFromText] = useState((initialData?.allowFrom ?? []).join('\n'));
   const [starttls, setStarttls] = useState<StartTls | ''>(initialData?.starttls ?? '');
   const [starttlsRequired, setStarttlsRequired] = useState(initialData?.starttlsRequired ?? true);
+  // v0.4 の項目（「制限・GeoIP」タブ）。編集を始めたときの値は、rproxy が使えない項目をそのまま残すのに使う
+  const initialV04 = useMemo(() => v04Of(initialData ?? {}), [initialData]);
+  const [v04Form, setV04Form] = useState(() => toV04Form(initialV04));
+  // 変更前の差分（dry_run）の結果
+  const [plan, setPlan] = useState<PlanResponse | null>(null);
+  const [planError, setPlanError] = useState('');
+  const [planning, setPlanning] = useState(false);
   const [caps, setCaps] = useState<Caps>(FALLBACK_CAPS);
   const [capabilitiesError, setCapabilitiesError] = useState('');
   const editMode = initialData ? true : false;
@@ -301,6 +324,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             tlsOptions: data.features.tls_options === true,
             acme: data.features.acme === true,
             services: Array.isArray(data.features.services) ? data.features.services : null,
+            v04: Object.fromEntries(V04_KEYS.map((k) => [k, data.features[k] === true])) as Record<V04Key, boolean>,
+            dryRun: data.features.dry_run === true,
           } : null,
         });
       } catch (err) {
@@ -561,7 +586,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     return spec;
   };
 
-  const handleSubmit = () => {
+  // 入力を確かめてルールを組み立てる。誤りがあればタブに印を付けて null
+  const buildRule = (): ForwardRule | null => {
     const newErrors: FieldErrors = {
       node: manyNodes && !editMode && chosenTarget === '' ? 'ルールを置くノードかグループを選んでください。' : '',
       extraListenAddrs: (() => {
@@ -584,6 +610,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       allowFrom: '',
       tls: '',
       http: '',
+      v04: '',
     };
 
     if (l7) {
@@ -626,13 +653,23 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       newErrors.tls = err instanceof Error ? err.message : String(err);
     }
 
+    // v0.4 の項目：rproxy が使える項目だけを欄から作り、使えない項目は編集を始めたときの値を残す
+    const v04Editable = caps.features?.v04 ?? NO_V04;
+    let v04 = initialV04;
+    try {
+      v04 = buildV04(v04Form, protocol, l7, v04Editable, initialV04);
+    } catch (err) {
+      newErrors.v04 = err instanceof Error ? err.message : String(err);
+    }
+
     if (Object.values(newErrors).some((e) => e !== '')) {
       setErrors(newErrors);
       // エラーのある最初のタブを開く
       const first = TAB_IDS.find((t) => errorCount(newErrors, t) > 0);
       if (first) setActiveTab(first);
-      return;
+      return null;
     }
+    setErrors(EMPTY_ERRORS);
 
     const rule: ForwardRule = {
       protocol: protocol,
@@ -653,9 +690,35 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       extraListenAddrs: normalizeExtraListenAddrs(extraAddrs.map((a) => a.trim()).filter((a) => a !== ''), srcAddr),
       // ノードを設定しているときだけ送る（RPROXY_UI_NODES がなければ API は使わない）
       ...(nodesInfo?.configured && chosenTarget ? { target: chosenTarget } : {}),
+      ...v04,
     };
+    // 編集できる v0.4 の項目で空にしたものは null で送る（変更の API は送られていない項目を今のまま保つので、外すことを伝える）
+    const clears = Object.fromEntries(V04_KEYS
+      .filter((k) => v04Editable[k] && !(k === 'outlier_detection' ? rule.outlierDetection : rule[k]))
+      .map((k) => [k === 'outlier_detection' ? 'outlierDetection' : k, null]));
+    return { ...rule, ...clears } as ForwardRule;
+  };
 
-    void onSubmit(rule);
+  const handleSubmit = () => {
+    const rule = buildRule();
+    if (rule) void onSubmit(rule);
+  };
+
+  // 保存する前に、rproxy で何が変わるかを聞く（何も変えない）
+  const handlePlan = async () => {
+    if (!onPlan) return;
+    const rule = buildRule();
+    if (!rule) return;
+    setPlanning(true);
+    setPlanError('');
+    try {
+      setPlan(await onPlan(rule));
+    } catch (err) {
+      setPlan(null);
+      setPlanError(`差分を取得できませんでした: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setPlanning(false);
+    }
   };
 
   const toNumber = (value: string): number | '' => (value === '' ? '' : Number(value));
@@ -671,6 +734,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       case 'http': return 'L7 (HTTP)';
       case 'tls': return protocol === 'udp' ? 'DTLS' : 'TLS / DTLS';
       case 'mail': return 'メール (STARTTLS)';
+      case 'limits': return '制限・GeoIP';
       case 'advanced': return '詳細';
     }
   };
@@ -1359,6 +1423,18 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         )}
       </div>
 
+      <div {...panelProps('limits')}>
+        <LimitsEditor
+          value={v04Form}
+          onChange={setV04Form}
+          protocol={protocol}
+          l7={l7}
+          available={caps.features?.v04 ?? NO_V04}
+          current={initialV04}
+          error={errors.v04}
+        />
+      </div>
+
       <div {...panelProps('advanced')}>
         <div className="mb-4">
           <label htmlFor="rule-source-ip" className={labelClass}>送信元 IP の扱い（source_ip）:</label>
@@ -1441,10 +1517,22 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         </div>
       </div>
 
+      {(plan || planError) && (
+        <div className="mt-4" data-testid="plan-result">
+          {planError && <p className="text-red-700 text-sm" role="alert">{planError}</p>}
+          {plan && <PlanView plan={plan} onClose={() => setPlan(null)} />}
+        </div>
+      )}
+
       <div className="flex flex-wrap justify-end gap-2 mt-4 border-t border-gray-200 pt-4">
         <button type="button" onClick={onCancel} className="btn-secondary">
           キャンセル
         </button>
+        {onPlan && caps.features?.dryRun && (
+          <button type="button" onClick={() => void handlePlan()} disabled={planning || submitting} className="btn-secondary">
+            {planning ? '確かめています…' : '差分を見る'}
+          </button>
+        )}
         <button type="submit" disabled={submitting} className="btn-primary">
           {submitting ? '保存中…' : editMode ? '変更を保存' : 'ルールを追加'}
         </button>

@@ -43,7 +43,9 @@ import AcmeStatus from '@/components/AcmeStatus';
 import { acmeStatusFor } from '@/components/acme';
 import HttpSummary from '@/components/HttpSummary';
 import HistoryList from '@/components/HistoryList';
-import { translate } from '@/i18n/core';
+import { joinList, translate } from '@/i18n/core';
+import { CONDITION_LABELS, asnLabel, conditionProblem, rateLabel, v04Fields } from '@/components/v04';
+import type { Condition } from '@/components/v04';
 
 // 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
 const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
@@ -57,6 +59,7 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
         <th scope="col">予備</th>
         <th scope="col">状態</th>
         <th scope="col">接続数</th>
+        {rule.stats?.targets?.some((t) => t.ejections !== undefined) && <th scope="col">外した回数</th>}
       </tr>
     </thead>
     <tbody>
@@ -74,8 +77,12 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
                 : s.up
                   ? <span className="badge bg-green-100 text-green-800">稼働</span>
                   : <span className="badge bg-red-100 text-red-800">停止</span>}
+              {typeof s?.ejected_until === 'number' && (
+                <span className="badge ml-1 bg-amber-100 text-amber-900" title={`受け身のヘルスチェックで ${formatTimestamp(s.ejected_until)} まで外しています`}>外している</span>
+              )}
             </td>
             <td>{s?.connections !== undefined ? formatCount(s.connections) : '-'}</td>
+            {rule.stats?.targets?.some((x) => x.ejections !== undefined) && <td>{s?.ejections !== undefined ? formatCount(s.ejections) : '-'}</td>}
           </tr>
         );
       })}
@@ -297,6 +304,85 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
     </Section>
   );
 };
+
+// v0.4 の項目（ラベル・L4 の制限・帯域の上限・GeoIP・受け身のヘルスチェック）。どれもなければ出さない
+const V04Section: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
+  const v = v04Fields(rule);
+  if (Object.keys(v).length === 0) return null;
+  const items: [string, React.ReactNode][] = [];
+  if (v.labels) {
+    items.push(['ラベル', (
+      <span key="labels" className="flex flex-wrap gap-1" data-testid="rule-labels">
+        {Object.entries(v.labels).map(([k, val]) => <span key={k} className="badge bg-slate-100 text-slate-900 font-mono">{k}={val}</span>)}
+      </span>
+    )]);
+  }
+  const l = v.limits;
+  if (l) {
+    const p = l.per_source;
+    if (l.max_connections !== undefined) items.push([rule.protocol === 'udp' ? 'ルール全体の同時セッション数' : 'ルール全体の同時接続数', formatCount(l.max_connections)]);
+    if (p?.max_connections !== undefined) items.push([rule.protocol === 'udp' ? '送信元ごとの同時セッション数' : '送信元ごとの同時接続数', formatCount(p.max_connections)]);
+    if (p?.new_connections) items.push(['送信元ごとの新しい接続の速さ', <Mono key="nc">{rateLabel(p.new_connections)}</Mono>]);
+    if (p?.packets) items.push(['送信元ごとのデータグラムの速さ', <Mono key="pk">{rateLabel(p.packets)}</Mono>]);
+    if (p && (p.prefix_v4 !== undefined || p.prefix_v6 !== undefined)) items.push(['送信元をまとめる大きさ', <Mono key="px">/{p.prefix_v4 ?? 32}, /{p.prefix_v6 ?? 64}</Mono>]);
+    if (p?.max_sources !== undefined) items.push(['覚える送信元の数', formatCount(p.max_sources)]);
+  }
+  const b = v.bandwidth;
+  if (b) {
+    if (b.upload) items.push(['上り（ルール全体）', <Mono key="up">{b.upload}</Mono>]);
+    if (b.download) items.push(['下り（ルール全体）', <Mono key="down">{b.download}</Mono>]);
+    if (b.burst) items.push(['バースト', <Mono key="burst">{b.burst}</Mono>]);
+    if (b.per_source?.upload) items.push(['上り（送信元ごと）', <Mono key="pu">{b.per_source.upload}</Mono>]);
+    if (b.per_source?.download) items.push(['下り（送信元ごと）', <Mono key="pd">{b.per_source.download}</Mono>]);
+  }
+  const g = v.geoip;
+  if (g) {
+    if (g.allow_countries) items.push(['許可する国', <Mono key="ac">{g.allow_countries.join(', ')}</Mono>]);
+    if (g.deny_countries) items.push(['拒否する国', <Mono key="dc">{g.deny_countries.join(', ')}</Mono>]);
+    if (g.allow_asns) items.push(['許可する AS', <Mono key="aa">{g.allow_asns.map(asnLabel).join(', ')}</Mono>]);
+    if (g.deny_asns) items.push(['拒否する AS', <Mono key="da">{g.deny_asns.map(asnLabel).join(', ')}</Mono>]);
+    items.push(['判定できないとき', g.unknown === 'deny' ? '拒否する' : '許可する']);
+  }
+  const o = v.outlier_detection;
+  if (o) {
+    items.push(['受け身のヘルスチェック', joinList([
+      translate(`続けて ${o.consecutive_failures ?? 1} 回失敗したら外す`),
+      translate(`最初に外す時間 ${o.ejection_time ?? '10s'}`),
+      ...(o.max_ejection_time ? [translate(`上限 ${o.max_ejection_time}`)] : []),
+      ...(o.max_ejected_percent !== undefined ? [translate(`同時に外すのは ${o.max_ejected_percent}% まで`)] : []),
+      ...(o.short_lived ? [translate(`${o.short_lived} より短い接続も失敗に数える`)] : []),
+    ])]);
+  }
+  return (
+    <Section id="section-v04" title="制限・GeoIP・ラベル">
+      <div data-testid="v04-section"><Fields items={items} /></div>
+    </Section>
+  );
+};
+
+const CONDITION_CLASS = (c: Condition) => (conditionProblem(c) ? 'bg-red-100 text-red-900' : 'bg-green-100 text-green-900');
+
+// rproxy の conditions（v0.4、Gateway API の status の形）
+const ConditionsSection: React.FC<{ conditions: Condition[] }> = ({ conditions }) => (
+  <Section id="section-conditions" title="rproxy の状態（conditions）">
+    <div className="table-scroll">
+      <table className="data-table" data-testid="conditions">
+        <thead><tr><th scope="col">種類</th><th scope="col">状態</th><th scope="col">理由</th><th scope="col">内容</th><th scope="col">変わった時刻</th></tr></thead>
+        <tbody>
+          {conditions.map((c) => (
+            <tr key={c.type}>
+              <td>{CONDITION_LABELS[c.type] ?? c.type}</td>
+              <td><span className={`badge ${CONDITION_CLASS(c)}`}>{c.status === 'True' ? 'はい' : c.status === 'False' ? 'いいえ' : c.status}</span></td>
+              <td className="font-mono">{c.reason}</td>
+              <td className="break-all">{c.message || '-'}</td>
+              <td className="whitespace-nowrap">{formatTimestamp(c.last_transition)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </Section>
+);
 
 // 「全体」のタブ：ノードごとの値を並べる（act と stb の通信量を比べる）
 const NodeCompare: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
@@ -591,6 +677,9 @@ const RuleDetailPage: React.FC = () => {
                 ['tx（送信）', view.stats ? formatBytes(view.stats.tx_bytes) : null],
                 ['TLS 失敗', view.stats ? formatCount(view.stats.tls_failures) : null],
                 ['拒否した接続', view.stats ? formatCount(view.stats.denied ?? 0) : null],
+                // L4 の制限（v0.4）で断った数。返さない rproxy では出さない
+                ...(typeof view.stats?.limited === 'number' ? [['制限で断った接続', formatCount(view.stats.limited)] as [string, React.ReactNode]] : []),
+                ...(typeof view.stats?.counters_since === 'number' ? [['数え始め', formatTimestamp(view.stats.counters_since)] as [string, React.ReactNode]] : []),
                 // 古い rproxy は dropped を返さないので、そのときは出さない
                 ...(view.protocol === 'udp' && typeof view.stats?.dropped === 'number'
                   ? [['捨てたデータグラム', formatCount(view.stats.dropped)] as [string, React.ReactNode]]
@@ -659,6 +748,10 @@ const RuleDetailPage: React.FC = () => {
           )}
 
           {view.stats?.http && <HttpStatsSection http={view.stats.http} />}
+
+          <V04Section rule={view} />
+
+          {view.conditions && view.conditions.length > 0 && <ConditionsSection conditions={view.conditions} />}
 
           <TlsSection rule={view} />
 

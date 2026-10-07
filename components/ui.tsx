@@ -1,6 +1,7 @@
 // ダッシュボードと詳細画面で共通の小さな部品（状態のバッジ、エラーのバナー、確認ダイアログ、自動更新）
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { PlanResponse } from './PlanView';
 import type { CertState, DriftField, ForwardRule, ForwardRules, HaStatus, NodeLiveState, NodeRole, NodesInfo, RuleState } from './lib';
 import type { AcmeState } from './acme';
 import { DRIFT_LABELS } from './drift';
@@ -274,6 +275,20 @@ export async function postRule(action: 'add' | 'modify' | 'delete' | 'pause' | '
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await errorDetail(res));
+}
+
+// 保存する前の差分（rproxy v0.4 の ?dry_run=true）。DB も rproxy も変えない
+export async function postPlan(action: 'add' | 'modify' | 'delete', rule: unknown): Promise<PlanResponse> {
+  const body = typeof rule === 'object' && rule !== null && 'http' in rule && (rule as { http: unknown }).http === null
+    ? Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'http'))
+    : rule;
+  const res = await fetch('/api/forward/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...(body as Record<string, unknown>), action: action }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res));
+  return await res.json() as PlanResponse;
 }
 
 // 詳細画面と変更画面で 1 件のルールを取得する。key が null（router の準備前）の間は何もしない

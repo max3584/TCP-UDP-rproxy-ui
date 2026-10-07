@@ -4,7 +4,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/pages/api/auth/[...nextauth]';
 import type { sessionUser } from './lib';
-import { NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from './messages';
+import { NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from './messages';
 import { accessOf, roleConfig } from './roles';
 import { RproxyError } from './rproxy';
 
@@ -26,6 +26,9 @@ export async function requireRole(req: NextApiRequest, res: NextApiResponse): Pr
 export function rproxyFailure(err: unknown): { error: string; code: string } {
   if (err instanceof RproxyError && err.status === 401) {
     return { error: RPROXY_UNAUTHORIZED_MESSAGE, code: 'rproxy_unauthorized' };
+  }
+  if (err instanceof RproxyError && err.status === 429) {
+    return { error: lockedOutText(err.retryAfter), code: 'rproxy_locked_out' };
   }
   return {
     error: err instanceof Error ? err.message : String(err),
