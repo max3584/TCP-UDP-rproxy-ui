@@ -60,11 +60,14 @@ test.describe('v0.4 rule settings', () => {
       await expect(page).toHaveURL(new RegExp(`/rules/tcp/127\\.0\\.0\\.1/${PORT}$`));
       await expect(page.getByTestId('v04-section')).toContainText('tenant=e2e');
 
-      // 送信元ごとの同時接続 1：2 本目はすぐ閉じられる
+      // 送信元ごとの同時接続 1：2 本のうち 1 本だけがすぐ閉じられる（rproxy は受けた接続を並べて扱うので、
+      // どちらが枠を取るかは決まらない。先に受けた方が閉じられることもある）
       const first = await closedSoon(PORT, 1500);
       const second = await closedSoon(PORT, 1500);
-      expect(await second.closed).toBe(true);
+      const closed = await Promise.all([first.closed, second.closed]);
+      expect(closed.filter(Boolean)).toHaveLength(1);
       first.socket.destroy();
+      second.socket.destroy();
     } finally {
       await deleteRule(page);
     }
