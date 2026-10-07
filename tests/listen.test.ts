@@ -72,6 +72,23 @@ describe('explainError', () => {
     expect(msg).toContain('uid 1001');
   });
 
+  // rproxy-api の src/net/files.rs の断りの文（rproxy-api#242）
+  it('recognises every refusal text of rproxy-api (owner, symbolic link, group/other write, readable key)', () => {
+    const texts = [
+      '/etc/rproxy/tls/a.pem is owned by uid 1001, not by the user rproxy runs as (uid 998): give the file to that user (chown) or set global.files.owner_check: off',
+      '/etc/rproxy/tls/a.pem is a symbolic link owned by uid 1001, not rproxy\'s (uid 998) or root',
+      '/etc/rproxy/tls/a.pem may be written by the group or others (mode 664): chmod g-w,o-w',
+      '/etc/rproxy/tls/a.key holds a key or secret and may be read by anyone (mode 644): chmod o-r (0600 or 0640)',
+    ];
+    for (const t of texts) {
+      expect(isFileOwnerRefusal(t), t).toBe(true);
+      expect(explainError('tls_config', t)).toBe(`${FILE_OWNER_MESSAGE}（詳細: ${t}）`);
+      expect(ruleErrorText(t)).toContain(FILE_OWNER_MESSAGE);
+    }
+    expect(FILE_OWNER_MESSAGE).toContain('chown rproxy-api:rproxy');
+    expect(FILE_OWNER_MESSAGE).toContain('0600 か 0640');
+  });
+
   it('explains a shadowed UI rule (409 shadowed)', () => {
     expect(explainError('shadowed', 'x')).toContain(SHADOWED_RULE_MESSAGE);
   });

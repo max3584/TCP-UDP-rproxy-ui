@@ -81,11 +81,14 @@ export const FILE_OWNER_NOTE =
   'ファイルのパスは rproxy のホストのものです。rproxy は、rproxy を動かす OS のユーザー（rproxy-api）が持つファイルだけを読みます（グループ rproxy の読み取りは構いません）。ほかのユーザーが持つファイルを指定すると、rproxy が断ります。';
 
 export const FILE_OWNER_MESSAGE =
-  'rproxy は、証明書・秘密鍵・CA・秘密のファイルを、rproxy を動かす OS のユーザー（rproxy-api）が持つものだけ読みます。ファイルの持ち主を rproxy-api にしてください（例: chown rproxy-api:rproxy <ファイル>、chmod 0640 <ファイル>。グループ rproxy の読み取りは構いません）。ファイルを置けない・変えられない場合は rproxy の管理者に相談してください。';
+  'rproxy は、証明書・秘密鍵・CA・秘密のファイルを、rproxy を動かす OS のユーザー（rproxy-api）が持ち、グループとほかの人が書けないものだけ読みます（秘密鍵・秘密はほかの人が読めないことも）。ファイルの持ち主を rproxy-api、グループを rproxy にし、グループとほかの人の書き込みを外してください（例: chown rproxy-api:rproxy <ファイル>、chmod 0640 <ファイル>。秘密鍵・秘密は 0600 か 0640）。シンボリックリンクは rproxy-api か root が持つものだけ使えます。ファイルを置けない・変えられない場合は rproxy の管理者に相談してください。';
 
-// rproxy がファイルの持ち主を理由に断ったか（rproxy の tls_config / invalid の文。"... is owned by uid 1001, not by the user rproxy runs as" など）
+// rproxy がファイルの持ち主・モードを理由に断ったか（rproxy-api の src/net/files.rs の文）：
+// "<path> is owned by uid N, not by the user rproxy runs as (uid M): ..."、"<path> is a symbolic link owned by uid N, not rproxy's (uid M) or root"、
+// "<path> may be written by the group or others (mode O): chmod g-w,o-w"、"<path> holds a key or secret and may be read by anyone (mode O): chmod o-r (0600 or 0640)"
 export function isFileOwnerRefusal(detail: string): boolean {
-  return /\b(not owned by|must be owned by|is owned by|owned by (uid|user|another))\b/i.test(detail);
+  return /\b(not owned by|must be owned by|is owned by|owned by (uid|user|another))\b/i.test(detail)
+    || /may be written by the group or others|may be read by anyone/i.test(detail);
 }
 
 // ルールの組（ruleset。k8s のコントローラなど）に属するルールは、個別に変えられない（rproxy の 409 owned。v0.4）
