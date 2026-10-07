@@ -398,7 +398,7 @@ const ApiRuleSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
       ]} />
       <p className="mt-2 text-xs text-gray-600">
         UI の DB にはないルールです。変更・削除は rproxy の API（PATCH / DELETE）で行い、UI の履歴には残りません。
-        {rule.ruleset ? '' : '保存されたルールの変更を rproxy が保存するかは、UI のトークンの persist によります（保存しなければ再起動で前の内容に戻ります）。'}
+        {rule.ruleset ? '' : rule.persisted ? '保存されたルールへの変更・削除は、rproxy が rproxy_rules にも書きます（UI のトークンに persist がなくても）。' : ''}
       </p>
     </div>
   </Section>
@@ -791,7 +791,7 @@ const RuleDetailPage: React.FC = () => {
 
           {rule.origin !== 'static' && (
             <UsagePanel id="section-usage" title="通信量（集計）"
-              query={new URLSearchParams({ protocol: rule.protocol, addr: rule.srcAddr, port: String(rule.srcPort), ...(rule.target !== undefined ? { target: tab !== 'all' ? tab : rule.target } : {}) }).toString()} />
+              query={new URLSearchParams({ protocol: rule.protocol, addr: rule.srcAddr, port: String(rule.srcPort), ...(rule.target !== undefined ? { target: rule.target } : {}), ...(rule.target !== undefined && tab !== 'all' ? { node: tab } : {}) }).toString()} />
           )}
 
           {view.stats?.http && <HttpStatsSection http={view.stats.http} />}

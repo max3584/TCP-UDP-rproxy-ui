@@ -1161,7 +1161,9 @@ async function currentApiRule(actor: Actor, node: RproxyNode, key: ForwardRule):
   return { status: status, rule: ruleFromStatus(status, 0) };
 }
 
-const NOT_PERSISTED_MESSAGE = 'rproxy は変更を rproxy_rules に保存しませんでした（UI のトークンに persist がないため）。rproxy を再起動すると、保存してある前の内容に戻ります。';
+// rproxy は origin: api のルールの変更を、トークンを問わず rproxy_rules に保存する（rproxy-api #222）。応答が persisted: false のとき
+// （DB に書けなかった・RPROXY_DATABASE_URL がないなど）だけ知らせる
+const NOT_PERSISTED_MESSAGE = 'rproxy は変更を rproxy_rules に保存できませんでした（rproxy のログの degraded を確かめてください）。rproxy を再起動すると、保存してある前の内容に戻ります。';
 
 // POST /api/forward/api-modify {protocol, srcAddr, srcPort, target?, ...}：API のルールを rproxy の PATCH で変える（UI の DB には書かない。履歴も残らない）。
 // body にない項目は今の値を保つ（modify と同じ）。保存されていたルールの変更を rproxy が保存しなかったら warning

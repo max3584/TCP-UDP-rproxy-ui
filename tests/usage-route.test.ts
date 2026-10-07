@@ -7,6 +7,10 @@ vi.mock('@/pages/api/auth/[...nextauth]', () => ({ authOptions: {} }));
 vi.mock('mariadb', () => ({ default: { createPool: () => ({ query: mocks.query, getConnection: vi.fn() }) } }));
 
 import handler from '@/pages/api/forward/usage';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resetNodesCache } from '@/components/nodes';
 
 const as = (roles: string[]) => mocks.getServerSession.mockResolvedValue({ user: { id: 'u1', name: 'n', email: 'e', image: '', role: '', roles: roles }, expires: '' });
 
@@ -59,5 +63,35 @@ describe('/api/forward/usage', () => {
     expect(csv.headers['Content-Type']).toContain('text/csv');
     expect(csv.text.split('\r\n')[1]).toBe('2026-10,u1,10,5,15,1,1');
     expect((await call({ report: '1', period: 'oct' })).status).toBe(400);
+  });
+
+  it('グループのルールは、ノードごとの上書きの待ち受けアドレスで引く（ノードのタブはそのノードだけ）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'usage-nodes-'));
+    const file = join(dir, 'nodes.yaml');
+    writeFileSync(file, 'nodes:\n  - {name: n1, url: http://127.0.0.1:1}\n  - {name: n2, url: http://127.0.0.1:2}\ngroups:\n  - {name: g, nodes: [n1, n2]}\n');
+    vi.stubEnv('RPROXY_UI_NODES', file);
+    resetNodesCache();
+    try {
+      as(['rproxy-admin']);
+      mocks.query.mockImplementation(async (sql: string) => {
+        if (sql.startsWith('SELECT id FROM forward_rules')) return [{ id: 7 }];
+        if (sql.includes('forward_rule_overrides')) return [{ rule_id: 7, node: 'n2', src_addr: '192.0.2.2', dist_addr: null, dist_port: null, options: null }];
+        return [];
+      });
+      await call({ range: '24h', protocol: 'tcp', addr: '0.0.0.0', port: '443', target: 'g' });
+      const usage = mocks.query.mock.calls.find((c: unknown[]) => String(c[0]).includes('FROM usage_hourly'))!;
+      expect(usage[0]).toContain('((node = ? AND listen_addr = ?) OR (node = ? AND listen_addr = ?))');
+      expect(usage[1].slice(1)).toEqual(['tcp', 443, 'n1', '0.0.0.0', 'n2', '192.0.2.2']);
+
+      mocks.query.mockClear();
+      await call({ range: '24h', protocol: 'tcp', addr: '0.0.0.0', port: '443', target: 'g', node: 'n2' });
+      const one = mocks.query.mock.calls.find((c: unknown[]) => String(c[0]).includes('FROM usage_hourly'))!;
+      expect(one[1].slice(1)).toEqual(['tcp', 443, 'n2', '192.0.2.2']);
+      expect((await call({ range: '24h', protocol: 'tcp', addr: '0.0.0.0', port: '443', target: 'g', node: 'n9' })).status).toBe(400);
+    } finally {
+      vi.unstubAllEnvs();
+      resetNodesCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

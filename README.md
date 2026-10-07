@@ -269,7 +269,7 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 rproxy の API を直接呼んで作ったルール（CI・スクリプト・Kubernetes のコントローラなど。UI の DB にないもの）は、管理者（`rproxy-admin`）のダッシュボードと詳細画面に「API」のバッジで出ます（#76。利用者には出しません）。
 
 - rproxy-api v0.4 は、`persist: true` のトークンで作ったルールを自分のテーブル `rproxy_rules`（`db/migrations/009_rproxy_rules.sql`。UI の DB）に保存し、`origin: "api"` と作ったトークン・時刻を返します。UI は rproxy の `GET /rules` と `rproxy_rules` を読み、rproxy で動いていない保存済みのルールも「未登録」で出します。保存していないルールは「API（保存なし）」（rproxy を再起動すると消える）。
-- 編集・削除は rproxy の API（`PATCH` / `DELETE`）で行います（UI の DB には入れず、UI の履歴にも残りません。一時停止・コピー・送り直しはありません）。UI のトークンに `persist` がなければ、保存してあるルールへの変更を rproxy が保存しないことがあり、そのときは「再起動で前の内容に戻る」と知らせます。rproxy が `features.dry_run` を返すときは「差分を見る」も使えます。
+- 編集・削除は rproxy の API（`PATCH` / `DELETE`）で行います（UI の DB には入れず、UI の履歴にも残りません。一時停止・コピー・送り直しはありません）。保存してあるルール（`origin: "api"`）への変更・削除は、UI のトークンに `persist` がなくても rproxy が `rproxy_rules` に書きます（rproxy はルールの出どころで決める）。rproxy が保存できなかった（応答の `persisted: false`）ときだけ「再起動で前の内容に戻る」と知らせます。rproxy が `features.dry_run` を返すときは「差分を見る」も使えます。
 - ルールの組（`ruleset`。Kubernetes のコントローラなどが `PUT /rulesets/{name}` で丸ごと渡すもの）のルールは「組: 名前」のバッジで読み取り専用です（rproxy も個別の変更を `409 owned` で断ります）。
 - UI のルールと同じキーを rproxy で API のルール・組のルールが使っている（UI のルールが動いていない）ときは、詳細画面に注意を出します。rproxy は起動時に UI のテーブルを優先するので、どちらかを消すかキーを変えてください。
 - 複数の rproxy では、rproxy の `RPROXY_NODE_NAME` を `RPROXY_UI_NODES` のノードの名前に揃えます（`rproxy_rules` の `node` 列）。ノードごとのビュー（`db/node-view.mjs`）は、そのノードの行だけを書ける `rproxy_rules` のビューも作ります。

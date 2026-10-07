@@ -1356,7 +1356,6 @@ export const en: Record<string, string> = {
   "API のルールのノード（target）を指定してください（{0} はノードではありません）。": "Give the node (target) of the API rule ({0} is not a node).",
   "このキーは UI のルールです（UI の変更・削除を使ってください）。": "This key is a UI rule (use the UI's edit and delete).",
   "このルールは rproxy のルールの組 {0} に属しているため、画面からは変更・削除できません。": "This rule belongs to the rproxy rule set {0}, so it cannot be changed or deleted here.",
-  "rproxy は変更を rproxy_rules に保存しませんでした（UI のトークンに persist がないため）。rproxy を再起動すると、保存してある前の内容に戻ります。": "rproxy did not store the change in rproxy_rules (the UI's token has no persist). When rproxy restarts, the rule goes back to the stored contents.",
   "rproxy の API で作ったルールです。保存すると rproxy の API で変えます（UI の DB には入らず、履歴にも残りません）。": "This rule was created through the rproxy API. Saving changes it through the rproxy API (it does not go into the UI's DB or history).",
   "rproxy の API のルール": "rproxy API rule",
   "出どころ": "Origin",
@@ -1367,7 +1366,6 @@ export const en: Record<string, string> = {
   "作った時刻": "Created at",
   "ルールの組": "Rule set",
   "UI の DB にはないルールです。変更・削除は rproxy の API（PATCH / DELETE）で行い、UI の履歴には残りません。": "This rule is not in the UI's DB. Changes and deletion go through the rproxy API (PATCH / DELETE) and are not recorded in the UI's history.",
-  "保存されたルールの変更を rproxy が保存するかは、UI のトークンの persist によります（保存しなければ再起動で前の内容に戻ります）。": "Whether rproxy stores changes to a stored rule depends on persist of the UI's token (if not, a restart brings back the earlier contents).",
   "同じキーを rproxy ではルールの組 {0} のルールが使っているため、この UI のルールは動いていません。": "In rproxy, a rule of the rule set {0} uses the same key, so this UI rule is not running.",
   "同じキーを rproxy では API で作ったルール{0}が使っているため、この UI のルールは動いていません。": "In rproxy, a rule created through the API{0} uses the same key, so this UI rule is not running.",
   "（{0}）": " ({0})",
@@ -1401,4 +1399,7 @@ export const en: Record<string, string> = {
   "利用量を集計していません（DB に db/migrations/010_usage.sql を適用してください）。": "Usage is not being collected (apply db/migrations/010_usage.sql to the DB).",
   "この期間の利用量はありません。": "No usage in this period.",
   "集計の間隔 {0} 秒、時間ごとの値は {1} 日・日ごとの値は {2} 日残します（RPROXY_UI_USAGE_SECS・RPROXY_UI_USAGE_HOURLY_DAYS・RPROXY_UI_USAGE_DAILY_DAYS）。": "Collected every {0} seconds; hourly values are kept {1} days and daily values {2} days (RPROXY_UI_USAGE_SECS, RPROXY_UI_USAGE_HOURLY_DAYS, RPROXY_UI_USAGE_DAILY_DAYS).",
+  "rproxy は変更を rproxy_rules に保存できませんでした（rproxy のログの degraded を確かめてください）。rproxy を再起動すると、保存してある前の内容に戻ります。": "rproxy could not store the change in rproxy_rules (check \"degraded\" in rproxy's log). When rproxy restarts, the rule goes back to the stored contents.",
+  "保存されたルールへの変更・削除は、rproxy が rproxy_rules にも書きます（UI のトークンに persist がなくても）。": "rproxy also writes changes to and deletion of a stored rule to rproxy_rules (even though the UI's token has no persist).",
+  "ノード {0} は {1} にありません。": "Node {0} is not in {1}.",
 };

@@ -4,7 +4,7 @@ import { Logger } from '@/components/lib';
 import { requireRole } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
 import { NodesConfigError, loadNodes, normalizeIp, targetNodes } from '@/components/nodes';
-import { getPool } from '@/components/ruledb';
+import { getPool, loadOverrides } from '@/components/ruledb';
 import { RANGE_SPECS, bucketKey, bucketStarts, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, parseRange, reportCsv } from '@/components/usage';
 import type { UsageRow } from '@/components/usage';
 import { usageStatus } from '@/components/usagecollect';
@@ -19,6 +19,22 @@ const BUCKET_SQL = {
   day: "DATE_FORMAT(day, '%Y-%m-%d')",
   month: "DATE_FORMAT(day, '%Y-%m')",
 } as const;
+
+// ノード → そのノードでの待ち受けアドレス（UI のルールのノードごとの上書き。上書きがなければ入れない）。ルールが DB になければ空
+async function nodeListenAddrs(pool: ReturnType<typeof getPool>, target: string, protocol: string, addr: string, port: number, nodes: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const rows = await pool.query('SELECT id FROM forward_rules WHERE target = ? AND protocol = ? AND src_addr = ? AND src_port = ?', [target, protocol, addr, port]);
+    if (!Array.isArray(rows) || rows.length === 0) return out;
+    const id = Number(rows[0].id);
+    const ovs = (await loadOverrides(pool, [id])).get(id) ?? {};
+    for (const n of nodes) if (ovs[n]?.srcAddr) out.set(n, normalizeIp(ovs[n].srcAddr!));
+  } catch (err) {
+    // 上書きの表（008）がないなど：グループのアドレスで引く
+    if ((err as { errno?: number })?.errno !== 1146) throw err;
+  }
+  return out;
+}
 
 // 利用量（#101。usage_hourly・usage_daily）。
 // GET /api/forward/usage?range=24h|7d|30d|12m[&protocol=&addr=&port=&target=]：ルールを指定すればそのルール、なければ全体（利用者は自分のルールだけ、
@@ -64,15 +80,22 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       if ((protocol !== 'tcp' && protocol !== 'udp') || isIP(addr) === 0 || !Number.isInteger(port) || port < 1 || port > 65535) {
         throw new BadRequest('protocol・addr・port が不正です。');
       }
-      where.push('protocol = ? AND listen_addr = ? AND listen_port = ?');
-      params.push(protocol, normalizeIp(addr), port);
       const target = q(req.query.target);
       const cfg = loadNodes();
       if (cfg.configured && target) {
-        const nodes = targetNodes(cfg, target);
+        let nodes = targetNodes(cfg, target);
         if (!nodes) throw new BadRequest(`ノード／グループ ${target} は設定にありません。`);
-        where.push(`node IN (${nodes.map(() => '?').join(', ')})`);
-        params.push(...nodes.map((n) => n.name));
+        // node：そのノードの分だけ（ルールの詳細のノードのタブ）
+        const only = q(req.query.node);
+        if (only) nodes = nodes.filter((n) => n.name === only);
+        if (nodes.length === 0) throw new BadRequest(`ノード ${only} は ${target} にありません。`);
+        // グループのルールは、ノードごとの上書きの待ち受けアドレスで rproxy に置かれる（集計の行もそのアドレス）
+        const addrs = await nodeListenAddrs(pool, target, protocol, normalizeIp(addr), port, nodes.map((n) => n.name));
+        where.push(`protocol = ? AND listen_port = ? AND (${nodes.map(() => '(node = ? AND listen_addr = ?)').join(' OR ')})`);
+        params.push(protocol, port, ...nodes.flatMap((n) => [n.name, addrs.get(n.name) ?? normalizeIp(addr)]));
+      } else {
+        where.push('protocol = ? AND listen_addr = ? AND listen_port = ?');
+        params.push(protocol, normalizeIp(addr), port);
       }
     }
     if (!admin) {

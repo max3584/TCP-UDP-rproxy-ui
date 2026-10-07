@@ -157,7 +157,7 @@ describe('rproxy の API のルール（#76）', () => {
     expect(body).toMatchObject({ origin: 'api', persisted: false });
   });
 
-  it('api-modify は rproxy の PATCH だけで変え（DB に書かない）、保存されなくなったら warning', async () => {
+  it('api-modify は rproxy の PATCH だけで変え（DB に書かない）、rproxy が保存できなかったときだけ warning', async () => {
     mocks.getServerSession.mockResolvedValue(admin);
     pool.query.mockResolvedValue([]);
     mocks.getRule.mockResolvedValue(live({ origin: 'api', persisted: true, labels: { tenant: 'a' } }));
@@ -166,8 +166,14 @@ describe('rproxy の API のルール（#76）', () => {
     expect(status).toBe(200);
     expect(mocks.modifyRule).toHaveBeenCalledWith({ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9000 }, expect.objectContaining({ remote_addr: '10.0.0.20', remote_port: 8080, labels: { tenant: 'b' } }));
     expect(body.persisted).toBe(false);
-    expect(body.warning).toContain('保存しませんでした');
+    expect(body.warning).toContain('保存できませんでした');
     expect(pool.getConnection).not.toHaveBeenCalled();
+
+    // rproxy はトークンを問わず origin: api のルールの変更を保存する（persist のない UI のトークンでも persisted: true）。そのときは知らせない
+    mocks.modifyRule.mockResolvedValue({ ...live({ origin: 'api' }), persisted: true });
+    const ok = await call('api-modify', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 9000, distAddr: '10.0.0.20', distPort: 8080 });
+    expect(ok.body.persisted).toBe(true);
+    expect(ok.body.warning).toBeUndefined();
   });
 
   it('api-modify / api-delete は管理者だけ、組のルールは 409 owned、UI のルールは 409 ui_rule', async () => {

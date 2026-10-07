@@ -217,7 +217,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 | テスト | 確かめること |
 |---|---|
 | 画面の形 | rproxy の応答と `rproxy_rules` の行から API のルールの行（保存・作ったトークン・時刻、読めない spec は飛ばす）、固定ルールはだれにでも・API のルールは管理者だけ足す、同じキーは足さない、UI のルールの代わりに動いているもの、バッジ |
-| /api/forward | 管理者のダッシュボードに動いている API のルール・組のルール・保存済みで動いていないルール、利用者には出さない、`rproxy_rules` がなくても動く、`shadowedBy`、1 件の取得、`api-modify` は PATCH だけで DB に書かず保存されなくなったら warning、`api-delete`・管理者だけ・409 `owned` / `ui_rule`、`plan` の `api-modify` |
+| /api/forward | 管理者のダッシュボードに動いている API のルール・組のルール・保存済みで動いていないルール、利用者には出さない、`rproxy_rules` がなくても動く、`shadowedBy`、1 件の取得、`api-modify` は PATCH だけで DB に書かずrproxy が保存できなかった（`persisted: false`）ときだけ warning、`api-delete`・管理者だけ・409 `owned` / `ui_rule`、`plan` の `api-modify` |
 
 `tests/nodeview.test.ts` は、ノードごとのビューに、そのノードの行だけを書ける `rproxy_rules` のビュー（`WITH CHECK OPTION`）と権限が出ること（`--without-rproxy-rules` で出さない）も確かめる。
 
