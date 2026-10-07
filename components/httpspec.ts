@@ -5,6 +5,8 @@
 
 import { BALANCES, type Balance } from './lib';
 import type { HttpSpec } from './lib';
+import type { HttpOutlierSpec } from './v04';
+import { normalizeHttpOutlier } from './v04';
 import { joinList } from '@/i18n/core';
 
 export interface RouteSpec {
@@ -29,6 +31,8 @@ export interface ServiceSpec {
   timeouts?: { connect?: string; response?: string };
   // 転送先の振り分け方（rproxy v0.3.3。省略は round_robin。failover は servers の順）
   balance?: Balance;
+  // 受け身のヘルスチェック（rproxy v0.4、#170。features.services に outlier_detection があるとき）
+  outlier_detection?: HttpOutlierSpec;
 }
 
 // {種類: 設定}（種類は 1 つだけ）
@@ -69,6 +73,7 @@ export const MIDDLEWARE_KINDS: Record<string, string> = {
   circuit_breaker: 'サーキットブレーカー',
   errors: '独自のエラーページ',
   respond: '固定の応答（拒否・メンテナンス表示）',
+  geoip: 'GeoIP（国・AS での許可と拒否）',
 };
 
 // 新しいミドルウェアの設定のひな形（必須の項目を埋める）
@@ -93,6 +98,7 @@ export const MIDDLEWARE_TEMPLATES: Record<string, Record<string, unknown>> = {
   circuit_breaker: { failure_percent: 50, window: '10s', recovery: '30s' },
   errors: { status: ['500-599'], service: '', path: '/{status}.html' },
   respond: { status: 403, body: 'Forbidden' },
+  geoip: { allow_countries: ['JP'] },
 };
 
 // 応答を自分で返すミドルウェア（service のないルートでも使える）
@@ -292,6 +298,13 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
       if (srv.weight !== undefined && !(Number.isInteger(srv.weight) && srv.weight >= 0)) errors.push(`サービス「${name}」の重みは 0 以上の整数にしてください。`);
     }
     if (s.health_check && !(s.health_check.path ?? '').startsWith('/')) errors.push(`サービス「${name}」のヘルスチェックのパスは / で始めてください。`);
+    if (s.outlier_detection !== undefined) {
+      try {
+        normalizeHttpOutlier(s.outlier_detection, `サービス「${name}」の受け身のヘルスチェック`);
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+    }
     if (s.balance !== undefined && !BALANCES.includes(s.balance)) errors.push(`サービス「${name}」の振り分け方は round_robin / least_conn / failover から選んでください。`);
   }
 
@@ -364,6 +377,8 @@ export function cleanHttp(spec: HttpRules): HttpSpec {
       if (s.sticky?.cookie) svc.sticky = { cookie: s.sticky.cookie };
       if (s.pass_host_header === false) svc.pass_host_header = false;
       if (s.balance !== undefined && s.balance !== 'round_robin') svc.balance = s.balance;
+      // 受け身のヘルスチェック（{} は rproxy の既定値で有効）
+      if (s.outlier_detection !== undefined) svc.outlier_detection = s.outlier_detection;
       const t = Object.fromEntries(Object.entries(s.timeouts ?? {}).filter(([, v]) => v !== undefined && v !== ''));
       if (Object.keys(t).length > 0) svc.timeouts = t;
       return [name, svc];

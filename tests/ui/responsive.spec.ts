@@ -82,11 +82,23 @@ for (const vp of VIEWPORTS) {
       await expect(page.locator('#rule-allow-from')).toBeVisible();
       await expectNoPageOverflow(page);
 
+      // 制限・GeoIP（v0.4。rproxy が使えない項目は説明だけ）
+      await page.getByRole('tab', { name: '制限・GeoIP' }).click();
+      await expect(page.getByTestId('limits-editor')).toBeVisible();
+      await expectNoPageOverflow(page);
+
       // L7（rproxy の features.http を取得してから出る）
       await page.getByRole('tab', { name: /基本/ }).click();
       await page.locator('#rule-l7').check();
       await page.getByRole('tab', { name: 'L7 (HTTP)' }).click();
       await expect(page.getByTestId('http-route').first()).toBeVisible();
+      await expectNoPageOverflow(page);
+    });
+
+    test('rproxy features and settings fit the width', async ({ page }) => {
+      await page.goto('/system');
+      await expect(page.getByRole('heading', { name: 'rproxy の機能と設定' })).toBeVisible();
+      await expect(page.getByTestId('system-node').first()).toBeVisible();
       await expectNoPageOverflow(page);
     });
 

@@ -2,6 +2,7 @@ import { DefaultSession, ISODateString } from 'next-auth';
 import pino from 'pino';
 import type { Access } from './roles';
 import type { AcmeCertStatus } from './acme';
+import type { Condition, V04Settings } from './v04';
 
 
 export const Logger = (level : string, {...propaty}: any) => {
@@ -121,7 +122,8 @@ export interface HealthCheck {
   port?: number;
 }
 
-export interface ForwardRule {
+// v0.4 の項目（labels・limits・bandwidth・geoip・outlierDetection。components/v04.ts）は、使うときだけ付く
+export interface ForwardRule extends V04Settings {
   protocol: Protocol;
   srcAddr: string;
   srcPort: number;
@@ -180,6 +182,10 @@ export interface RuleStats {
   http?: HttpStats;
   // 宛先ごとの状態（宛先を複数にしたルール。rproxy v0.3.3 以降。古い rproxy は返さない）
   targets?: TargetStats[];
+  // L4 の制限（limits）で断った数（rproxy v0.4。#165）
+  limited?: number;
+  // この数え始めの時刻（Unix 秒。rproxy v0.4。#166）。ルールを作り直すと変わり、引き継ぎ（handoff）では変わらない
+  counters_since?: number;
 }
 
 // rproxy の証明書の期限（ルールの cert_status の 1 要素。rproxy v0.3.5 以降）
@@ -206,6 +212,10 @@ export interface TargetStats {
   total_connections?: number;
   backup?: boolean;
   weight?: number;
+  // 受け身のヘルスチェック（outlier_detection）で外している間の終わり（Unix 秒。外していなければ null。rproxy v0.4。#170）
+  ejected_until?: number | null;
+  // 外した回数（rproxy v0.4）
+  ejections?: number;
 }
 
 // 状態コードの百の位ごとの区分。0 件の区分は省かれる
@@ -255,6 +265,10 @@ export interface ForwardRules extends ForwardRule {
   nodes?: NodeLiveState[];
   // active_standby のグループのルールの act の判定（判定に使うアドレスがないときは付かない）
   ha?: HaStatus;
+  // Gateway API の形の状態（rproxy v0.4 の features.conditions。返さない rproxy では付かない）
+  conditions?: Condition[];
+  // ルールの組（rproxy v0.4 の rulesets。k8s のコントローラなど）に属するときの組の名前。組のルールは個別に変えられない（409 owned）
+  ruleset?: string;
 }
 
 // ルールの 1 ノードでの稼働情報
@@ -273,10 +287,12 @@ export interface NodeLiveState {
   drift?: DriftField[];
   // active_standby のグループで、VIP を持っているか（GET /interfaces）。判定できなければ付かない
   role?: NodeRole;
+  conditions?: Condition[];
 }
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
-export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled';
+export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled'
+  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection';
 
 export type NodeRole = 'active' | 'standby';
 

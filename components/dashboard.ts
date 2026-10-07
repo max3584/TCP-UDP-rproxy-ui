@@ -8,6 +8,8 @@ import { hostsOfMatch } from './httpspec';
 import { effectiveRule } from './overrides';
 import { acmeProblem, acmeStatusField } from './acme';
 import type { AcmeCertStatus } from './acme';
+import { normalizeV04, v04Of } from './v04';
+import type { Condition, V04Settings } from './v04';
 import { joinList, joinSentences, t, translate } from '@/i18n/core';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
@@ -181,6 +183,9 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     crowdsec: status.crowdsec === true,
     ...balancingFromStatus(status),
     extraListenAddrs: Array.isArray(status.extra_listen_addrs) ? status.extra_listen_addrs : [],
+    ...v04FromStatus(status),
+    ...(Array.isArray(status.conditions) ? { conditions: status.conditions } : {}),
+    ...(typeof status.ruleset === 'string' && status.ruleset !== '' ? { ruleset: status.ruleset } : {}),
     state: status.state,
     error: status.error ?? null,
     connections: status.connections ?? null,
@@ -190,6 +195,22 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     ...(Array.isArray(status.cert_status) ? { certStatus: status.cert_status } : {}),
     ...acmeStatusField(status.acme),
   };
+}
+
+// rproxy の応答の v0.4 の項目（labels・limits・bandwidth・geoip・outlier_detection）。読めなければそのまま
+function v04FromStatus(status: RproxyRuleStatus): V04Settings {
+  const src = status as unknown as Record<string, unknown>;
+  try {
+    return normalizeV04(src, status.protocol, isHttpSpec(status.http));
+  } catch {
+    const raw: V04Settings = {};
+    if (src.labels && typeof src.labels === 'object') raw.labels = src.labels as V04Settings['labels'];
+    if (src.limits && typeof src.limits === 'object') raw.limits = src.limits as V04Settings['limits'];
+    if (src.bandwidth && typeof src.bandwidth === 'object') raw.bandwidth = src.bandwidth as V04Settings['bandwidth'];
+    if (src.geoip && typeof src.geoip === 'object') raw.geoip = src.geoip as V04Settings['geoip'];
+    if (src.outlier_detection && typeof src.outlier_detection === 'object') raw.outlierDetection = src.outlier_detection as V04Settings['outlierDetection'];
+    return raw;
+  }
 }
 
 function keyString(protocol: string, addr: string, port: number): string {
@@ -574,6 +595,9 @@ export function toRule(rule: ForwardRule): ForwardRule {
     targets: rule.targets ?? [],
     balance: rule.balance ?? DEFAULT_BALANCE,
     healthCheck: rule.healthCheck ?? null,
+    // 追加の待ち受けアドレスと v0.4 の項目は、あるときだけ（変更の画面がそのまま送り返すので落とさない）
+    ...((rule.extraListenAddrs ?? []).length > 0 ? { extraListenAddrs: rule.extraListenAddrs } : {}),
+    ...v04Of(rule),
     ...(rule.target !== undefined ? { target: rule.target } : {}),
   };
 }
@@ -584,7 +608,7 @@ export function toRule(rule: ForwardRule): ForwardRule {
 const STATE_ORDER: RuleState[] = ['failed', 'missing', 'unknown', 'running', 'paused'];
 
 // 数を足す（weight・port は宛先の設定なので足さずに最初の値。真偽値はどれかが true なら true、文字列は最初の値）
-const KEEP_FIRST = new Set(['weight', 'port']);
+const KEEP_FIRST = new Set(['weight', 'port', 'counters_since', 'ejected_until']);
 
 function sumValues(a: unknown, b: unknown, key = ''): unknown {
   if (a === undefined || a === null) return b;
@@ -618,6 +642,7 @@ export interface AggregatedState {
   resolved: string[];
   certStatus?: CertStatus[];
   acmeStatus?: AcmeCertStatus[];
+  conditions?: Condition[];
 }
 
 // グループのルールの、ノードごとの稼働情報をまとめる（一覧・ダッシュボードの 1 行に出す値）。
@@ -635,6 +660,9 @@ export function aggregateNodeStates(nodes: NodeLiveState[]): AggregatedState {
   // ACME の状態はノードごとに違う（ノードごとに取る）。いちばん悪いノードの値を出す
   const acme = nodes.filter((n) => Array.isArray(n.acmeStatus))
     .sort((a, b) => acmeRank(b.acmeStatus) - acmeRank(a.acmeStatus))[0]?.acmeStatus;
+  // conditions（v0.4）も、False のあるノードを優先する
+  const withConditions = nodes.filter((n) => Array.isArray(n.conditions));
+  const conditions = (withConditions.find((n) => n.conditions!.some((c) => c.status === 'False')) ?? withConditions[0])?.conditions;
   return {
     state: state,
     error: error,
@@ -644,6 +672,7 @@ export function aggregateNodeStates(nodes: NodeLiveState[]): AggregatedState {
     resolved: [...new Set(nodes.flatMap((n) => n.resolved))],
     ...(cert ? { certStatus: cert } : {}),
     ...(acme ? { acmeStatus: acme } : {}),
+    ...(conditions ? { conditions: conditions } : {}),
   };
 }
 
@@ -787,9 +816,10 @@ export function projectRule(rule: ForwardRules, node: string): ForwardRules | nu
   const n = rule.nodes?.find((x) => x.node === node);
   if (!n) return null;
   // そのノードの上書き（待ち受けアドレス・転送先・allow_from）を重ねた内容で出す
-  const { certStatus: _omit, acmeStatus: _omitAcme, ...rest } = effectiveRule(rule, rule.overrides?.[node]);
+  const { certStatus: _omit, acmeStatus: _omitAcme, conditions: _omitConditions, ...rest } = effectiveRule(rule, rule.overrides?.[node]);
   void _omit;
   void _omitAcme;
+  void _omitConditions;
   return {
     ...rest,
     state: n.state,
@@ -800,6 +830,7 @@ export function projectRule(rule: ForwardRules, node: string): ForwardRules | nu
     resolved: n.resolved,
     ...(n.certStatus ? { certStatus: n.certStatus } : {}),
     ...(n.acmeStatus ? { acmeStatus: n.acmeStatus } : {}),
+    ...(n.conditions ? { conditions: n.conditions } : {}),
     nodes: [n],
   };
 }

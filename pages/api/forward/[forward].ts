@@ -53,6 +53,9 @@ import {
   getRule,
   listRules,
   modifyRule,
+  planAdd,
+  planDelete,
+  planModify,
   withNode,
 } from '@/components/rproxy';
 import { aggregateNodeStates, mergeStaticRules, ruleFromStatus } from '@/components/dashboard';
@@ -62,7 +65,7 @@ import { needsRecreateOnNode, ruleDrift } from '@/components/drift';
 import { NodeOverride, Overrides, effectiveRule, normalizeOverride, overrideFromRow, overrideRow, sameOverrides, settingsOverridesToBody } from '@/components/overrides';
 import { haStatus, interfaceAddrs, vipAddrs } from '@/components/ha';
 import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout';
-import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE } from '@/components/messages';
+import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
 import { localizedApi } from '@/i18n/server';
 import { translate } from '@/i18n/core';
@@ -72,6 +75,8 @@ import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleT
 import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
 import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
 import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
+import { V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
+import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
 
 const pool = getPool();
 
@@ -320,7 +325,31 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     extraListenAddrs: normalizeExtraListenAddrs(body.extraListenAddrs, rule.srcAddr),
     // 画面からの追加では送られない（有効）。インポートの停止中のルールだけ false
     enabled: normalizeEnabled(body.enabled),
+    // v0.4 の labels・limits・bandwidth・geoip・outlierDetection（使えるかは rproxy が features で決め、断れば 400 unsupported）
+    ...normalizeV04(body, protocol as Protocol, http !== null),
   };
+}
+
+// body にある v0.4 の項目（なければ変更の前の値を保つ）
+function givenV04(body: any): V04Key[] {
+  if (typeof body !== 'object' || body === null) return [];
+  return V04_KEYS.filter((k) => body[k === 'outlier_detection' ? 'outlierDetection' : k] !== undefined);
+}
+
+const V04_RULE_FIELD: Record<V04Key, keyof V04Settings> = {
+  labels: 'labels', limits: 'limits', bandwidth: 'bandwidth', geoip: 'geoip', outlier_detection: 'outlierDetection',
+};
+
+// 変更の後の v0.4 の項目：body にあるものは body の値（null・{} なら外す）、ないものは今の値
+function mergeV04(current: V04Settings, next: V04Settings, given: V04Key[]): V04Settings {
+  const out: V04Settings = { ...v04Of(current) };
+  for (const k of given) {
+    const f = V04_RULE_FIELD[k];
+    const v = next[f];
+    if (v === undefined) delete out[f];
+    else (out as Record<string, unknown>)[f] = v;
+  }
+  return out;
 }
 
 // body に extraListenAddrs があるか（なければ変更の前の値を保つ）
@@ -486,6 +515,7 @@ function withLiveState(id: number, rule: ForwardRule, live: boolean, status: Rpr
     resolved: status?.resolved ?? [],
     ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
     ...acmeStatusField(status?.acme),
+    ...(Array.isArray(status?.conditions) ? { conditions: status.conditions } : {}),
   };
 }
 
@@ -494,6 +524,7 @@ function liveError(err: unknown): string {
   let message = err instanceof Error ? err.message : String(err);
   if (err instanceof RproxyError && err.status === 403) message = `${FORBIDDEN_MESSAGE}（詳細: ${message}）`;
   if (err instanceof RproxyError && err.status === 401) message = `${RPROXY_UNAUTHORIZED_MESSAGE}（詳細: ${message}）`;
+  if (err instanceof RproxyError && err.status === 429) message = lockedOutText(err.retryAfter);
   return message;
 }
 
@@ -527,6 +558,7 @@ function nodeLiveState(node: string, rule: ForwardRule, live: boolean, status: R
     resolved: status?.resolved ?? [],
     ...(Array.isArray(status?.cert_status) ? { certStatus: status.cert_status } : {}),
     ...acmeStatusField(status?.acme),
+    ...(Array.isArray(status?.conditions) ? { conditions: status.conditions } : {}),
     // UI の定義との違い（rproxy にあるときだけ。停止中なのに動いていれば enabled）
     ...(status ? { drift: ruleDrift(rule, status) } : {}),
   };
@@ -576,6 +608,7 @@ function withNodeStates(id: number, rule: ForwardRule, nodes: NodeLiveState[], o
     resolved: agg.resolved,
     ...(agg.certStatus ? { certStatus: agg.certStatus } : {}),
     ...(agg.acmeStatus ? { acmeStatus: agg.acmeStatus } : {}),
+    ...(agg.conditions ? { conditions: agg.conditions } : {}),
     nodes: nodes,
     ...(ha ? { ha: ha } : {}),
   };
@@ -840,58 +873,76 @@ interface Given {
   crowdsec: boolean;
   targets: boolean;
   extraListenAddrs: boolean;
+  // body にあった v0.4 の項目
+  v04?: V04Key[];
+}
+
+// 変更の後の内容（DB の今の内容 current と、body の rule・given）。変えられない違いは HttpError
+function mergeEdit(current: ForwardRule, rule: ForwardRule, given: Given): ForwardRule {
+  const { range: rangeGiven, allowFrom: allowFromGiven, http: httpGiven, crowdsec: crowdsecGiven } = given;
+  // ポート範囲は変更できない（API の制約）。指定があれば DB の値と同じでなければならない
+  if (rangeGiven && rule.srcPortEnd !== current.srcPortEnd) {
+    throw new HttpError(400, 'ポート範囲は変更できません。削除してから作り直してください。', 'unsupported');
+  }
+  // http の指定がなければ DB の L7 の設定を保つ。L4 と L7 の切り替えは rproxy が PATCH で受け付けないので作り直す
+  const http = httpGiven ? rule.http : current.http;
+  if ((current.http === null) !== (http === null)) {
+    throw new HttpError(400, current.http === null
+      ? 'L4 のルールを L7（HTTP）に変えることはできません。削除してから作り直してください。'
+      : 'L7（HTTP）のルールを L4 に戻すことはできません。削除してから作り直してください。', 'unsupported');
+  }
+  // 宛先（複数）の指定がなければ DB の値を保つ
+  const balancing = given.targets
+    ? { targets: rule.targets, balance: rule.balance, healthCheck: rule.healthCheck }
+    : { targets: current.targets, balance: current.balance, healthCheck: current.healthCheck };
+  // L7 でもなく宛先が複数でもないルールには転送先が必須
+  if (http === null && balancing.targets.length === 0 && rule.distAddr === '') {
+    throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
+  }
+  // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
+  const { labels: _l, limits: _li, bandwidth: _b, geoip: _g, outlierDetection: _o, ...base } = rule;
+  void _l; void _li; void _b; void _g; void _o;
+  const updated: ForwardRule = {
+    ...base,
+    ...(current.target !== undefined ? { target: current.target } : {}),
+    sourceIp: current.sourceIp,
+    srcPortEnd: current.srcPortEnd,
+    allowFrom: allowFromGiven ? rule.allowFrom : current.allowFrom,
+    crowdsec: crowdsecGiven ? rule.crowdsec : current.crowdsec,
+    http: http,
+    ...balancing,
+    ...(http !== null || balancing.targets.length > 0 ? { distAddr: '', distPort: 0 } : {}),
+    extraListenAddrs: given.extraListenAddrs ? extraAddrs(rule) : extraAddrs(current),
+    // v0.4 の項目は body にあるものだけ置き換える
+    ...mergeV04(current, rule, given.v04 ?? []),
+    // 停止・再開は pause / resume だけで変える（変更では今の状態を保つ）
+    enabled: current.enabled !== false,
+  };
+  if (updated.http !== null && updated.outlierDetection) {
+    throw invalid('L7（HTTP）のルールでは、ルールの受け身のヘルスチェックは使えません（L7 タブのサービスごとに設定します）。');
+  }
+  if (updated.protocol === 'tcp' && updated.limits?.per_source?.packets) {
+    throw invalid('データグラムの速さ（packets）は UDP のルールでだけ使えます。');
+  }
+  try {
+    // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
+    const count = portCount(updated.srcPort, updated.srcPortEnd, updated.distPort);
+    checkTls(updated.protocol, updated.tls, updated.starttls, count, updated.http !== null);
+    checkBalancing(updated.protocol, updated, count);
+  } catch (err) {
+    throw fromTlsError(err);
+  }
+  return updated;
 }
 
 async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule, given: Given, logger: AppLogger): Promise<NodeResult[]> {
-  const { range: rangeGiven, allowFrom: allowFromGiven, http: httpGiven, crowdsec: crowdsecGiven } = given;
   const owner = ownerClause(actor);
   checkNodes(actor, place);
   return withTransaction(logger, async (conn) => {
     const current = await lockOwnRule(conn, actor, place, rule, logger);
     const { overrides: ovs } = await lockedExtras(conn, place, rule);
     checkPorts(actor, current);
-    // ポート範囲は変更できない（API の制約）。指定があれば DB の値と同じでなければならない
-    if (rangeGiven && rule.srcPortEnd !== current.srcPortEnd) {
-      throw new HttpError(400, 'ポート範囲は変更できません。削除してから作り直してください。', 'unsupported');
-    }
-    // http の指定がなければ DB の L7 の設定を保つ。L4 と L7 の切り替えは rproxy が PATCH で受け付けないので作り直す
-    const http = httpGiven ? rule.http : current.http;
-    if ((current.http === null) !== (http === null)) {
-      throw new HttpError(400, current.http === null
-        ? 'L4 のルールを L7（HTTP）に変えることはできません。削除してから作り直してください。'
-        : 'L7（HTTP）のルールを L4 に戻すことはできません。削除してから作り直してください。', 'unsupported');
-    }
-    // 宛先（複数）の指定がなければ DB の値を保つ
-    const balancing = given.targets
-      ? { targets: rule.targets, balance: rule.balance, healthCheck: rule.healthCheck }
-      : { targets: current.targets, balance: current.balance, healthCheck: current.healthCheck };
-    // L7 でもなく宛先が複数でもないルールには転送先が必須
-    if (http === null && balancing.targets.length === 0 && rule.distAddr === '') {
-      throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
-    }
-    // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
-    const updated: ForwardRule = {
-      ...rule,
-      ...(current.target !== undefined ? { target: current.target } : {}),
-      sourceIp: current.sourceIp,
-      srcPortEnd: current.srcPortEnd,
-      allowFrom: allowFromGiven ? rule.allowFrom : current.allowFrom,
-      crowdsec: crowdsecGiven ? rule.crowdsec : current.crowdsec,
-      http: http,
-      ...balancing,
-      ...(http !== null || balancing.targets.length > 0 ? { distAddr: '', distPort: 0 } : {}),
-      extraListenAddrs: given.extraListenAddrs ? extraAddrs(rule) : extraAddrs(current),
-      // 停止・再開は pause / resume だけで変える（変更では今の状態を保つ）
-      enabled: current.enabled !== false,
-    };
-    try {
-      // 範囲が DB の値になったので、転送先ポートと routes の範囲をもう一度確かめる
-      const count = portCount(updated.srcPort, updated.srcPortEnd, updated.distPort);
-      checkTls(updated.protocol, updated.tls, updated.starttls, count, updated.http !== null);
-      checkBalancing(updated.protocol, updated, count);
-    } catch (err) {
-      throw fromTlsError(err);
-    }
+    const updated = mergeEdit(current, rule, given);
     const where = keyWhere(place, updated);
     await conn.query(
       `UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ?, options = ? WHERE ${owner.sql}${where.sql}`,
@@ -907,7 +958,7 @@ async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule,
       const after = effectiveRule(updated, ovs[node.name]);
       if (isPaused(after)) return async () => undefined;
       try {
-        await modifyRule(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0));
+        await modifyRule(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0, before));
       } catch (err) {
         if (!isNotFound(err)) throw err;
         // rproxy にないルール（missing）は作り直す
@@ -916,7 +967,7 @@ async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule,
         return () => deleteRule(toKey(after));
       }
       // 元の転送先・TLS の設定・allow_from に戻す
-      return () => modifyRule(toKey(before), toRproxyPatch(before, after.crowdsec, after.targets.length > 0, extraAddrs(after).length > 0));
+      return () => modifyRule(toKey(before), toRproxyPatch(before, after.crowdsec, after.targets.length > 0, extraAddrs(after).length > 0, after));
     });
   });
 }
@@ -954,6 +1005,76 @@ async function deleteForwardingRule(actor: Actor, place: Place, key: ForwardRule
       return () => addRule(toRproxyRule(eff));
     });
   });
+}
+
+// ---- 変更前の差分（rproxy v0.4 の ?dry_run=true、#169） ----
+
+interface PlanResult {
+  node: string;
+  plan?: RulePlan;
+  // rproxy が断った・問い合わせできなかったとき
+  error?: string;
+  code?: string;
+}
+
+// POST /api/forward/plan {action: 'add' | 'modify' | 'delete', ...ルールの本文, target?}：保存したときに rproxy で何が変わるかを、
+// 置き場所のノードごとに rproxy の ?dry_run=true で聞く（DB も rproxy も変えない）。変更は DB の今の内容に本文を重ねた内容で聞く。
+// rproxy の断り（400 invalid・unsupported など）はノードごとの error にする（features.dry_run が false の rproxy も 400 unsupported）
+async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ action: string; results: PlanResult[] }> {
+  const action = body?.action;
+  if (action !== 'add' && action !== 'modify' && action !== 'delete') throw invalid('action は add / modify / delete のどれかです。');
+  const ask = async (place: Place, step: (node: RproxyNode) => Promise<RulePlan | null>): Promise<PlanResult[]> => Promise.all(place.nodes.map(async (node) => {
+    try {
+      const plan = await withNode(node, () => step(node));
+      return plan === null ? { node: node.name } : { node: node.name, plan: plan };
+    } catch (err) {
+      if (err instanceof HttpError || err instanceof RproxyError) return { node: node.name, error: err instanceof RproxyError ? liveError(err) : err.message, code: err.code };
+      throw err;
+    }
+  }));
+  if (action === 'add') {
+    const rule = parseRule(body, false);
+    const place = placeForAdd(actor.cfg, body?.target);
+    checkPorts(actor, rule);
+    checkNodes(actor, place);
+    return { action: action, results: await ask(place, () => planAdd(toRproxyRule(rule))) };
+  }
+  const rule = parseRule(body, action === 'delete', true);
+  const place = await placeForKey(actor, rule, body?.target);
+  checkNodes(actor, place);
+  const conn = await pool.getConnection();
+  let current: ForwardRule;
+  let ovs: Overrides;
+  try {
+    current = await lockOwnRule(conn, actor, place, rule, logger);
+    ovs = (await lockedExtras(conn, place, rule)).overrides;
+  } finally {
+    conn.release();
+  }
+  checkPorts(actor, current);
+  if (action === 'delete') {
+    return { action: action, results: await ask(place, async (node) => {
+      const eff = effectiveRule(current, ovs[node.name]);
+      return isPaused(eff) ? null : planDelete(toKey(eff));
+    }) };
+  }
+  const updated = mergeEdit(current, rule, {
+    range: hasRangeEnd(body), allowFrom: hasAllowFrom(body), http: hasHttp(body), crowdsec: hasCrowdsec(body),
+    targets: hasTargets(body), extraListenAddrs: hasExtraListenAddrs(body), v04: givenV04(body),
+  });
+  return { action: action, results: await ask(place, async (node) => {
+    const before = effectiveRule(current, ovs[node.name]);
+    const after = effectiveRule(updated, ovs[node.name]);
+    // 停止中のルールは rproxy にないので聞けない（再開のときにこの内容で作る）
+    if (isPaused(after)) return null;
+    try {
+      return await planModify(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0, before));
+    } catch (err) {
+      // rproxy にない（missing）なら、保存すると作り直す
+      if (isNotFound(err)) return planAdd(toRproxyRule(after));
+      throw err;
+    }
+  }) };
 }
 
 // ---- 一時停止と再開 ----
@@ -1023,7 +1144,7 @@ function needsRecreate(current: ForwardRule, next: ForwardRule): boolean {
     || (current.http === null) !== (next.http === null);
 }
 
-const ALL_GIVEN: Given = { range: true, allowFrom: true, http: true, crowdsec: true, targets: true, extraListenAddrs: true };
+const ALL_GIVEN: Given = { range: true, allowFrom: true, http: true, crowdsec: true, targets: true, extraListenAddrs: true, v04: [...V04_KEYS] };
 
 // 同じキーのルール（自分の。admin ならだれのでも）を rule の内容で丸ごと置き換える。所有者は変えない
 // overrides：インポートの上書き（undefined なら今の上書きを保つ）。上書きが変わるときは作り直す
@@ -1439,13 +1560,13 @@ async function applyNodeChange(before: ForwardRule, after: ForwardRule, logger: 
     };
   }
   try {
-    await modifyRule(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0));
+    await modifyRule(toKey(after), toRproxyPatch(after, before.crowdsec, before.targets.length > 0, extraAddrs(before).length > 0, before));
   } catch (err) {
     if (!isNotFound(err)) throw err;
     await addRule(toRproxyRule(after));
     return () => deleteRule(toKey(after));
   }
-  return () => modifyRule(toKey(before), toRproxyPatch(before, after.crowdsec, after.targets.length > 0, extraAddrs(after).length > 0));
+  return () => modifyRule(toKey(before), toRproxyPatch(before, after.crowdsec, after.targets.length > 0, extraAddrs(after).length > 0, after));
 }
 
 // グループのルールのノードを決める（ノードを設定し、グループに置いたルールだけ）
@@ -1680,6 +1801,12 @@ function sendError(res: NextApiResponse, err: unknown, logger: AppLogger) {
       logger.error('rproxy が UI のトークンを受け付けませんでした（401 unauthorized）。RPROXY_API_TOKEN を確認してください');
       return res.status(502).json({ error: RPROXY_UNAUTHORIZED_MESSAGE, code: 'rproxy_unauthorized' });
     }
+    if (err.status === 429) {
+      // rproxy v0.4 の api_lockout：UI の送信元が認証の失敗を続けて止められている（UI サーバの設定の問題）
+      logger.error('rproxy が UI の送信元を一時的に止めています（429 locked_out）。RPROXY_API_TOKEN・クライアント証明書を確認してください');
+      if (err.retryAfter !== undefined) res.setHeader?.('Retry-After', String(err.retryAfter));
+      return res.status(502).json({ error: lockedOutText(err.retryAfter), code: 'rproxy_locked_out' });
+    }
     // rproxy の 401/403 は UI サーバ側の設定の問題なので、利用者には 502 として返す
     const passThrough = err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 403;
     return res.status(passThrough ? err.status : 502).json({ error: err.message, code: err.code });
@@ -1822,9 +1949,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           crowdsec: hasCrowdsec(req.body),
           targets: hasTargets(req.body),
           extraListenAddrs: hasExtraListenAddrs(req.body),
+          v04: givenV04(req.body),
         }, logger);
         logger.info('Forwarding rule modified successfully');
         return res.status(200).json(done(actor, 'Forwarding rule modified successfully', results));
+      } else if (query === 'plan') {
+        const out = await planRule(actor, req.body, logger);
+        return res.status(200).json(out);
       } else if (query === 'import') {
         const out = await importRules(actor, req.body, logger);
         return res.status(200).json(out);

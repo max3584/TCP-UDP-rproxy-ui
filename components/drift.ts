@@ -4,6 +4,7 @@
 import type { DriftField, ForwardRule } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { ruleFromStatus } from './dashboard';
+import { V04_KEYS, v04Fields } from './v04';
 
 export const DRIFT_LABELS: Record<DriftField, string> = {
   remote: '転送先',
@@ -18,6 +19,11 @@ export const DRIFT_LABELS: Record<DriftField, string> = {
   crowdsec: 'CrowdSec',
   extra_listen_addrs: '追加の待ち受けアドレス',
   enabled: '一時停止（UI では停止中なのに動いている）',
+  labels: 'ラベル',
+  limits: 'L4 の制限',
+  bandwidth: '帯域の上限',
+  geoip: 'GeoIP',
+  outlier_detection: '受け身のヘルスチェック',
 };
 
 // 比べるための形：null / undefined / false / 空の配列・オブジェクトを省き、キーを並べ替える
@@ -69,6 +75,10 @@ export function ruleDrift(stored: ForwardRule, live: RproxyRuleStatus): DriftFie
   if (!same(stored.http, actual.http)) out.push('http');
   if (stored.crowdsec !== actual.crowdsec) out.push('crowdsec');
   if (!same(sorted(stored.extraListenAddrs), sorted(actual.extraListenAddrs))) out.push('extra_listen_addrs');
+  // v0.4 の項目（labels・limits・bandwidth・geoip・outlier_detection）
+  const sv = v04Fields(stored);
+  const av = v04Fields(actual);
+  for (const key of V04_KEYS) if (!same(sv[key], av[key])) out.push(key);
   return out;
 }
 

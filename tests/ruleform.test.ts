@@ -31,18 +31,29 @@ const terminateRule: ForwardRule = {
 };
 
 describe('RuleForm', () => {
-  it('splits the form into five accessible tabs with the basic tab selected', () => {
+  it('splits the form into six accessible tabs with the basic tab selected', () => {
     const html = render();
     expect(html).toContain('role="tablist"');
     const tabs = Array.from(html.matchAll(/<button[^>]*role="tab"[^>]*>(.*?)<\/button>/g));
-    expect(tabs.map((t) => t[1])).toEqual(['基本', 'L7 (HTTP)', 'TLS / DTLS', 'メール (STARTTLS)', '詳細']);
+    expect(tabs.map((t) => t[1])).toEqual(['基本', 'L7 (HTTP)', 'TLS / DTLS', 'メール (STARTTLS)', '制限・GeoIP', '詳細']);
     expect(tabs[0][0]).toContain('aria-selected="true"');
     expect(tabs[2][0]).toContain('aria-selected="false"');
     // L7 にしていないルールと tcp + passthrough では、L7 と STARTTLS のタブは使えない
     expect(tabs[1][0]).toContain('aria-disabled="true"');
     expect(tabs[3][0]).toContain('aria-disabled="true"');
-    expect(html.match(/role="tabpanel"/g)).toHaveLength(5);
+    expect(html.match(/role="tabpanel"/g)).toHaveLength(6);
     expect(html).toContain('プロファイル');
+  });
+
+  it('keeps v0.4 settings read-only when the rproxy does not report the features', () => {
+    const html = render({ ...udpRule, labels: { tenant: 'act' }, bandwidth: { download: '10Mbps' } });
+    expect(html).toContain('data-testid="limits-editor"');
+    expect(html).toContain('data-testid="v04-unavailable-labels"');
+    expect(html).toContain('この rproxy では使えないため編集できません');
+    expect(html).toContain('&quot;download&quot;: &quot;10Mbps&quot;');
+    expect(html).toContain('この rproxy では使えません（rproxy-api v0.4 以降');
+    // 差分を見る（dry_run）は features.dry_run のときだけ
+    expect(html).not.toContain('差分を見る');
   });
 
   it('titles the TLS tab DTLS for UDP and keeps the range read-only when editing', () => {

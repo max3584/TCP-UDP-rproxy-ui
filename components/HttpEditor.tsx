@@ -3,6 +3,7 @@
 
 import React, { useState } from 'react';
 import { BALANCES, type Balance } from './lib';
+import type { HttpOutlierSpec } from './v04';
 import { BALANCE_LABELS } from './dashboard';
 import { BALANCE_HELP } from './targets';
 import {
@@ -36,7 +37,7 @@ const boxClass = 'border border-gray-300 rounded-sm p-3 mb-3 bg-white';
 const headingClass = 'text-sm font-semibold text-gray-900 mb-2';
 
 // 種類ごとの入力欄（ここにない種類は JSON で編集する）
-type FieldType = 'text' | 'number' | 'bool' | 'list' | 'select';
+type FieldType = 'text' | 'number' | 'bool' | 'list' | 'numlist' | 'select';
 interface FieldDef { key: string; label: string; type: FieldType; options?: string[]; placeholder?: string }
 const FIELDS: Record<string, FieldDef[]> = {
   redirect_scheme: [
@@ -56,6 +57,14 @@ const FIELDS: Record<string, FieldDef[]> = {
     { key: 'source', label: '数える単位（ip か header:名前）', type: 'text' },
   ],
   in_flight: [{ key: 'amount', label: 'クライアント IP ごとの同時リクエスト数', type: 'number' }],
+  // v0.4（#168）。国のリストには rproxy の global.geoip.country_db、AS のリストには asn_db が要る
+  geoip: [
+    { key: 'allow_countries', label: '許可する国（ISO 3166-1 alpha-2。カンマ区切り）', type: 'list', placeholder: 'JP, US' },
+    { key: 'deny_countries', label: '拒否する国（カンマ区切り）', type: 'list' },
+    { key: 'allow_asns', label: '許可する AS の番号（カンマ区切り）', type: 'numlist' },
+    { key: 'deny_asns', label: '拒否する AS の番号（カンマ区切り）', type: 'numlist', placeholder: '64496' },
+    { key: 'unknown', label: '判定できないとき', type: 'select', options: ['allow', 'deny'] },
+  ],
   crowdsec: [
     { key: 'appsec', label: 'AppSec にも問い合わせる', type: 'bool' },
     { key: 'on_error', label: 'CrowdSec に問い合わせできないとき', type: 'select', options: ['allow', 'block'] },
@@ -175,11 +184,12 @@ const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<stri
                 type={f.type === 'number' ? 'number' : 'text'}
                 className={f.type === 'number' ? inputClass : monoInput}
                 placeholder={f.placeholder}
-                value={f.type === 'list' ? (Array.isArray(v) ? v.join(', ') : '') : v === undefined ? '' : String(v)}
+                value={f.type === 'list' || f.type === 'numlist' ? (Array.isArray(v) ? v.join(', ') : '') : v === undefined ? '' : String(v)}
                 onChange={(e) => {
                   const raw = e.target.value;
                   if (f.type === 'number') set(f.key, raw === '' ? undefined : Number(raw));
                   else if (f.type === 'list') set(f.key, raw.split(',').map((s) => s.trim()).filter((s) => s !== ''));
+                  else if (f.type === 'numlist') set(f.key, raw.split(',').map((s) => s.trim().replace(/^AS/i, '')).filter((s) => s !== '').map((s) => (/^[0-9]+$/.test(s) ? Number(s) : s)));
                   else set(f.key, raw);
                 }}
               />
@@ -222,6 +232,50 @@ const MatchBuilder: React.FC<{ id: string; onApply: (match: string) => void }> =
         </div>
       </div>
     </details>
+  );
+};
+
+// ---- サービスの受け身のヘルスチェック（v0.4 の outlier_detection） ----
+
+const OUTLIER_FIELDS: { key: keyof HttpOutlierSpec; label: string; placeholder: string; duration?: boolean }[] = [
+  { key: 'consecutive_5xx', label: '続けて 5xx を返した回数（既定 5、0 で見ない）', placeholder: '5' },
+  { key: 'consecutive_gateway_failures', label: '続けて届かなかった回数（502・503・504・接続の失敗。既定 3）', placeholder: '3' },
+  { key: 'failure_percent', label: '失敗の割合（%。空欄なら見ない）', placeholder: '50' },
+  { key: 'min_requests', label: '割合を見る最小のリクエスト数（既定 20）', placeholder: '20' },
+  { key: 'window', label: '割合を数える時間（既定 30s）', placeholder: '30s', duration: true },
+  { key: 'ejection_time', label: '最初に外す時間（既定 30s）', placeholder: '30s', duration: true },
+  { key: 'max_ejection_time', label: '外す時間の上限（既定 5m）', placeholder: '5m', duration: true },
+  { key: 'max_ejected_percent', label: '同時に外せる割合（%、既定 50）', placeholder: '50' },
+];
+
+const ServiceOutlierFields: React.FC<{ id: string; name: string; value: HttpOutlierSpec | undefined; onChange: (v: HttpOutlierSpec | undefined) => void }> = ({ id, name, value, onChange }) => {
+  const on = value !== undefined;
+  const set = (key: keyof HttpOutlierSpec, raw: string, duration: boolean) => {
+    const next: Record<string, unknown> = { ...(value ?? {}) };
+    const t = raw.trim();
+    if (t === '') delete next[key];
+    else next[key] = duration || !/^[0-9]+$/.test(t) ? t : Number(t);
+    onChange(next as HttpOutlierSpec);
+  };
+  return (
+    <div className="mt-2" data-testid="service-outlier">
+      <label className="flex items-center gap-2 text-sm text-gray-800">
+        <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked ? {} : undefined)} />
+        受け身のヘルスチェック（失敗の続いた転送先をしばらく外す）
+      </label>
+      {on && (
+        <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {OUTLIER_FIELDS.map((f) => (
+            <div key={f.key}>
+              <label htmlFor={`${id}-${f.key}`} className={labelClass}>{f.label}</label>
+              <input id={`${id}-${f.key}`} className={monoInput} placeholder={f.placeholder} value={value?.[f.key] === undefined ? '' : String(value[f.key])}
+                aria-label={`サービス ${name}: ${f.label}`} onChange={(e) => set(f.key, e.target.value, f.duration === true)} />
+            </div>
+          ))}
+          <p className="sm:col-span-2 text-xs text-gray-600">サーキットブレーカー（サービス全体を止める）とは別に、転送先ごとに外します。空欄の項目は rproxy の既定値です。</p>
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -395,6 +449,8 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           const id = `http-service-${i}`;
           const healthAvailable = serviceOptions === null || serviceOptions.includes('health_check') || s.health_check !== undefined;
           const stickyAvailable = serviceOptions === null || serviceOptions.includes('sticky') || s.sticky !== undefined;
+          // 受け身のヘルスチェック（v0.4、#170）は rproxy が services に outlier_detection を返すときだけ（使っていれば残す）
+          const outlierAvailable = (serviceOptions !== null && serviceOptions.includes('outlier_detection')) || s.outlier_detection !== undefined;
           return (
             <div key={i} className={boxClass} data-testid="http-service">
               <div className="flex flex-wrap gap-2 items-end mb-2">
@@ -482,6 +538,10 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     </>
                   )}
                 </div>
+              )}
+              {outlierAvailable && (
+                <ServiceOutlierFields id={`${id}-outlier`} name={name} value={s.outlier_detection}
+                  onChange={(o) => updateService(name, { outlier_detection: o })} />
               )}
               {stickyAvailable && (
                 <div className="mt-2">
