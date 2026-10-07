@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { parse as parseYaml } from 'yaml';
 import type { ClientTls, RproxyNode } from './rproxy';
-import { envClientTls } from './rproxy';
+import { envApiToken, envClientTls, envClientTlsProblem } from './rproxy';
 import type { GroupMode, NodesInfo } from './lib';
 
 // RPROXY_UI_NODES がないときの 1 台の名前（DB の target 列の既定値と同じ）
@@ -189,11 +189,20 @@ export function parseNodesConfig(text: string, readToken: (path: string) => stri
   return { configured: true, nodes: nodes, groups: groups, defaultTarget: defaultTarget };
 }
 
-// RPROXY_UI_NODES がないとき：RPROXY_API_URL / RPROXY_API_TOKEN の 1 台（環境変数は毎回読む）
+// RPROXY_API_TOKEN（なければ RPROXY_API_TOKEN_FILE）。読めなければ付けない（問い合わせが 401 になり、起動時の確認がログに出す）
+function implicitToken(): string | undefined {
+  try {
+    return envApiToken() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// RPROXY_UI_NODES がないとき：RPROXY_API_URL / RPROXY_API_TOKEN（RPROXY_API_TOKEN_FILE）の 1 台（環境変数は毎回読む）
 export function implicitConfig(): NodesConfig {
   return {
     configured: false,
-    nodes: [{ name: DEFAULT_NODE, url: process.env.RPROXY_API_URL ?? '', token: process.env.RPROXY_API_TOKEN || undefined, ...(envClientTls() ? { tls: envClientTls() } : {}) }],
+    nodes: [{ name: DEFAULT_NODE, url: process.env.RPROXY_API_URL ?? '', token: implicitToken(), ...(envClientTls() ? { tls: envClientTls() } : {}) }],
     groups: [],
     defaultTarget: DEFAULT_NODE,
   };
@@ -292,8 +301,27 @@ export function probeNode(config: NodesConfig, target: string | undefined): Rpro
   return toRproxyNode(nodes[0]);
 }
 
-// 起動時の確認（instrumentation.ts）。誤りがあれば理由を出して終了する
+// 起動時の確認（instrumentation.ts）。誤りがあれば理由を出して終了する。
+// RPROXY_UI_NODES がなければ RPROXY_API_TLS_* と RPROXY_API_URL の組み合わせだけを確かめる（https でなければ止める）
 export function checkNodesAtStartup(): void {
+  const usesFile = (process.env.RPROXY_UI_NODES ?? '').trim() !== '';
+  if (!usesFile) {
+    const problem = envClientTlsProblem();
+    if (problem) {
+      console.error(`rproxy-ui: ${problem}`);
+      process.exit(1);
+      return;
+    }
+    // RPROXY_API_TOKEN_FILE が読めない・トークンがない（グループ rproxy に入っていないなど）
+    try {
+      envApiToken();
+    } catch (err) {
+      console.error(`rproxy-ui: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    return;
+  }
+  if (envClientTls()) console.warn('rproxy-ui: RPROXY_UI_NODES があるため RPROXY_API_TLS_* は使いません（ノードごとの tls_cert・tls_key・tls_ca を書いてください）');
   try {
     const config = loadNodes();
     console.log(`rproxy-ui: RPROXY_UI_NODES: nodes ${config.nodes.map((n) => n.name).join(', ')}; groups ${config.groups.map((g) => `${g.name}(${g.nodes.join(',')})`).join(', ') || '-'}`);

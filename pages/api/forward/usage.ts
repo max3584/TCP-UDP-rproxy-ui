@@ -5,7 +5,7 @@ import { requireRole } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
 import { NodesConfigError, loadNodes, normalizeIp, targetNodes } from '@/components/nodes';
 import { getPool, loadOverrides } from '@/components/ruledb';
-import { RANGE_SPECS, bucketKey, bucketStarts, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, parseRange, reportCsv } from '@/components/usage';
+import { RANGE_SPECS, USAGE_ERROR_HIDDEN, bucketKey, bucketStarts, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, parseRange, reportCsv } from '@/components/usage';
 import type { UsageRow } from '@/components/usage';
 import { usageStatus } from '@/components/usagecollect';
 import { localizedApi } from '@/i18n/server';
@@ -46,7 +46,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed', code: 'method_not_allowed' });
   const admin = accessOf(session.user.roles ?? [], roleConfig()) === 'admin';
   const pool = getPool();
-  const status = usageStatus();
+  // 集計の失敗の文（ノードごとの rproxy の通信の失敗。内部のアドレスを含む）は管理者だけ。利用者には失敗したことだけ（セキュリティレビュー M3）
+  const raw = usageStatus();
+  const status = admin || raw.error === null ? raw : { ...raw, error: USAGE_ERROR_HIDDEN };
   try {
     if (q(req.query.report)) {
       const period = parsePeriod(q(req.query.period));

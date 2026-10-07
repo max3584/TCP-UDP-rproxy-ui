@@ -16,6 +16,7 @@ Definitions of the tables shared by the UI and rproxy-api.
 | `migrations/007_log_node.sql` | Several rproxy instances (#98): adds the column for the node a rule was resent to (`node`) to `forward_rules_log`. Needed with `RPROXY_UI_NODES` |
 | `migrations/008_overrides.sql` | Several rproxy instances (#98): per-node overrides of group rules (`forward_rule_overrides`). Recreate the per-node views with `node-view.mjs` after applying it |
 | `migrations/010_usage.sql` | Usage accounting (#101): `usage_counters` (the last values seen, for differences), `usage_hourly`, `usage_daily`. Only the UI reads and writes them. Without it nothing is collected |
+| `migrations/011_usage_attr.sql` | Split usage rows by owner and marks (UI v0.4.0 security review M1): adds an `attr` column to `usage_hourly` and `usage_daily` and puts it in the primary key. Where 010 is applied, apply it before upgrading the UI |
 | `migrations/009_rproxy_rules.sql` | `rproxy_rules`, where rproxy-api v0.4 stores rules created through its API (#76; only rproxy writes it). With several rproxy instances, recreate the per-node views after applying it |
 | `node-view.mjs` | Prints the SQL for a per-node database with a `forward_rules` view and a read-only DB user (see "Several rproxy instances (a view per node)" below) |
 
@@ -54,7 +55,7 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `rproxy_rules` (009): rproxy-api v0.4 stores here the rules created or changed through its API with a `persist: true` token (unique on `(node, protocol, listen_addr, listen_port)`; `spec` is JSON in the shape of the `POST /rules` body; `created_by` / `updated_by` are token names). Only rproxy writes it; the UI reads it and shows those rules as "API" rules on administrators' dashboards (changes go through the rproxy API).
   `node` is rproxy's `RPROXY_NODE_NAME` (default: the host name). With several rproxy instances, match the node names in the UI's `RPROXY_UI_NODES`. At startup rproxy restores the rows of its own `node` after the UI's table; on the same key the UI's row wins.
 
-- `usage_counters`, `usage_hourly`, `usage_daily` (010): usage accounting. The UI reads rproxy's statistics, keeps the last values (and `counters_since`, `started_at`) in `usage_counters`, and adds the differences per rule and node to `usage_hourly` (`hour` is the start of the UTC hour) and `usage_daily` (`day` is the UTC date). `owner`, `target`, `labels` and `origin` of each row are the rule's owner and marks at that time. The UI deletes old rows (`RPROXY_UI_USAGE_HOURLY_DAYS`, `RPROXY_UI_USAGE_DAILY_DAYS`).
+- `usage_counters`, `usage_hourly`, `usage_daily` (010): usage accounting. The UI reads rproxy's statistics, keeps the last values (and `counters_since`, `started_at`) in `usage_counters`, and adds the differences per rule and node to `usage_hourly` (`hour` is the start of the UTC hour) and `usage_daily` (`day` is the UTC date). `owner`, `target`, `labels` and `origin` of each row are the rule's owner and marks at that time; a different `attr` in the primary key (011; their SHA-256) makes a separate row (when the owner changes during a day, the earlier traffic keeps its owner). The UI deletes old rows (`RPROXY_UI_USAGE_HOURLY_DAYS`, `RPROXY_UI_USAGE_DAILY_DAYS`).
 
 ## DB users
 

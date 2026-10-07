@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listenOptions, reservedClash, type InterfacesInfo } from '@/components/listen';
-import { CERT_EXPIRED_MESSAGE, FORBIDDEN_MESSAGE, STATIC_RULE_MESSAGE, explainError, ruleErrorText } from '@/components/messages';
+import { CERT_EXPIRED_MESSAGE, FILE_OWNER_MESSAGE, FORBIDDEN_MESSAGE, SHADOWED_RULE_MESSAGE, STATIC_RULE_MESSAGE, explainError, isFileOwnerRefusal, ruleErrorText } from '@/components/messages';
 
 const info: InterfacesInfo = {
   interfaces: [
@@ -59,6 +59,38 @@ describe('explainError', () => {
     expect(explainError('static', 'rule is static')).toContain(STATIC_RULE_MESSAGE);
     // 詳細が説明と同じなら繰り返さない
     expect(explainError('static', STATIC_RULE_MESSAGE)).toBe(STATIC_RULE_MESSAGE);
+  });
+
+  // セキュリティレビュー M2：rproxy は rproxy を動かすユーザーのファイルだけを読む
+  it('explains a refusal because of the file owner', () => {
+    const detail = 'tls: key_file /home/alice/client.key is owned by uid 1001, not by the user rproxy runs as (rproxy-api)';
+    expect(isFileOwnerRefusal(detail)).toBe(true);
+    expect(isFileOwnerRefusal('cert_file /etc/rproxy/a.pem must be owned by rproxy-api')).toBe(true);
+    expect(isFileOwnerRefusal('failed to read /etc/rproxy/a.pem: No such file or directory')).toBe(false);
+    const msg = explainError('tls_config', detail);
+    expect(msg).toContain(FILE_OWNER_MESSAGE);
+    expect(msg).toContain('uid 1001');
+  });
+
+  // rproxy-api の src/net/files.rs の断りの文（rproxy-api#242）
+  it('recognises every refusal text of rproxy-api (owner, symbolic link, group/other write, readable key)', () => {
+    const texts = [
+      '/etc/rproxy/tls/a.pem is owned by uid 1001, not by the user rproxy runs as (uid 998): give the file to that user (chown) or set global.files.owner_check: off',
+      '/etc/rproxy/tls/a.pem is a symbolic link owned by uid 1001, not rproxy\'s (uid 998) or root',
+      '/etc/rproxy/tls/a.pem may be written by the group or others (mode 664): chmod g-w,o-w',
+      '/etc/rproxy/tls/a.key holds a key or secret and may be read by anyone (mode 644): chmod o-r (0600 or 0640)',
+    ];
+    for (const t of texts) {
+      expect(isFileOwnerRefusal(t), t).toBe(true);
+      expect(explainError('tls_config', t)).toBe(`${FILE_OWNER_MESSAGE}（詳細: ${t}）`);
+      expect(ruleErrorText(t)).toContain(FILE_OWNER_MESSAGE);
+    }
+    expect(FILE_OWNER_MESSAGE).toContain('chown rproxy-api:rproxy');
+    expect(FILE_OWNER_MESSAGE).toContain('0600 か 0640');
+  });
+
+  it('explains a shadowed UI rule (409 shadowed)', () => {
+    expect(explainError('shadowed', 'x')).toContain(SHADOWED_RULE_MESSAGE);
   });
 
   it('explains known codes and keeps the detail', () => {

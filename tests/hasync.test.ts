@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const mocks = vi.hoisted(() => {
-  const conn = { beginTransaction: vi.fn(), commit: vi.fn(), rollback: vi.fn(), release: vi.fn(), query: vi.fn() };
+  const conn = { beginTransaction: vi.fn(), commit: vi.fn(), rollback: vi.fn(), release: vi.fn(), destroy: vi.fn(), query: vi.fn() };
   const pool = { getConnection: vi.fn(), query: vi.fn() };
   return { conn, pool, addRule: vi.fn(), modifyRule: vi.fn(), deleteRule: vi.fn(), listRules: vi.fn(), getRule: vi.fn(), getInterfaces: vi.fn() };
 });
@@ -25,6 +25,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => ({
 import { RproxyError, currentNode } from '@/components/rproxy';
 import { loadNodes, resetNodesCache } from '@/components/nodes';
 import { haSyncIntervalSecs, haSyncStatus, nodeReadiness, runHaSyncOnce, startHaSync, stopHaSync, syncNode } from '@/components/hasync';
+import { fromRow, resendOne } from '@/components/ruledb';
 import { checkHaToken } from '@/components/hatoken';
 import readyHandler from '@/pages/api/forward/ha/ready';
 import notifyHandler from '@/pages/api/forward/ha/notify';
@@ -151,6 +152,47 @@ describe('syncNode / runHaSyncOnce', () => {
     expect(conn.rollback).toHaveBeenCalled();
   });
 
+  // セキュリティレビュー H1：同じキーを API のルール・ルールの組が使っていれば、送り直しでそれを消したり書き換えたりしない
+  it('a key used by an API rule or a ruleset on the node is reported (shadowed) but never resent', async () => {
+    mocks.listRules.mockResolvedValue([status(8001), status(8002, { origin: 'api', remote_port: 99, created_by: 'admin-token' })]);
+    const r = await nodeReadiness(loadNodes(), 'a');
+    expect(r.issues).toEqual([{ target: 'ha', key: 'tcp|0.0.0.0|8002', state: 'shadowed' }]);
+    // UI からは直せないので昇格は止めない
+    expect(r.ready).toBe(true);
+    const out = await syncNode(loadNodes(), 'a', { onlyAuto: true });
+    expect(out.results).toEqual([]);
+    mocks.listRules.mockResolvedValue([status(8001), status(8002, { ruleset: 'k8s/default/web' })]);
+    expect((await syncNode(loadNodes(), 'a', { onlyAuto: true })).results).toEqual([]);
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('an API rule created between the check and the resend is left alone (shadowed, no history)', async () => {
+    mocks.listRules.mockResolvedValue([status(8001)]);
+    mocks.getRule.mockResolvedValue(status(8002, { origin: 'api', remote_port: 99 }));
+    const out = await syncNode(loadNodes(), 'a', { onlyAuto: true });
+    expect(out.results).toEqual([{ target: 'ha', key: 'tcp|0.0.0.0|8002', result: 'shadowed' }]);
+    expect(conn.query.mock.calls.some((c) => String(c[0]).startsWith('INSERT INTO forward_rules_log'))).toBe(false);
+    expect(mocks.addRule).not.toHaveBeenCalled();
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+  });
+
+  it('resendOne does not delete an API rule for a paused UI rule, nor patch one that drifts', async () => {
+    const paused = fromRow(row(2, 'ha', { options: JSON.stringify({ enabled: false }) }));
+    mocks.getRule.mockResolvedValue(status(8002, { origin: 'api' }));
+    expect(await resendOne(paused)).toBe('shadowed');
+    expect(await resendOne(fromRow(row(2, 'ha')))).toBe('shadowed');
+    mocks.getRule.mockResolvedValue(status(8002, { origin: 'dynamic', ruleset: 'k8s/default/web', remote_port: 99 }));
+    expect(await resendOne(fromRow(row(2, 'ha')))).toBe('shadowed');
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    // origin を返さない古い rproxy のルールは UI のもの
+    mocks.getRule.mockResolvedValue(status(8002, { remote_port: 99 }));
+    mocks.modifyRule.mockResolvedValue({});
+    expect(await resendOne(fromRow(row(2, 'ha')))).toBe('modified');
+  });
+
   it('counts repeated failures and clears them after a success', async () => {
     mocks.listRules.mockResolvedValue([status(8001)]);
     mocks.getRule.mockRejectedValue(new RproxyError('no such rule', 'not_found', 404));
@@ -172,6 +214,23 @@ describe('syncNode / runHaSyncOnce', () => {
     mocks.listRules.mockClear();
     expect(await runHaSyncOnce()).toBe('skipped');
     expect(mocks.listRules).not.toHaveBeenCalled();
+  });
+
+  // セキュリティレビュー L6：ロックを解放できなかった接続は pool に返さない
+  it('destroys the lock connection when RELEASE_LOCK fails', async () => {
+    mocks.listRules.mockResolvedValue([status(8001), status(8002)]);
+    const base = conn.query.getMockImplementation()!;
+    conn.query.mockImplementation(async (q: string, params?: unknown[]) => {
+      if (q.startsWith('SELECT RELEASE_LOCK')) throw new Error('connection lost');
+      return base(q, params);
+    });
+    expect(await runHaSyncOnce()).toBe('done');
+    expect(conn.destroy).toHaveBeenCalledTimes(1);
+    const released = conn.release.mock.calls.length;
+    conn.query.mockImplementation(base);
+    expect(await runHaSyncOnce()).toBe('done');
+    expect(conn.destroy).toHaveBeenCalledTimes(1);
+    expect(conn.release.mock.calls.length).toBeGreaterThan(released);
   });
 
   it('starts one loop per process; RPROXY_UI_HA_SYNC_SECS=0 disables it', () => {

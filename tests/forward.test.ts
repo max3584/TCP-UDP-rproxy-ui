@@ -79,6 +79,8 @@ beforeEach(() => {
   pool.getConnection.mockResolvedValue(conn);
   conn.query.mockResolvedValue({ affectedRows: 1 });
   conn.rollback.mockResolvedValue(undefined);
+  // 前のテストの getRule の結果を持ち越さない（変更の前に今のルールを確かめるため）
+  mocks.getRule.mockReset();
 });
 
 describe('/api/forward/[forward]', () => {
@@ -88,6 +90,19 @@ describe('/api/forward/[forward]', () => {
     const { status } = await call('add', tcpRule);
     expect(status).toBe(401);
     expect(pool.getConnection).not.toHaveBeenCalled();
+  });
+
+  // セキュリティレビュー L2：ほかのサイトからの POST はサインインを確かめる前に断る
+  it('refuses a POST from another site (403 csrf) without touching the DB or rproxy', async () => {
+    const req = { method: 'POST', query: { forward: 'add' }, body: tcpRule, headers: { host: 'ui.internal', origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' } } as unknown as NextApiRequest;
+    const res: any = {};
+    res.status = vi.fn(() => res);
+    res.json = vi.fn(() => res);
+    await handler(req, res as NextApiResponse);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json.mock.calls[0][0].code).toBe('csrf');
+    expect(pool.getConnection).not.toHaveBeenCalled();
+    expect(mocks.addRule).not.toHaveBeenCalled();
   });
 
   it('add commits when rproxy succeeds', async () => {

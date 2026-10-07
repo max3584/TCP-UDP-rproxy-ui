@@ -6,6 +6,7 @@ import { BALANCES, type Balance } from './lib';
 import type { HttpOutlierSpec } from './v04';
 import { BALANCE_LABELS } from './dashboard';
 import { BALANCE_HELP } from './targets';
+import { FILE_OWNER_NOTE } from './messages';
 import {
   HttpOption,
   HttpRules,
@@ -375,6 +376,7 @@ const ServiceTlsFields: React.FC<{ id: string; name: string; value: ServiceTlsSp
             転送先の証明書を確かめない（試験用）
           </label>
           <p className="sm:col-span-2 text-xs text-gray-600">ファイルはルールを作る・変えるときに読みます。http:// の転送先だけのサービスでは使いません。</p>
+          <p className="sm:col-span-2 text-xs text-gray-600" data-testid="service-tls-owner-note">{FILE_OWNER_NOTE}</p>
         </div>
       )}
     </div>
@@ -873,6 +875,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                 : FIELDS[kind]
                   ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} httpOptions={httpOptions} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
                   : <JsonConfig key={`${name}-${kind}`} id={`${id}-json`} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />}
+              {kind === 'basic_auth' && <p className="text-xs text-gray-600 mt-1" data-testid="users-file-owner-note">{FILE_OWNER_NOTE}</p>}
               {kind === 'headers' && (
                 <p className="text-xs text-gray-600 mt-1">
                   {supports(httpOptions, 'headers_add')

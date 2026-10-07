@@ -129,6 +129,10 @@ describe('validateHttp: the Gateway API fields', () => {
     expect(errorsOf(withMiddleware('r0-cors', { cors: { allow_origins: [] } }))).toContain('1 つ以上');
     expect(errorsOf(withMiddleware('r0-cors', { cors: { allow_origins: ['www.foo.com'] } }))).toContain('* か http://');
     expect(errorsOf(withMiddleware('r0-cors', { cors: { allow_origins: ['*'], allow_methods: ['GET, POST'] } }))).toContain('ヘッダの値に使えません');
+    // 件数の上限（セキュリティレビュー L7）
+    expect(errorsOf(withMiddleware('r0-cors', { cors: { allow_origins: ['*'], allow_headers: Array.from({ length: 257 }, (_, i) => `x-h${i}`) } }))).toContain('256 件まで');
+    expect(errorsOf(withMiddleware('r0-cors', { cors: { allow_origins: ['*'], allow_headers: Array.from({ length: 256 }, (_, i) => `x-h${i}`) } }))).toBe('');
+    expect(errorsOf(withMiddleware('r0-geo', { geoip: { deny_asns: Array.from({ length: 257 }, (_, i) => i + 1) } }))).toContain('256 件まで');
     expect(errorsOf(withMiddleware('r0-hdr', { headers: { response: { add: { 'X-A': 1 } } } }))).toContain('response.add');
   });
 

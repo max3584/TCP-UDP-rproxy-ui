@@ -16,6 +16,14 @@ if [ "$1" = "configure" ]; then
 	if ! getent passwd rproxy-ui >/dev/null; then
 		useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin rproxy-ui
 	fi
+	# the group shared with rproxy-api (its user is rproxy-api, its files are rproxy-api:rproxy and group-readable):
+	# created here too so the install order of the two packages does not matter; the unit adds it (SupplementaryGroups=rproxy)
+	if ! getent group rproxy >/dev/null; then
+		groupadd --system rproxy
+	fi
+	if ! id -nG rproxy-ui | tr ' ' '\n' | grep -qx rproxy; then
+		usermod -aG rproxy rproxy-ui
+	fi
 	# secrets (Keycloak, DB, rproxy token): systemd reads the file, the service user does not need to
 	chown root:root /etc/rproxy-ui "$ENV_FILE"
 	chmod 0750 /etc/rproxy-ui
@@ -24,15 +32,28 @@ if [ "$1" = "configure" ]; then
 	if fill NEXTAUTH_SECRET "$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"; then
 		echo "rproxy-ui: generated NEXTAUTH_SECRET in $ENV_FILE"
 	fi
-	# rproxy-api on the same host: point the UI at its control API
+	# rproxy-api on the same host: point the UI at its control API. Its token file (one token per line,
+	# root:rproxy 0640) is read by the UI through the rproxy group (RPROXY_API_TOKEN_FILE), so rotating the
+	# token there needs no change here. An env file from before (no RPROXY_API_TOKEN_FILE= line, or a token
+	# already in RPROXY_API_TOKEN) keeps working: the token is copied as before / left alone.
+	# A YAML token file (tokens:) holds only hashes: nothing to take from it
 	if [ -r /etc/rproxy/tokens ] && grep -q '^RPROXY_API_TOKEN=$' "$ENV_FILE"; then
 		token=$(grep -v -e '^#' -e '^[[:space:]]*$' /etc/rproxy/tokens | head -n1 | tr -d '[:space:]')
 		port=$(sed -n 's/^RPROXY_API_PORT=//p' /etc/rproxy/rproxy.env 2>/dev/null | tail -n1)
-		if [ -n "$token" ]; then
-			fill RPROXY_API_TOKEN "$token" || true
+		case "$token" in
+		'' | tokens:*)
+			echo "rproxy-ui: /etc/rproxy/tokens has no plain token; set RPROXY_API_TOKEN (or RPROXY_API_TOKEN_FILE) in $ENV_FILE"
+			;;
+		*)
+			if grep -q '^RPROXY_API_TOKEN_FILE=$' "$ENV_FILE"; then
+				fill RPROXY_API_TOKEN_FILE /etc/rproxy/tokens || true
+			else
+				fill RPROXY_API_TOKEN "$token" || true
+			fi
 			fill RPROXY_API_URL "http://127.0.0.1:${port:-8080}" || true
 			echo "rproxy-ui: using the rproxy-api on this host (http://127.0.0.1:${port:-8080})"
-		fi
+			;;
+		esac
 	fi
 	echo "rproxy-ui: set NEXTAUTH_URL, KEYCLOAK_* and DB_* in $ENV_FILE, then: systemctl enable --now rproxy-ui"
 fi

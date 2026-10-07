@@ -86,6 +86,7 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
 
 - `003_auth_id_to_keycloak.sql` は、利用者を Auth0 から Keycloak に移すときだけ使うテンプレート。Auth0 の sub と Keycloak の sub（ユーザーの「ID」）の対応表を VALUES に書いてから、ファイルの手順どおりトランザクションの中で実行し、未変換の行がないことを確かめてから COMMIT する。
 - 適用済みの migration をもう一度流すと失敗する（列がすでにある）。どこまで適用したかは `SHOW COLUMNS FROM forward_rules` で確かめる。
+- 利用量の集計（`010_usage.sql`）を使っているなら、UI を v0.4.0 に上げる前に `011_usage_attr.sql` も適用する（集計の行を持ち主・印ごとに分ける。適用しないと集計が止まり、`/usage` に理由が出る）。
 
 ## 3. Keycloak
 
@@ -114,6 +115,19 @@ RPROXY_LOG_FILE=/var/log/rproxy/rproxy.log
 UI と rproxy-api が同じホストなら、制御 API を Unix ソケットで受けることもできる（loopback の TCP は同じホストのだれでも接続できるが、ソケットはファイルのモードとグループで絞れる）。
 rproxy 側で `RPROXY_API_SOCKET=/run/rproxy/api.sock` と `RPROXY_API_SOCKET_GROUP=<グループ>`（モードは既定 660。`RPROXY_API_PORT=0` で TCP を閉じられる）、
 UI 側で `RPROXY_API_URL=unix:/run/rproxy/api.sock` にし、`rproxy-ui` のユーザーをそのグループに入れる（`sudo usermod -aG <グループ> rproxy-ui` のあと `systemctl restart rproxy-ui`）。トークンは TCP と同じく要る。
+パッケージの `rproxy-ui` は rproxy-api と共有するグループ `rproxy` に入っている（`SupplementaryGroups=rproxy`）ので、`RPROXY_API_SOCKET_GROUP=rproxy` なら足すものはない。
+
+### ファイルの持ち主（OS のユーザーとグループ）
+
+rproxy-api は OS のユーザー `rproxy-api` で動き、UI（`rproxy-ui`）と共有するグループ `rproxy` を持つ（どちらのパッケージも、なければグループを作る。入れる順は問わない）。
+rproxy-api は、ルールの証明書・秘密鍵・CA・秘密（htpasswd など）のファイルを、自分（`rproxy-api`）が持つものだけ読む（UI の利用者が、ほかの人の鍵のパスを書いて、その身元で待ち受け・接続できないように）。持ち主が違えば rproxy がルールを断り、UI の画面はその理由と直し方を出す。
+
+| ファイル | 持ち主とモード |
+|---|---|
+| 証明書・中間 CA・CA・秘密鍵・htpasswd（`/etc/rproxy/tls/` など） | `rproxy-api:rproxy` 0640（鍵は 0600 でもよい） |
+| トークンファイル `/etc/rproxy/tokens` | `root:rproxy` 0640（UI はグループ `rproxy` で読む。`RPROXY_API_TOKEN_FILE`） |
+| UI の制御 API のクライアント証明書（`RPROXY_API_TLS_*`） | `root:rproxy-ui` 0640 か、rproxy-api のものなら `rproxy-api:rproxy` 0640 |
+
 
 UI を別のホストに置く場合は、制御 API を loopback 以外で待ち受けることになり、トークンと TLS が必須になる（`RPROXY_TLS_CERT` / `RPROXY_TLS_KEY`。無いと起動しない）。UI 側は `RPROXY_API_URL=https://...` にし、自己署名や社内 CA なら `NODE_EXTRA_CA_CERTS` で信頼させる。
 
@@ -141,7 +155,7 @@ UI を別のホストに置く場合は、制御 API を loopback 以外で待�
 ]
 ```
 
-証明書と鍵は `root:rproxy` 640 で `/etc/rproxy/tls/` に置く。rproxy-api v0.3.21 からは rproxy 自身が ACME で取って更新することもできる（rproxy の設定ファイルの `global.acme`。rproxy-api の docs/ACME.md と、README の「ACME で証明書を取る」）。ファイルを使う場合は certbot・acme.sh などで取得する（Kubernetes なら cert-manager の Secret をマウントする）。
+証明書と鍵は `rproxy-api:rproxy` 640 で `/etc/rproxy/tls/` に置く（上の「ファイルの持ち主」。rproxy-api はほかのユーザーが持つ鍵を読まない）。rproxy-api v0.3.21 からは rproxy 自身が ACME で取って更新することもできる（rproxy の設定ファイルの `global.acme`。rproxy-api の docs/ACME.md と、README の「ACME で証明書を取る」）。ファイルを使う場合は certbot・acme.sh などで取得する（Kubernetes なら cert-manager の Secret をマウントする）。
 rproxy はファイルの大きさ・更新時刻・inode を 60 秒ごと（`RPROXY_CERT_CHECK_SECS`。`0` で止める）に確かめ、変わった証明書だけを自動で読み直す（シンボリックリンクの差し替えも検知する）。すぐに反映したいときは `sudo systemctl reload rproxy-api`。
 
 certbot の http-01 で取る場合は、80 番の L7（`http`）のルールで `/.well-known/acme-challenge/` を certbot の standalone（例 `--http-01-port 8888`）か webroot を配るサーバへ振り分ける（ほかのパスは HTTPS へリダイレクトする）:
@@ -158,7 +172,7 @@ certbot の http-01 で取る場合は、80 番の L7（`http`）のルールで
       to-https: {redirect_scheme: {scheme: https, permanent: true}}
 ```
 
-証明書のファイルは certbot の `/etc/letsencrypt/live/<名前>/fullchain.pem` と `privkey.pem` をそのまま指定できる（rproxy ユーザーが読めるように、`deploy-hook` で `/etc/rproxy/tls/` にコピーしてもよい）。
+証明書のファイルは certbot の `/etc/letsencrypt/live/<名前>/fullchain.pem` と `privkey.pem` をそのまま指定できる（rproxy-api はほかのユーザーが持つファイルを読まないので、certbot の `deploy-hook` で `/etc/rproxy/tls/` にコピーして `chown rproxy-api:rproxy` する）。
 
 ## 5. rproxy-ui
 
@@ -178,8 +192,11 @@ DB_DATABASE=rproxy
 DB_USER=rproxy_ui
 DB_PASSWORD=<password>
 RPROXY_API_URL=http://127.0.0.1:8080   # Unix ソケットなら unix:/run/rproxy/api.sock（4. を参照）
-RPROXY_API_TOKEN=<インストール時に /etc/rproxy/tokens から入る>
+RPROXY_API_TOKEN=                       # 前の版でコピーしたトークンはここに残る（あればこちらを使う）
+RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # インストール時に入る（1 行に 1 トークンの書き方のとき。グループ rproxy で読む）
 ```
+
+`RPROXY_API_TOKEN_FILE` は最初の空でない・`#` でない行をトークンとして読み、ファイルが変われば次の問い合わせから新しいトークンを使う（UI の設定を書き換えなくてよい）。トークンファイルを YAML（下）にすると SHA-256 しか置かないので、UI のトークンは `RPROXY_API_TOKEN` に書くか、UI だけが読むファイル（`root:rproxy-ui` 0640）に 1 行で書いて `RPROXY_API_TOKEN_FILE` で指す。
 
 rproxy のトークンファイルを権限付き（YAML）にする場合、UI のトークンには `rules:read` と `rules:write` のスコープを付ける（`metrics:read` は使わない。`GET /capabilities` はどのトークンでも読める）。
 `allow_listen_ports` を付けると、その範囲の外のルールは UI から作成・変更・削除できない。足りないと rproxy が 403 `forbidden` を返し、画面にはスコープを確かめるように出る。

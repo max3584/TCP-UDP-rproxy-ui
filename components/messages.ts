@@ -75,9 +75,30 @@ export function lockedOutText(retryAfter?: number): string {
   return retryAfter !== undefined ? `${RPROXY_LOCKED_OUT_MESSAGE}（あと約 ${retryAfter} 秒）` : RPROXY_LOCKED_OUT_MESSAGE;
 }
 
+// 証明書・秘密鍵・CA・秘密（htpasswd など）のファイルの持ち主（セキュリティレビュー M2）：rproxy は、rproxy を動かす OS のユーザー
+// （パッケージでは rproxy-api）が持つファイルだけを読む。ほかの利用者の鍵のパスを書いて、その身元で接続・待ち受けできないように
+export const FILE_OWNER_NOTE =
+  'ファイルのパスは rproxy のホストのものです。rproxy は、rproxy を動かす OS のユーザー（rproxy-api）が持つファイルだけを読みます（グループ rproxy の読み取りは構いません）。ほかのユーザーが持つファイルを指定すると、rproxy が断ります。';
+
+export const FILE_OWNER_MESSAGE =
+  'rproxy は、証明書・秘密鍵・CA・秘密のファイルを、rproxy を動かす OS のユーザー（rproxy-api）が持ち、グループとほかの人が書けないものだけ読みます（秘密鍵・秘密はほかの人が読めないことも）。ファイルの持ち主を rproxy-api、グループを rproxy にし、グループとほかの人の書き込みを外してください（例: chown rproxy-api:rproxy <ファイル>、chmod 0640 <ファイル>。秘密鍵・秘密は 0600 か 0640）。シンボリックリンクは rproxy-api か root が持つものだけ使えます。ファイルを置けない・変えられない場合は rproxy の管理者に相談してください。';
+
+// rproxy がファイルの持ち主・モードを理由に断ったか（rproxy-api の src/net/files.rs の文）：
+// "<path> is owned by uid N, not by the user rproxy runs as (uid M): ..."、"<path> is a symbolic link owned by uid N, not rproxy's (uid M) or root"、
+// "<path> may be written by the group or others (mode O): chmod g-w,o-w"、"<path> holds a key or secret and may be read by anyone (mode O): chmod o-r (0600 or 0640)"
+export function isFileOwnerRefusal(detail: string): boolean {
+  return /\b(not owned by|must be owned by|is owned by|owned by (uid|user|another))\b/i.test(detail)
+    || /may be written by the group or others|may be read by anyone/i.test(detail);
+}
+
 // ルールの組（ruleset。k8s のコントローラなど）に属するルールは、個別に変えられない（rproxy の 409 owned。v0.4）
 export const OWNED_RULE_MESSAGE =
   'このルールは rproxy のルールの組（ruleset）に属しているため、画面からは変更・削除できません。組を管理しているもの（Kubernetes のコントローラなど）で変えてください。';
+
+// 同じキーを rproxy では API で作ったルール・ルールの組のルールが使っている（409 shadowed）。UI のルールの変更をそのまま送ると、
+// そのルールを書き換えたり消したりしてしまうので UI が断る
+export const SHADOWED_RULE_MESSAGE =
+  '同じキーを rproxy では API で作ったルールかルールの組のルールが使っているため、この UI のルールの変更・再開・送り直しは rproxy に送れません。停止・削除は UI のルールだけを変えます。API のルールを消すか、キーを変えるよう管理者に相談してください。';
 
 const EXPLAIN: Record<string, string> = {
   resolve_failed: '転送先のホスト名を名前解決できませんでした。DNS に登録されているか、ホスト名の綴りを確認してください（IP アドレスでも指定できます）。',
@@ -95,6 +116,8 @@ const EXPLAIN: Record<string, string> = {
   rproxy_locked_out: RPROXY_LOCKED_OUT_MESSAGE,
   locked_out: RPROXY_LOCKED_OUT_MESSAGE,
   owned: OWNED_RULE_MESSAGE,
+  shadowed: SHADOWED_RULE_MESSAGE,
+  csrf: 'ほかのサイトからの変更の要求は受け付けません。この画面を開き直してから操作してください。',
 };
 
 // 1024 未満のポートは、rproxy に CAP_NET_BIND_SERVICE がないと開けない
@@ -111,6 +134,7 @@ export const CERT_EXPIRED_MESSAGE =
 
 // ルールの error（rproxy の failed の理由）を画面に出す文にする。証明書の期限切れは対処を添える
 export function ruleErrorText(error: string): string {
+  if (isFileOwnerRefusal(error)) return `${FILE_OWNER_MESSAGE}（詳細: ${error}）`;
   return /certificate expired/i.test(error) ? `${CERT_EXPIRED_MESSAGE}（詳細: ${error}）` : error;
 }
 
@@ -127,6 +151,10 @@ export function explainError(code: string | undefined, detail: string): string {
   // v0.3.7 以前の rproxy は UDP の sni を断る（"sni routing is supported for tcp only; use terminate for DTLS"）
   if (code === 'unsupported' && /sni routing is supported for tcp only/i.test(detail)) {
     return `${UDP_SNI_OLD_RPROXY}（詳細: ${detail}）`;
+  }
+  // rproxy がファイルの持ち主で断った（M2。rproxy-api はほかのユーザーのファイルを読まない）
+  if (isFileOwnerRefusal(detail)) {
+    return `${FILE_OWNER_MESSAGE}（詳細: ${detail}）`;
   }
   if (code === 'bind_failed' && /Permission denied|os error 13/.test(detail)) {
     return `${PRIVILEGED_PORT}（詳細: ${detail}）`;

@@ -688,8 +688,10 @@ const RuleDetailPage: React.FC = () => {
             <p role="status" className="rounded-sm border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900" data-testid="shadowed-note">
               {rule.shadowedBy.ruleset
                 ? `同じキーを rproxy ではルールの組 ${rule.shadowedBy.ruleset} のルールが使っているため、この UI のルールは動いていません。`
-                : `同じキーを rproxy では API で作ったルール${rule.shadowedBy.createdBy ? `（${rule.shadowedBy.createdBy}）` : ''}が使っているため、この UI のルールは動いていません。`}
-              rproxy を再起動すると UI のルールが使われます（rproxy_rules の同じキーの行は使われません）。どちらかを消すか、キーを変えてください。
+                : rule.shadowedBy.ruleset !== undefined
+                  ? '同じキーを rproxy ではルールの組のルールが使っているため、この UI のルールは動いていません。'
+                  : `同じキーを rproxy では API で作ったルール${rule.shadowedBy.createdBy ? `（${rule.shadowedBy.createdBy}）` : ''}が使っているため、この UI のルールは動いていません。`}
+              rproxy を再起動すると UI のルールが使われます（rproxy_rules の同じキーの行は使われません）。どちらかを消すか、キーを変えてください。それまで、このルールの変更・再開・送り直しは rproxy に送れません（停止・削除は UI のルールだけを変え、API のルールには触れません）。
             </p>
           )}
           {nodeTabs && tab !== 'all' && view.nodes?.[0] && (

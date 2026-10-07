@@ -320,10 +320,13 @@ export function normalizeBandwidth(value: unknown): BandwidthSpec | null {
 // ---- geoip（#168） ----
 
 const COUNTRY = /^[A-Z]{2}$/;
+// 国・AS の一覧の件数の上限（ラベルと同じく、DB の options と rproxy に送る量を抑える。セキュリティレビュー L7）
+export const MAX_GEOIP_ITEMS = 256;
 
 function countries(value: unknown, where: string): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw invalid(`${where} は配列で指定してください。`);
+  if (value.length > MAX_GEOIP_ITEMS) throw invalid(`${where} は ${MAX_GEOIP_ITEMS} 件までです。`);
   const out: string[] = [];
   for (const c of value) {
     const s = typeof c === 'string' ? c.trim().toUpperCase() : '';
@@ -336,6 +339,7 @@ function countries(value: unknown, where: string): string[] {
 function asns(value: unknown, where: string): number[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw invalid(`${where} は配列で指定してください。`);
+  if (value.length > MAX_GEOIP_ITEMS) throw invalid(`${where} は ${MAX_GEOIP_ITEMS} 件までです。`);
   const out: number[] = [];
   for (const a of value) {
     const n = typeof a === 'string' && /^(AS)?[0-9]+$/i.test(a.trim()) ? Number(a.trim().replace(/^AS/i, '')) : a;

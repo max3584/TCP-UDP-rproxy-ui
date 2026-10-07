@@ -4,13 +4,17 @@ import { getCapabilities, getConfigStatus, withNode } from '@/components/rproxy'
 import type { Capabilities, RproxyConfigStatus } from '@/components/rproxy';
 import { loadNodes, toRproxyNode } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
-import { nodeSystemView } from '@/components/system';
+import { accessOf, nodesAllowed, roleConfig } from '@/components/roles';
+import { nodeSystemView, userSystemView } from '@/components/system';
 import { localizedApi } from '@/i18n/server';
 
 // rproxy の機能と設定（読み取り専用。/system の画面）。各ノードの GET /capabilities と GET /config をまとめる。
 // 問い合わせできないノードがあっても 200（そのノードは reachable: false）。GET /config を読めない（403 / 404）ときは config.readable: false
+// 管理者でなければ、設定ファイルのパス・誤り・バイナリのハッシュ・通信の失敗の文を省き（userSystemView）、
+// RPROXY_UI_USER_NODES で絞った利用者には触れるノードだけを返す
 async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (!(await requireRole(req, res))) return;
+  const session = await requireRole(req, res);
+  if (!session) return;
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', code: 'method_not_allowed' });
   }
@@ -40,10 +44,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     return nodeSystemView(name, caps, config, error);
   };
+  const roles = roleConfig();
+  const access = accessOf(session.user.roles ?? [], roles);
+  const admin = access === 'admin';
+  const visible = cfg.configured ? cfg.nodes.filter((n) => nodesAllowed(access, roles, [n.name])) : cfg.nodes;
   const nodes = cfg.configured
-    ? await Promise.all(cfg.nodes.map((n) => one(n.name, (fn) => withNode(toRproxyNode(n), fn))))
+    ? await Promise.all(visible.map((n) => one(n.name, (fn) => withNode(toRproxyNode(n), fn))))
     : [await one(cfg.nodes[0].name, (fn) => fn())];
-  return res.status(200).json({ nodes: nodes });
+  return res.status(200).json({ nodes: admin ? nodes : nodes.map(userSystemView), ...(admin ? { admin: true } : {}) });
 }
 
 export default localizedApi(handler);

@@ -55,7 +55,8 @@ sudo apt update && sudo apt install rproxy-ui
 ```
 
 - The settings are in `/etc/rproxy-ui/rproxy-ui.env` (600). Fill in `NEXTAUTH_URL`, `KEYCLOAK_*` and `DB_*`, then start it with `sudo systemctl enable --now rproxy-ui` (installing alone does not start it)
-- `NEXTAUTH_SECRET` is generated at install time. If rproxy-api is on the same host, its token and API URL are filled in too
+- `NEXTAUTH_SECRET` is generated at install time. If rproxy-api is on the same host, its API URL and its token file (`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`, when it holds one token per line) are filled in too
+- The `rproxy-ui` user joins the group `rproxy` shared with rproxy-api (created at install time if missing; the unit has `SupplementaryGroups=rproxy`), so it reads rproxy-api's group-readable files (token file, certificates, the control API's Unix socket, owned by `rproxy-api:rproxy` or `root:rproxy`) in place instead of copying them. A token copied into `RPROXY_API_TOKEN` by an earlier version keeps being used
 - It listens on `127.0.0.1:3000` by default (`HOSTNAME` / `PORT`). To expose it, put an rproxy static rule in front of it (TLS termination, routing by server name, `allow_from`; see "Static rules and exposing the dashboard" in the rproxy-api README)
 - Create the DB tables with `/usr/share/rproxy-ui/db/schema.sql` (see [db/README.en.md](db/README.en.md))
 - `server.js` in `/usr/lib/rproxy-ui` (the Next.js standalone output) runs as the `rproxy-ui` user. Logs are in `journalctl -u rproxy-ui`
@@ -101,11 +102,13 @@ KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
 RPROXY_API_TOKEN="[token]"
+# read the token from a file (RPROXY_API_TOKEN wins; the first non-empty line not starting with #; a changed file is used from the next request)
+# RPROXY_API_TOKEN_FILE="/etc/rproxy/tokens"
 # connect to an https:// control API with a client certificate (mTLS; rproxy-api v0.4 --tls-client-auth). The CA verifies rproxy's certificate (default: the OS CAs)
 # RPROXY_API_TLS_CERT="/etc/rproxy-ui/tls/client.pem"
 # RPROXY_API_TLS_KEY="/etc/rproxy-ui/tls/client.key"
 # RPROXY_API_TLS_CA="/etc/rproxy-ui/tls/rproxy-ca.pem"
-# usage accounting (see "Usage"; needs db/migrations/010_usage.sql): interval (seconds, 0 turns it off) and days to keep
+# usage accounting (see "Usage"; needs db/migrations/010_usage.sql and 011_usage_attr.sql): interval (seconds, 0 turns it off) and days to keep
 # RPROXY_UI_USAGE_SECS=300
 # RPROXY_UI_USAGE_HOURLY_DAYS=32
 # RPROXY_UI_USAGE_DAILY_DAYS=400
@@ -136,6 +139,7 @@ Keycloak roles decide who can do what (the API routes check on every request).
 - Writing e.g. `RPROXY_UI_USER_PORTS=1024-65535` restricts the listen ports `rproxy-user` can use (outside the range: 403 `port_not_allowed`; `rproxy-admin` is not restricted). There is no restriction by default.
 - With several rproxy instances, `RPROXY_UI_USER_NODES=node1,node2` limits the nodes `rproxy-user` can change (see "Several rproxy instances (nodes and groups)" below).
 - Roles are read at sign-in, so after changing a role in Keycloak, have the user sign in again.
+- State-changing APIs (`POST /api/forward/*`) refuse requests from other sites with 403 `csrf` (when `Sec-Fetch-Site` is not same-origin, or the host of `Origin` (else `Referer`) matches none of the request's `Host`, `X-Forwarded-Host` and `NEXTAUTH_URL`), as CSRF protection on top of the SameSite=Lax cookie. A reverse proxy in front should pass `Host` or `X-Forwarded-Host`, or set `NEXTAUTH_URL` to the URL users open.
 - The `auth_id` in the history (`forward_rules_log`) is the user who performed the operation (the administrator, if an administrator changed someone else's rule).
 
 ## L7 (HTTP) rules
@@ -238,8 +242,8 @@ The rproxy-api v0.4 settings (`../rproxy-api/docs/API.md`, "v0.4 settings") are 
 - Values are checked with the same rules as rproxy before saving (ranges, units, combinations; rproxy decides in the end). They are also stored in the DB `options` column in rproxy's API shape, so a restarted rproxy comes back with the same contents.
 - When rproxy reports `features.dry_run`, the add and edit screens show "Show the difference". Before saving, it asks rproxy with `?dry_run=true` what would change on each node (create or update, whether it changes without cutting connections or recreates the listener, and each field before and after) without changing the DB or rproxy.
 - The detail screen shows the settings, the count refused by limits, when counting started (`counters_since`), which targets are ejected and how often, and rproxy's `conditions` (Gateway API style status), when rproxy reports them.
-- "rproxy features & settings" (`/system`) shows, read-only and per node, the rproxy-api version, the v0.4 feature flags, which `global.performance` keys of the settings file take effect, and the settings file state. Performance, GeoIP databases and control API hardening are changed in rproxy's settings file and arguments (not from the UI).
-- To protect the control API with client certificates (mTLS), set `RPROXY_API_TLS_CERT` and `RPROXY_API_TLS_KEY` (and `RPROXY_API_TLS_CA` to verify rproxy's certificate), or `tls_cert`, `tls_key` and `tls_ca` in `nodes.yaml` for several rproxy instances (`https://` URLs only; when the token file entry has only `client_cert`, no token is needed).
+- "rproxy features & settings" (`/system`) shows, read-only and per node, the rproxy-api version, the v0.4 feature flags, which `global.performance` keys of the settings file take effect, and the settings file state. Performance, GeoIP databases and control API hardening are changed in rproxy's settings file and arguments (not from the UI). The settings file path and error text, the binary's SHA-256 and the reasons a node cannot be reached are shown to administrators only (users see that there is an error or a failure); users limited by `RPROXY_UI_USER_NODES` see only their nodes (the same applies to the dashboard's settings file notice).
+- To protect the control API with client certificates (mTLS), set `RPROXY_API_TLS_CERT` and `RPROXY_API_TLS_KEY` (and `RPROXY_API_TLS_CA` to verify rproxy's certificate), or `tls_cert`, `tls_key` and `tls_ca` in `nodes.yaml` for several rproxy instances (`https://` URLs only; when the token file entry has only `client_cert`, no token is needed). With `RPROXY_API_TLS_*` and an `http://` or `unix:` `RPROXY_API_URL`, the token would travel in plain text, so the UI does not start (and sends no request).
 - When rproxy temporarily locks the UI out after repeated authentication failures (`429 locked_out`), the screen and the log say to check the token and certificate (the lockout ends by itself).
 
 ## Usage
@@ -274,6 +278,7 @@ The form is divided into tabs.
 
 - A profile only fills the form with the recommended settings from `../rproxy-api/docs/PROFILES.md`. Enter the addresses and certificate paths for your environment.
 - The certificate, private key and CA paths are paths on the rproxy-api server. If they cannot be read, you get a `tls_config` error.
+- rproxy-api only reads certificate, private key, CA and secret (htpasswd and so on) files owned by the OS user it runs as (`rproxy-api` with the package), so nobody can name another user's key and connect or listen with that identity. Read access for the `rproxy` group is fine, but files the group or others can write, and keys or secrets anyone can read, are refused too (for example `chown rproxy-api:rproxy`, `chmod 0640`; 0600 or 0640 for keys). With another owner or such a mode rproxy refuses the file, and the screen explains why and how to fix it.
 - Specify certificates as files (obtained with certbot, cert-manager or similar) or with ACME (from rproxy-api v0.3.21; see "Obtaining certificates with ACME" below).
   For files, rproxy checks whether the files changed every 60 seconds (rproxy's `RPROXY_CERT_CHECK_SECS`) and reloads renewed certificates automatically, so you do not need to edit the rule on every renewal.
 - Intermediate CAs (optional) go in one PEM file, ordered from the CA that issued the server certificate toward the root (the root is not needed). If the order is wrong, rproxy rejects it with `tls_config`.
@@ -292,6 +297,7 @@ Rules created by calling the rproxy API directly (CI, scripts, Kubernetes contro
 - Edit and delete go through the rproxy API (`PATCH` / `DELETE`); nothing goes into the UI's DB or history, and there is no pause, copy or resend. Changes to and deletion of a stored rule (`origin: "api"`) are written to `rproxy_rules` by rproxy even though the UI's token has no `persist` (rproxy decides by the rule's origin). Only when rproxy could not store it (`persisted: false` in the answer) does the UI say a restart brings back the earlier contents. "Show the difference" works when rproxy reports `features.dry_run`.
 - Rules of a rule set (`ruleset`, applied as a whole with `PUT /rulesets/{name}` by e.g. a Kubernetes controller) show a "Set: name" badge and are read-only (rproxy also refuses changing them one by one with `409 owned`).
 - When an API rule or a rule-set rule in rproxy uses the same key as a UI rule (so the UI rule is not running), the detail screen warns. rproxy prefers the UI's table at startup; delete one of them or change the key.
+  Until then, changes, resumes, resends and diffs of the UI rule are not sent to rproxy (`409 shadowed`), and pausing or deleting it changes only the UI's DB (operations on the UI rule never change or delete the API rule). The automatic act / stb resend skips that key too and only reports it as overlapping an API rule (promotion is not blocked). Users other than administrators do not see the destination, statistics, state, creating token or rule-set name of the rule running under that key.
 - With several rproxy instances, match rproxy's `RPROXY_NODE_NAME` with the node names in `RPROXY_UI_NODES` (the `node` column of `rproxy_rules`). The per-node views (`db/node-view.mjs`) also create an `rproxy_rules` view that can write only that node's rows.
 
 ## Pausing a rule
@@ -346,7 +352,8 @@ rproxy's statistics (connections, rx / tx) go back to 0 when rproxy restarts, so
 
 - Stored per rule and node hourly (`usage_hourly`, `RPROXY_UI_USAGE_HOURLY_DAYS` days, default 32) and daily (`usage_daily`, `RPROXY_UI_USAGE_DAILY_DAYS` days, default 400); months add up the daily rows. Buckets follow UTC. The UI deletes old rows.
 - When rproxy v0.4's `stats.counters_since` (when counting started) changes, the counters were reset and the current values are added in full (a live upgrade (handoff) keeps it, so counting continues). Older rproxy versions are told apart by `started_at`.
-- Each row records the rule's owner at that time (the user who created the UI rule), node / group, labels (`labels`) and origin (UI, static, API).
+- Each row records the rule's owner at that time (the user who created the UI rule), node / group, labels (`labels`) and origin (UI, static, API). When the owner or marks change (someone else creates a rule with the same key on the same day, an administrator reassigns it, labels change), new traffic goes to a separate row and earlier traffic is never moved to the new owner (`db/migrations/011_usage_attr.sql`).
+- Why collection failed (for example a node's rproxy could not be reached) is shown to administrators only (users see that it failed). The CSV puts `'` before values a spreadsheet would read as a formula (`=`, `+`, `-`, `@`, `|`, `%` after leading spaces, full-width `＝`, `＋`, `－`, `＠` and so on).
 - Rule details and the dashboard show a traffic chart (24 hours, 7 days, 30 days, 12 months; rx and tx stacked, also as a table), and "Usage" (`/usage`) shows a report per month or day (grouped by owner, a label key, node or rule) with CSV export. Administrators see all rules, users only their own.
 - With several UI instances, each collection runs in only one of them (a DB lock).
 

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bucketStarts, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, reportCsv, usageConfig, usageDelta } from '@/components/usage';
+import { bucketStarts, csvCell, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, reportCsv, usageConfig, usageDelta } from '@/components/usage';
 import type { UsageRow } from '@/components/usage';
 import { niceMax } from '@/components/UsageChart';
 
 vi.mock('@/components/ruledb', () => ({ getPool: vi.fn(), fromRow: vi.fn(), loadOverrides: vi.fn() }));
-import { collectNode, rproxyAttribution } from '@/components/usagecollect';
+import { attributionKey, collectNode, rproxyAttribution } from '@/components/usagecollect';
 
 describe('差分の取り方', () => {
   const c = (rx: number, tx: number, connections: number, countersSince?: number | null, startedAt?: number | null) => ({ rx, tx, connections, countersSince, startedAt });
@@ -76,6 +76,17 @@ describe('所有者・ラベルごとの表と CSV', () => {
     const csv = reportCsv('2026-10', 'owner', [{ key: '=cmd', rx: 1, tx: 2, connections: 3, rules: 1 }, { key: 'a,b', rx: 0, tx: 0, connections: 0, rules: 1 }]);
     expect(csv.split('\r\n')).toEqual(['period,owner,rx_bytes,tx_bytes,total_bytes,connections,rules', "2026-10,'=cmd,1,2,3,3,1", '2026-10,"a,b",0,0,0,0,1', '']);
   });
+  // セキュリティレビュー L5：先頭の空白・全角の記号・DDE の | % でも式として読まれないように
+  it('CSV の式の無害化（先頭の空白・全角・| %）', () => {
+    for (const v of [' =cmd', '\t=cmd', '　=cmd', '＝SUM(A1)', '＋1', '－1', '＠x', '|calc', '%x', '+1', '-1', '@SUM', '\r=x']) {
+      expect(csvCell(v).replace(/^"/, '').startsWith("'"), v).toBe(true);
+    }
+    expect(csvCell('act')).toBe('act');
+    expect(csvCell('a=b')).toBe('a=b');
+    expect(csvCell(-1)).toBe('-1');
+    expect(csvCell(null)).toBe('');
+  });
+
   it('期間と設定', () => {
     expect(parsePeriod('2026-12')).toEqual({ kind: 'month', from: '2026-12-01', to: '2027-01-01', label: '2026-12' });
     expect(parsePeriod('2026-02-30')).toBeNull();
@@ -110,12 +121,26 @@ describe('1 つのノードの集計（collectNode）', () => {
     const n = await collectNode(conn as never, 'n1', [status(443, 1500, 100), status(8443, 70, 1791292800, { origin: 'api', labels: { tenant: 'x' } })], attrs, new Date('2026-10-06T13:25:30Z'));
     expect(n).toBe(2);
     const hourly = calls.filter(([sql]) => sql.includes('INSERT INTO usage_hourly'));
-    expect(hourly[0][1]).toEqual(['2026-10-06 13:00:00', 'n1', 'tcp', '0.0.0.0', 443, 'g', 'u1', 'dynamic', '{"tenant":"act"}', 500, 5, 2]);
+    const attr1 = attributionKey({ owner: 'u1', target: 'g', origin: 'dynamic', labels: { tenant: 'act' } });
+    expect(hourly[0][1]).toEqual(['2026-10-06 13:00:00', 'n1', 'tcp', '0.0.0.0', 443, attr1, 'g', 'u1', 'dynamic', '{"tenant":"act"}', 500, 5, 2]);
+    // 持ち主・印は前の行で書き換えない（主キーに attr）
+    expect(hourly[0][0]).not.toMatch(/owner = VALUES|labels = VALUES|target = VALUES/);
     // 前回の集計より後に作られた API のルールは全部足す
-    expect(hourly[1][1]).toEqual(['2026-10-06 13:00:00', 'n1', 'tcp', '0.0.0.0', 8443, null, null, 'api', '{"tenant":"x"}', 70, 10, 3]);
+    expect(hourly[1][1]).toEqual(['2026-10-06 13:00:00', 'n1', 'tcp', '0.0.0.0', 8443, attributionKey({ owner: null, target: null, origin: 'api', labels: { tenant: 'x' } }), null, null, 'api', '{"tenant":"x"}', 70, 10, 3]);
     expect(calls.filter(([sql]) => sql.includes('INSERT INTO usage_daily'))[0][1][0]).toBe('2026-10-06');
     expect(calls.find(([sql]) => sql.startsWith('REPLACE INTO usage_counters'))?.[1]).toEqual(['n1', 'tcp', '0.0.0.0', 443, 100, null, 1500, 10, 3, '2026-10-06 13:25:30.000']);
     expect(calls.find(([sql]) => sql.startsWith('DELETE FROM usage_counters'))?.[1]).toEqual(['n1', 'tcp', '0.0.0.0', 22]);
+  });
+
+  // セキュリティレビュー M1：同じ日に持ち主が変わっても、前の持ち主の分を新しい持ち主の行にしない
+  it('持ち主・置き場所・ラベルが違えば別の行（attr）。ラベルの順は問わない', () => {
+    const a = { owner: 'alice', target: 'g', origin: 'dynamic', labels: { a: '1', b: '2' } };
+    expect(attributionKey(a)).toMatch(/^[0-9a-f]{64}$/);
+    expect(attributionKey({ ...a, labels: { b: '2', a: '1' } })).toBe(attributionKey(a));
+    expect(attributionKey({ ...a, owner: 'bob' })).not.toBe(attributionKey(a));
+    expect(attributionKey({ ...a, target: 'h' })).not.toBe(attributionKey(a));
+    expect(attributionKey({ ...a, labels: { a: '1' } })).not.toBe(attributionKey(a));
+    expect(attributionKey({ ...a, origin: 'api', owner: null })).not.toBe(attributionKey(a));
   });
 
   it('rproxy のルールの印', () => {

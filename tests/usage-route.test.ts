@@ -44,6 +44,23 @@ describe('/api/forward/usage', () => {
     expect(params.slice(1)).toEqual(['tcp', '0.0.0.0', 443, 'u1']);
   });
 
+  // セキュリティレビュー M3：集計の失敗の文（内部のアドレスを含む）は管理者だけ
+  it('集計の失敗の文は管理者だけ。利用者には失敗したことだけ', async () => {
+    (globalThis as { rproxyUiUsage?: unknown }).rproxyUiUsage = { timer: null, running: false, lastRun: null, error: 'n1: rproxy に接続できません: connect ECONNREFUSED 10.0.0.5:8443', missingTable: false };
+    try {
+      mocks.query.mockResolvedValue([]);
+      as(['rproxy-user']);
+      const user = await call({ range: '24h' });
+      expect(user.body.status.error).toContain('管理者だけ');
+      expect(JSON.stringify(user.body)).not.toContain('10.0.0.5');
+      as(['rproxy-admin']);
+      const admin = await call({ range: '24h' });
+      expect(admin.body.status.error).toContain('10.0.0.5');
+    } finally {
+      delete (globalThis as { rproxyUiUsage?: unknown }).rproxyUiUsage;
+    }
+  });
+
   it('管理者は全体。表がなければ available: false', async () => {
     as(['rproxy-admin']);
     mocks.query.mockRejectedValue(Object.assign(new Error('no table'), { errno: 1146 }));

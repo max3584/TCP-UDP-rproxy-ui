@@ -108,18 +108,35 @@ export async function loadOverrides(db: Pick<PoolConnection, 'query'>, ids: numb
   return out;
 }
 
-export type ResendResult = 'added' | 'modified' | 'recreated' | 'removed' | 'unchanged';
+// rproxy の今のルールが、UI のルールの代わりに別のもの（API で作ったルール・ルールの組のルール）か。
+// 固定ルール（static）は別に扱う。origin を返さない古い rproxy のルールは UI のもの（dynamic）とみなす。
+// この UI のルールの操作（変更・停止・削除・再開・送り直し・差分）で、これらのルールを rproxy に書き換えさせない
+export function isShadowing(live: RproxyRuleStatus | null | undefined): boolean {
+  if (!live || live.origin === 'static') return false;
+  if (typeof live.ruleset === 'string' && live.ruleset !== '') return true;
+  return live.origin !== undefined && live.origin !== null && live.origin !== 'dynamic';
+}
 
-// そのノード（withNode の中）の実際のルールを DB の内容に合わせる。ずれがなければ何もしない
+// そのノード（withNode の中）の今のルール。なければ null
+export async function liveRule(key: RproxyRuleKey): Promise<RproxyRuleStatus | null> {
+  try {
+    return (await getRule(key)) ?? null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+// shadowed：同じキーを rproxy では API のルール・ルールの組のルールが使っているので、何もしなかった
+export type ResendResult = 'added' | 'modified' | 'recreated' | 'removed' | 'unchanged' | 'shadowed';
+
+// そのノード（withNode の中）の実際のルールを DB の内容に合わせる。ずれがなければ何もしない。
+// 同じキーを API のルール・ルールの組のルールが使っていれば、それを消したり書き換えたりせずに shadowed を返す
 export async function resendOne(rule: ForwardRule): Promise<ResendResult> {
   const key = toKey(rule);
-  let live: RproxyRuleStatus | null = null;
-  try {
-    live = await getRule(key);
-  } catch (err) {
-    if (!isNotFound(err)) throw err;
-  }
+  const live = await liveRule(key);
   if (live?.origin === 'static') throw new RproxyError('このルールは rproxy の固定ルールです。', 'static', 409);
+  if (isShadowing(live)) return 'shadowed';
   if (isPaused(rule)) {
     if (!live) return 'unchanged';
     await deleteRule(key);
