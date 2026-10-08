@@ -62,12 +62,12 @@ import { aggregateNodeStates, ruleFromStatus } from '@/components/dashboard';
 import { StoredApiRule, apiRuleFromRow, apiRuleFromStatus, mergeExternalRules, shadowedBy } from '@/components/apirules';
 import type { ShadowedBy } from '@/components/lib';
 import { acmeStatusField } from '@/components/acme';
-import { NodesConfig, NodesConfigError, groupOf, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode } from '@/components/nodes';
+import { NodesConfig, NodesConfigError, groupOf, isReadonlyTarget, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode, visibleNodes } from '@/components/nodes';
 import { needsRecreateOnNode, ruleDrift } from '@/components/drift';
 import { NodeOverride, Overrides, effectiveRule, normalizeOverride, overrideFromRow, overrideRow, sameOverrides, settingsOverridesToBody } from '@/components/overrides';
 import { haStatus, interfaceAddrs, vipAddrs } from '@/components/ha';
 import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout';
-import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from '@/components/messages';
+import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, READONLY_NODE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
 import { localizedApi } from '@/i18n/server';
 import { rejectCrossSite } from '@/components/apiguard';
@@ -158,6 +158,8 @@ async function placeForKey(actor: Actor, key: { protocol: string; srcAddr: strin
   if (rows.length > 1) throw new HttpError(400, '同じキーのルールが複数のノード／グループにあります。target を指定してください。', 'target_required');
   if (rows.length === 1) return placeOf(cfg, String(rows[0].target));
   // DB にない（固定ルールかもしれない）：既定の置き場所で rproxy に問い合わせる
+  // （Kubernetes の rproxy だけの UI の利用者には、ノードがない）
+  if (cfg.nodes.length === 0) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
   return placeOf(cfg, cfg.defaultTarget ?? cfg.nodes[0].name);
 }
 
@@ -170,9 +172,22 @@ function ownerClause(actor: Actor): { sql: string; params: string[] } {
 function checkNodes(actor: Actor, place: Place | RproxyNode[]): void {
   const nodes = Array.isArray(place) ? place : place.target === null ? null : place.nodes;
   if (nodes === null) return;
+  // 変更を送る先に見るだけのノード（Kubernetes の rproxy）があれば断る（管理者でも）
+  checkWritable(actor.cfg, [...(Array.isArray(place) || place.target === null ? [] : [place.target]), ...nodes.map((n) => n.name)]);
   if (!nodesAllowed(actor.access, actor.roles, nodes.map((n) => n.name))) {
     throw new HttpError(403, `ノード ${nodes.map((n) => n.name).join(', ')} は管理者だけが触れます（利用者が触れるのは ${(actor.roles.userNodes ?? []).join(', ')}）。`, 'node_not_allowed');
   }
+}
+
+// 見るだけのノード・グループ（Kubernetes の rproxy。RPROXY_UI_K8S_DISCOVERY）への変更は 409 readonly_node
+function checkWritable(cfg: NodesConfig, names: unknown[]): void {
+  const hit = names.find((n): n is string => typeof n === 'string' && isReadonlyTarget(cfg, n));
+  if (hit !== undefined) throw new HttpError(409, `${READONLY_NODE_MESSAGE}（${hit}）`, 'readonly_node');
+}
+
+// 見るだけのノードのルールに印を付ける（画面は編集・削除のボタンを出さない）
+function markReadonly<T extends ForwardRules>(cfg: NodesConfig, rule: T): T {
+  return rule.target !== undefined && isReadonlyTarget(cfg, rule.target) ? { ...rule, readonlyNode: true } : rule;
 }
 
 // user（admin 以外）が RPROXY_UI_USER_PORTS の外の待ち受けポートを使おうとしたら 403
@@ -1211,6 +1226,7 @@ function apiRuleNode(actor: Actor, target: unknown): RproxyNode {
   if (!actor.cfg.configured) return toRproxyNode(actor.cfg.nodes[0]);
   const node = actor.cfg.nodes.find((n) => n.name === target);
   if (!node) throw new HttpError(400, `API のルールのノード（target）を指定してください（${String(target ?? '')} はノードではありません）。`, 'unknown_node');
+  checkWritable(actor.cfg, [node.name]);
   return toRproxyNode(node);
 }
 
@@ -2096,9 +2112,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   try {
-    const cfg = loadNodes();
+    // Kubernetes の rproxy（見るだけ）は管理者にだけ見せる（利用者の設定からは外す）
+    const cfg = visibleNodes(loadNodes(), access === 'admin');
     const actor: Actor = { id: id, access: access, roles: roles, cfg: cfg };
     await syncMembership(cfg, logger);
+    // 見るだけのノード・グループ（Kubernetes の rproxy）を名指しした変更は、中身を見る前に断る
+    // （target：置き場所・API のルールのノード、node：送り直し・上書き・まとめての停止・ha-sync、to：コピー・移動の先）
+    if (req.method === 'POST') checkWritable(cfg, [req.body?.target, req.body?.node, req.body?.to]);
 
     if (req.method === 'GET' && query === 'nodes') {
       const info = nodesInfo(cfg);
@@ -2125,11 +2145,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     if (req.method === 'GET' && query === 'list') {
       const data = await listForwardingRules(actor, logger, false);
-      return res.status(200).json(data.rules);
+      return res.status(200).json(data.rules.map((r) => markReadonly(cfg, r)));
     }
     if (req.method === 'GET' && query === 'dashboard') {
       const data = await listForwardingRules(actor, logger, true);
-      return res.status(200).json(data);
+      const marked: DashboardData = {
+        ...data,
+        rules: data.rules.map((r) => markReadonly(cfg, r)),
+        ...(data.nodes ? { nodes: data.nodes.map((n) => (isReadonlyTarget(cfg, n.name) ? { ...n, readonly: true } : n)) } : {}),
+      };
+      return res.status(200).json(marked);
     }
     if (req.method === 'GET' && query === 'export') {
       const out = await exportRules(actor, req.query);
@@ -2145,7 +2170,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     if (req.method === 'GET' && query === 'rule') {
       // 先に取得してから status を呼ぶ（失敗したら sendError がステータスを決める）
-      const rule = await getForwardingRule(actor, req.query, logger);
+      const rule = markReadonly(cfg, await getForwardingRule(actor, req.query, logger));
       return res.status(200).json(rule);
     }
 

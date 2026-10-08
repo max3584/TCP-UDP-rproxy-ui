@@ -7,7 +7,7 @@ import { Logger } from './lib';
 import type { ForwardRule } from './lib';
 import { listRules, withNode } from './rproxy';
 import type { RproxyRuleStatus } from './rproxy';
-import { loadNodes, targetNodes, toRproxyNode } from './nodes';
+import { K8S_PREFIX, loadNodes, targetNodes, toRproxyNode, usageRowNode } from './nodes';
 import type { NodesConfig } from './nodes';
 import { fromRow, getPool, loadOverrides } from './ruledb';
 import { effectiveRule } from './overrides';
@@ -73,13 +73,14 @@ export async function uiAttributions(db: Pick<PoolConnection, 'query'>, cfg: Nod
   return out;
 }
 
-// rproxy のルール（UI の DB にないもの）の印
-export function rproxyAttribution(s: RproxyRuleStatus): Attribution {
+// rproxy のルール（UI の DB にないもの）の印。k8s：Kubernetes の rproxy（見るだけのノード）では、ルールの組のルールを ruleset にする
+// （Gateway API のリソースから作ったルール。rproxy-gateway の docs/DESIGN-v0.4.x.md 4.）
+export function rproxyAttribution(s: RproxyRuleStatus, k8s = false): Attribution {
   const labels = (s as unknown as { labels?: unknown }).labels;
   return {
     owner: null,
     target: null,
-    origin: s.origin === 'static' ? 'static' : 'api',
+    origin: s.origin === 'static' ? 'static' : k8s && typeof s.ruleset === 'string' && s.ruleset !== '' ? 'ruleset' : 'api',
     labels: typeof labels === 'object' && labels !== null && Object.keys(labels).length > 0 ? labels as Record<string, string> : null,
   };
 }
@@ -102,13 +103,24 @@ function countersOf(s: RproxyRuleStatus): UsageCounters | null {
   };
 }
 
+// usage_counters.sampled_at（DATETIME(3)、UTC）
+function sampledAt(d: Date): string {
+  return `${dayKey(d)} ${d.toISOString().slice(11, 23)}`;
+}
+
 const toUnix = (v: unknown): number | null => {
   const d = v instanceof Date ? v : typeof v === 'string' ? new Date(`${v.replace(' ', 'T')}Z`) : null;
   return d && !Number.isNaN(d.getTime()) ? Math.floor(d.getTime() / 1000) : null;
 };
 
-// 1 つのノードの集計（conn のトランザクションの中で）。足した行の数を返す
-export async function collectNode(conn: Pick<PoolConnection, 'query'>, node: string, statuses: RproxyRuleStatus[], attrs: Map<string, Attribution>, now: Date): Promise<number> {
+// 1 つのノードの集計（conn のトランザクションの中で）。足した行の数を返す。
+// opts.rowNode：usage_hourly・usage_daily の node（Kubernetes の rproxy の Pod は Gateway のグループにまとめる。既定はノードの名前）。
+// opts.k8s：Kubernetes の rproxy（ルールの組のルールの origin を ruleset にする）。usage_counters はどちらも Pod（ノード）ごと
+export async function collectNode(
+  conn: Pick<PoolConnection, 'query'>, node: string, statuses: RproxyRuleStatus[], attrs: Map<string, Attribution>, now: Date,
+  opts: { rowNode?: string; k8s?: boolean } = {},
+): Promise<number> {
+  const rowNode = opts.rowNode ?? node;
   const prevRows = await conn.query('SELECT protocol, listen_addr, listen_port, counters_since, started_at, rx_bytes, tx_bytes, connections, sampled_at FROM usage_counters WHERE node = ?', [node]);
   const prev = new Map<string, UsageCounters>();
   let lastRunAt: number | null = null;
@@ -123,7 +135,7 @@ export async function collectNode(conn: Pick<PoolConnection, 'query'>, node: str
   }
   const hour = hourKey(now);
   const day = dayKey(now);
-  const sampled = `${day} ${now.toISOString().slice(11, 23)}`;
+  const sampled = sampledAt(now);
   let added = 0;
   const seen: string[] = [];
   for (const s of statuses) {
@@ -137,7 +149,7 @@ export async function collectNode(conn: Pick<PoolConnection, 'query'>, node: str
       [node, s.protocol, s.listen_addr, s.listen_port, cur.countersSince ?? null, cur.startedAt ?? null, cur.rx, cur.tx, cur.connections, sampled],
     );
     if (d.rx === 0 && d.tx === 0 && d.connections === 0) continue;
-    const a = attrs.get(key) ?? rproxyAttribution(s);
+    const a = attrs.get(key) ?? rproxyAttribution(s, opts.k8s === true);
     const labels = a.labels ? JSON.stringify(a.labels) : null;
     const attr = attributionKey(a);
     // 主キーは (時刻, node, キー, attr)。持ち主・印が同じ行にだけ足し、前の行の持ち主・印は書き換えない
@@ -145,7 +157,7 @@ export async function collectNode(conn: Pick<PoolConnection, 'query'>, node: str
       await conn.query(
         `INSERT INTO ${table} (${col}, node, protocol, listen_addr, listen_port, attr, target, owner, origin, labels, rx_bytes, tx_bytes, connections) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE rx_bytes = rx_bytes + VALUES(rx_bytes), tx_bytes = tx_bytes + VALUES(tx_bytes), connections = connections + VALUES(connections)`,
-        [at, node, s.protocol, s.listen_addr, s.listen_port, attr, a.target, a.owner, a.origin, labels, d.rx, d.tx, d.connections],
+        [at, rowNode, s.protocol, s.listen_addr, s.listen_port, attr, a.target, a.owner, a.origin, labels, d.rx, d.tx, d.connections],
       );
     }
     added += 1;
@@ -194,13 +206,15 @@ export async function runUsageOnce(now: Date = new Date()): Promise<'done' | 'sk
         }
         await conn.beginTransaction();
         try {
-          await collectNode(conn, n.name, statuses, attrs.get(n.name) ?? new Map(), now);
+          await collectNode(conn, n.name, statuses, attrs.get(n.name) ?? new Map(), now, n.readonly ? { rowNode: usageRowNode(cfg, n.name), k8s: true } : {});
           await conn.commit();
         } catch (err) {
           await conn.rollback().catch(() => undefined);
           throw err;
         }
       }
+      // 見なくなった Kubernetes の rproxy の Pod の基準（usage_counters）は 24 時間で消す（Pod の名前は作り直しで変わる）
+      await conn.query('DELETE FROM usage_counters WHERE node LIKE ? AND sampled_at < ?', [`${K8S_PREFIX}%`, sampledAt(new Date(now.getTime() - 86_400_000))]);
       // 残す日数を過ぎた行を消す
       await conn.query('DELETE FROM usage_hourly WHERE hour < ?', [hourKey(new Date(now.getTime() - conf.hourlyDays * 86_400_000))]);
       await conn.query('DELETE FROM usage_daily WHERE day < ?', [dayKey(new Date(now.getTime() - conf.dailyDays * 86_400_000))]);

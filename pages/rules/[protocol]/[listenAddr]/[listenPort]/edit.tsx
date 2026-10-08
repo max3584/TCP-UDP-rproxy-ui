@@ -7,7 +7,7 @@ import type { ForwardRule } from '@/components/lib';
 import { hostPort, parseRuleKey, portsLabel, ruleHref, toRule } from '@/components/dashboard';
 import { ErrorBanner, goBack, postPlan, postRule, useRule } from '@/components/ui';
 import { t } from '@/i18n/core';
-import { OWNED_RULE_MESSAGE, STATIC_RULE_MESSAGE } from '@/components/messages';
+import { OWNED_RULE_MESSAGE, READONLY_NODE_MESSAGE, STATIC_RULE_MESSAGE } from '@/components/messages';
 
 const EditRulePage: React.FC = () => {
   const router = useRouter();
@@ -69,18 +69,24 @@ const EditRulePage: React.FC = () => {
           <Link href={ruleHref(key)} className="link">ルールの詳細へ戻る</Link>
         </div>
       )}
-      {rule && key && rule.origin === 'api' && rule.ruleset && (
+      {rule && key && rule.readonlyNode && (
+        <div className="card p-4 text-gray-900" data-testid="readonly-edit">
+          <p>{READONLY_NODE_MESSAGE}</p>
+          <Link href={ruleHref({ ...key, ...(rule.target !== undefined ? { target: rule.target } : {}) })} className="link">ルールの詳細へ戻る</Link>
+        </div>
+      )}
+      {rule && key && !rule.readonlyNode && rule.origin === 'api' && rule.ruleset && (
         <div className="card p-4 text-gray-900">
           <p>{OWNED_RULE_MESSAGE}</p>
           <Link href={ruleHref(key)} className="link">ルールの詳細へ戻る</Link>
         </div>
       )}
-      {rule?.origin === 'api' && !rule.ruleset && (
+      {rule?.origin === 'api' && !rule.ruleset && !rule.readonlyNode && (
         <p className="text-sm text-gray-800 rounded-sm border border-teal-300 bg-teal-50 px-3 py-2" data-testid="api-edit-note">
           rproxy の API で作ったルールです。保存すると rproxy の API で変えます（UI の DB には入らず、履歴にも残りません）。
         </p>
       )}
-      {initial && key && rule?.origin !== 'static' && !(rule?.origin === 'api' && rule.ruleset) && (
+      {initial && key && rule?.origin !== 'static' && !rule?.readonlyNode && !(rule?.origin === 'api' && rule.ruleset) && (
         <RuleForm
           initialData={initial}
           submitting={submitting}

@@ -53,6 +53,11 @@ export const ApiBadge: React.FC<{ rule: Pick<ForwardRules, 'origin' | 'persisted
     : <span className="badge bg-teal-50 text-teal-900 border border-teal-300" title="rproxy の API で作ったルール（保存していないので、rproxy を再起動すると消える）">API（保存なし）</span>;
 };
 
+// Kubernetes の rproxy（rproxy-gateway が UI の namespace に書く Secret の Pod）。見るだけ
+export const K8sBadge: React.FC = () => (
+  <span className="badge bg-sky-100 text-sky-900" title="Kubernetes の rproxy（見るだけ。変更は Gateway API のリソースで）">Kubernetes（見るだけ）</span>
+);
+
 // 証明書の期限が近い・切れたルール（rproxy の cert_status）
 export const CertBadge: React.FC<{ state: CertState | null }> = ({ state }) => {
   if (state === 'expired') return <span className="badge bg-red-100 text-red-900" title="期限切れの証明書があります">証明書 期限切れ</span>;

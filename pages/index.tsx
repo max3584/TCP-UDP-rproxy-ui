@@ -33,11 +33,11 @@ import {
   targetLabel,
   tlsBreakdown,
   uptimeSecs, ConfigStatusView, driftedNodes, haSyncWarnings, nodeTotals, projectToNode, targetChoices } from '@/components/dashboard';
-import { ruleErrorText } from '@/components/messages';
+import { READONLY_NODE_MESSAGE, ruleErrorText } from '@/components/messages';
 import { acmeProblem, worstAcmeState } from '@/components/acme';
 import { NodeVersionCell, VersionNotice, VersionsCard } from '@/components/VersionInfo';
 import { joinList, joinSentences, localeTag, t, translate } from '@/i18n/core';
-import { AcmeBadge, AllowFromBadge, acmeBadgeShown, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, ApiBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
+import { AcmeBadge, AllowFromBadge, acmeBadgeShown, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, K8sBadge, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, ApiBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
 
 function formatAt(iso: string): string {
   const d = new Date(iso);
@@ -189,6 +189,7 @@ const NodesCard: React.FC<{ nodes: NodeSummary[]; groups: GroupHa[]; rules: Forw
               <tr key={n.name}>
                 <td className="whitespace-nowrap text-gray-900">
                   <span className="font-mono mr-1">{n.name}</span>
+                  {n.readonly && <K8sBadge />}
                   {n.reachable && roles.map((r, i) => <RoleBadge key={i} role={r} />)}
                 </td>
                 <td>
@@ -658,7 +659,11 @@ const DashboardPage: React.FC = () => {
             <TlsCard rules={rules} />
           </div>
 
-          {nodeView && (
+          {nodeView?.readonly && (
+            // Kubernetes の rproxy（見るだけ）：まとめての停止・再開は出さない
+            <p className="card p-4 flex flex-wrap items-center gap-2 text-sm text-gray-900" data-testid="node-readonly"><K8sBadge />{READONLY_NODE_MESSAGE}</p>
+          )}
+          {nodeView && !nodeView.readonly && (
             // ノード単位のまとめての停止・再開（#98。グループのルールはこのノードだけ止める）
             <div className="card p-4 flex flex-wrap items-center gap-2 text-sm text-gray-900" data-testid="node-bulk">
               <span className="mr-auto">このノードのルールをまとめて：</span>

@@ -34,11 +34,11 @@ import {
   targetChoices,
 } from '@/components/dashboard';
 import OverrideEditor from '@/components/OverrideEditor';
-import { AllowFromBadge, ApiBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
+import { AllowFromBadge, ApiBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, K8sBadge, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
 import Tabs, { tabPanelProps } from '@/components/Tabs';
 import { DRIFT_LABELS } from '@/components/drift';
 import type { NodeLiveState } from '@/components/lib';
-import { OWNED_RULE_MESSAGE, STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
+import { OWNED_RULE_MESSAGE, READONLY_NODE_MESSAGE, STATIC_RULE_NOTE, ruleErrorText } from '@/components/messages';
 import AcmeStatus from '@/components/AcmeStatus';
 import { acmeStatusFor } from '@/components/acme';
 import HttpSummary from '@/components/HttpSummary';
@@ -644,13 +644,20 @@ const RuleDetailPage: React.FC = () => {
             {STATIC_RULE_NOTE}
           </p>
         )}
-        {rule && key && rule.origin === 'api' && rule.ruleset && (
+        {rule && key && rule.readonlyNode && (
+          <p className="inline-flex flex-wrap items-center gap-2 text-sm text-gray-800" data-testid="readonly-note">
+            <K8sBadge />
+            {rule.origin === 'api' && <ApiBadge rule={rule} />}
+            {READONLY_NODE_MESSAGE}
+          </p>
+        )}
+        {rule && key && !rule.readonlyNode && rule.origin === 'api' && rule.ruleset && (
           <p className="inline-flex flex-wrap items-center gap-2 text-sm text-gray-800" data-testid="owned-note">
             <ApiBadge rule={rule} />
             {OWNED_RULE_MESSAGE}
           </p>
         )}
-        {rule && key && rule.origin === 'api' && !rule.ruleset && (
+        {rule && key && !rule.readonlyNode && rule.origin === 'api' && !rule.ruleset && (
           <div className="flex flex-wrap gap-2">
             <Link href={ruleEditHref({ ...key, ...(rule.target !== undefined ? { target: rule.target } : {}) })} className="btn-primary">編集</Link>
             <button type="button" className="btn-danger" onClick={() => setConfirming(true)}>削除</button>

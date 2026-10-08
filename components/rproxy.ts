@@ -213,6 +213,8 @@ export interface ClientTls {
   cert?: string;
   key?: string;
   ca?: string;
+  // 証明書を確かめる名前（SNI）。Pod の IP で接続する Kubernetes の rproxy（証明書は <id>.rproxy-api.rproxy-gateway.internal）
+  servername?: string;
 }
 
 // 問い合わせ先の rproxy（#98 のノード）。url は RPROXY_API_URL と同じ書き方
@@ -250,12 +252,12 @@ function mtime(path: string | undefined): number {
 }
 
 export function tlsAgent(tls: ClientTls): Agent {
-  const files = JSON.stringify([tls.cert, tls.key, tls.ca]);
+  const files = JSON.stringify([tls.cert, tls.key, tls.ca, tls.servername]);
   const id = JSON.stringify([mtime(tls.cert), mtime(tls.key), mtime(tls.ca)]);
   const cur = tlsAgents.get(files);
   if (cur?.id === id) return cur.agent;
   const read = (path: string | undefined) => (path ? readFileSync(path) : undefined);
-  const agent = new Agent({ connect: { cert: read(tls.cert), key: read(tls.key), ca: read(tls.ca) } });
+  const agent = new Agent({ connect: { cert: read(tls.cert), key: read(tls.key), ca: read(tls.ca), ...(tls.servername ? { servername: tls.servername } : {}) } });
   tlsAgents.set(files, { id: id, agent: agent });
   // 古い Agent は使い終わった接続から閉じる（進行中の問い合わせは終わるまで待つ）
   if (cur) void cur.agent.close().catch(() => undefined);

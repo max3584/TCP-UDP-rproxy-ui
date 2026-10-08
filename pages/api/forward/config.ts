@@ -3,7 +3,7 @@ import { Logger } from '@/components/lib';
 import { RproxyError, getConfigStatus, withNode } from '@/components/rproxy';
 import { requireRole } from '@/components/apiguard';
 import { configStatusView, mergeConfigStatusViews } from '@/components/dashboard';
-import { loadNodes, toRproxyNode } from '@/components/nodes';
+import { loadNodes, toRproxyNode, visibleNodes } from '@/components/nodes';
 import { accessOf, nodesAllowed, roleConfig } from '@/components/roles';
 import { SYSTEM_CONFIG_ERROR_HIDDEN } from '@/components/system';
 import type { ConfigStatusView } from '@/components/dashboard';
@@ -37,7 +37,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
   let cfg;
   try {
-    cfg = loadNodes();
+    // Kubernetes の rproxy（見るだけ）は管理者だけ
+    cfg = visibleNodes(loadNodes(), access === 'admin');
   } catch (err) {
     Logger('info', { action: 'config' }).error(`${err}`);
     return res.status(200).json(configStatusView(null));

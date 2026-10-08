@@ -2,7 +2,7 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
 import { getCapabilities, getConfigStatus, withNode } from '@/components/rproxy';
 import type { Capabilities, RproxyConfigStatus } from '@/components/rproxy';
-import { loadNodes, toRproxyNode } from '@/components/nodes';
+import { loadNodes, toRproxyNode, visibleNodes } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
 import { accessOf, nodesAllowed, roleConfig } from '@/components/roles';
 import { nodeSystemView, userSystemView } from '@/components/system';
@@ -47,7 +47,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   const roles = roleConfig();
   const access = accessOf(session.user.roles ?? [], roles);
   const admin = access === 'admin';
-  const visible = cfg.configured ? cfg.nodes.filter((n) => nodesAllowed(access, roles, [n.name])) : cfg.nodes;
+  // Kubernetes の rproxy（見るだけ）は管理者だけ
+  const shown = visibleNodes(cfg, admin);
+  const visible = shown.configured ? shown.nodes.filter((n) => nodesAllowed(access, roles, [n.name])) : shown.nodes;
   const nodes = cfg.configured
     ? await Promise.all(visible.map((n) => one(n.name, (fn) => withNode(toRproxyNode(n), fn))))
     : [await one(cfg.nodes[0].name, (fn) => fn())];

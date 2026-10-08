@@ -100,6 +100,11 @@ export const OWNED_RULE_MESSAGE =
 export const SHADOWED_RULE_MESSAGE =
   '同じキーを rproxy では API で作ったルールかルールの組のルールが使っているため、この UI のルールの変更・再開・送り直しは rproxy に送れません。停止・削除は UI のルールだけを変えます。API のルールを消すか、キーを変えるよう管理者に相談してください。';
 
+// Kubernetes の rproxy（rproxy-gateway が UI の namespace に書く Secret の Pod。RPROXY_UI_K8S_DISCOVERY）は見るだけ（409 readonly_node）。
+// UI のトークンも rules:read・metrics:read だけなので、rproxy も書き込みを断る
+export const READONLY_NODE_MESSAGE =
+  'Kubernetes の rproxy は見るだけです（画面からは変更・停止・送り直しができません）。ルールは Gateway API のリソース（Gateway・HTTPRoute など）で変えてください。';
+
 const EXPLAIN: Record<string, string> = {
   resolve_failed: '転送先のホスト名を名前解決できませんでした。DNS に登録されているか、ホスト名の綴りを確認してください（IP アドレスでも指定できます）。',
   bind_failed: '待ち受けポートを開けませんでした。ほかのプログラムがそのポートを使っていないか確認してください。',
@@ -117,6 +122,7 @@ const EXPLAIN: Record<string, string> = {
   locked_out: RPROXY_LOCKED_OUT_MESSAGE,
   owned: OWNED_RULE_MESSAGE,
   shadowed: SHADOWED_RULE_MESSAGE,
+  readonly_node: READONLY_NODE_MESSAGE,
   csrf: 'ほかのサイトからの変更の要求は受け付けません。この画面を開き直してから操作してください。',
 };
 
