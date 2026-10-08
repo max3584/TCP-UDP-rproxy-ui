@@ -13,7 +13,7 @@ app.kubernetes.io/part-of: rproxy-ui
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end -}}
 
-{{/* pods of this release's UI, migration and backup (name rproxy-ui: rproxy-gateway's ui.podSelector default) */}}
+{{/* pods of this release's UI, migration and backup (rproxy-gateway's ui.podSelector default is name rproxy-ui and component ui: the UI pods only) */}}
 {{- define "rproxy-ui.selectorLabels" -}}
 app.kubernetes.io/name: rproxy-ui
 app.kubernetes.io/instance: {{ .Release.Name }}

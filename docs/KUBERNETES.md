@@ -117,7 +117,7 @@ node /usr/share/rproxy-ui/db/migrate.mjs --dry-run   # 何をするかを出す�
 
 rproxy-gateway が動かす rproxy の Pod を、**読むだけ**で画面に出す（rproxy-gateway の docs/DESIGN-v0.4.x.md の C）。両側の明示が要る。
 
-1. rproxy-gateway の chart で `ui.namespace: rproxy-ui`（この UI の namespace）にする（Pod を選ぶ `ui.podSelector` の既定 `app.kubernetes.io/name: rproxy-ui` はこの chart の Pod に合う）。
+1. rproxy-gateway の chart で `ui.namespace: rproxy-ui`（この UI の namespace）にする（Pod を選ぶ `ui.podSelector` の既定 `app.kubernetes.io/name: rproxy-ui`・`app.kubernetes.io/component: ui` はこの chart の UI の Pod だけに合う。migration・バックアップの Pod は rproxy に届かない）。
 2. Gateway の parameters（`RproxyGatewayParameters`）の `ui.visible` が `false` でない Gateway だけが載る（既定 `true`。クラスで `false` にした Gateway は Gateway の側で `true` にできない）。
 3. この chart で `rproxy.discovery.enabled: true`。
 

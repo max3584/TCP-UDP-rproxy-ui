@@ -117,7 +117,7 @@ node /usr/share/rproxy-ui/db/migrate.mjs --dry-run   # only print what it would 
 
 rproxy pods run by rproxy-gateway are shown **read-only** (C in rproxy-gateway's docs/DESIGN-v0.4.x.md). Both sides have to opt in:
 
-1. In the rproxy-gateway chart, set `ui.namespace: rproxy-ui` (this UI's namespace). The default pod selector `ui.podSelector` (`app.kubernetes.io/name: rproxy-ui`) matches this chart's pods.
+1. In the rproxy-gateway chart, set `ui.namespace: rproxy-ui` (this UI's namespace). The default pod selector `ui.podSelector` (`app.kubernetes.io/name: rproxy-ui`, `app.kubernetes.io/component: ui`) matches this chart's UI pods only (the migration and backup pods cannot reach rproxy).
 2. Only Gateways whose parameters (`RproxyGatewayParameters`) do not set `ui.visible: false` are listed (default `true`; a Gateway cannot turn its class's `false` into `true`).
 3. In this chart, set `rproxy.discovery.enabled: true`.
 

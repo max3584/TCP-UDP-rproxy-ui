@@ -6,7 +6,7 @@ import { isIP } from 'node:net';
 import { isAbsolute, join, normalize } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { ClientTls, RproxyNode } from './rproxy';
-import { envApiToken, envClientTls, envClientTlsProblem } from './rproxy';
+import { clearStaleNodes, envApiToken, envClientTls, envClientTlsProblem } from './rproxy';
 import type { GroupMode, NodesInfo } from './lib';
 
 // RPROXY_UI_NODES がないときの 1 台の名前（DB の target 列の既定値と同じ）
@@ -375,6 +375,8 @@ export function loadDiscovery(): K8sDiscovery {
     console.log(`rproxy-ui: Kubernetes の rproxy（見るだけ）: ${value.nodes.length} 台（${value.groups.map((g) => g.name).join(', ') || '-'}）`);
   }
   discoveryCache = { dir: dir, mtime: at, value: value, error: error };
+  // 401 を返したノードを、新しい内容でもう一度聞く
+  clearStaleNodes();
   return value;
 }
 
@@ -452,7 +454,10 @@ export function targetNodes(config: NodesConfig, target: string): NodeConfig[] |
 
 // rproxy のクライアントに渡すノード
 export function toRproxyNode(node: NodeConfig): RproxyNode {
-  return { name: node.name, url: node.url, ...(node.token !== undefined ? { token: node.token } : {}), ...(node.tls ? { tls: node.tls } : {}) };
+  return {
+    name: node.name, url: node.url, ...(node.token !== undefined ? { token: node.token } : {}), ...(node.tls ? { tls: node.tls } : {}),
+    ...(node.readonly ? { readonly: true } : {}),
+  };
 }
 
 // 2 つのノード／グループに共通のノードがあるか（同じキーのルールを両方に置くと、そのノードで重なる）

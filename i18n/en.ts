@@ -1544,4 +1544,5 @@ export const en: Record<string, string> = {
   "RPROXY_UI_K8S_DISCOVERY（{0}）: {1}": "RPROXY_UI_K8S_DISCOVERY ({0}): {1}",
   "Kubernetes の rproxy（見るだけ。変更は Gateway API のリソースで）": "Kubernetes rproxy (read-only; change it through Gateway API resources)",
   "Kubernetes（見るだけ）": "Kubernetes (read-only)",
+  "rproxy に接続できません: ノード {0} は UI のトークンを受け付けませんでした（Kubernetes の rproxy の入れ替わりの間。次に発見の Secret が変わるまで聞きません）": "Cannot connect to rproxy: node {0} did not accept the UI's token (a Kubernetes rproxy being replaced; it is not asked again until the discovery Secret changes)",
 };
