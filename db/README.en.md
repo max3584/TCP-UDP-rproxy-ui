@@ -19,13 +19,31 @@ Definitions of the tables shared by the UI and rproxy-api.
 | `migrations/011_usage_attr.sql` | Split usage rows by owner and marks (UI v0.4.0 security review M1): adds an `attr` column to `usage_hourly` and `usage_daily` and puts it in the primary key. Where 010 is applied, apply it before upgrading the UI |
 | `migrations/009_rproxy_rules.sql` | `rproxy_rules`, where rproxy-api v0.4 stores rules created through its API (#76; only rproxy writes it). With several rproxy instances, recreate the per-node views after applying it |
 | `migrations/012_rproxy_rule_sets.sql` | `rproxy_rule_sets`, where rproxy-api v0.4.2 stores the rule sets of `persist: true` tokens (rproxy-api #241; only rproxy writes it; one row per set). Optional (without it sets are just not stored). With several rproxy instances, recreate the per-node views after applying it |
+| `migrate.mjs` | Applies the migrations in order and records them in `schema_migrations` ("migrate.mjs" below; used by the Kubernetes chart's migration Job, usable with the .deb too) |
 | `node-view.mjs` | Prints the SQL for a per-node database with a `forward_rules` view and a read-only DB user (see "Several rproxy instances (a view per node)" below) |
 
-On existing environments, apply them in order starting from `002`. When you change `schema.sql`, also add a migration that makes the same change.
+On existing environments, apply them in order starting from `002` (by hand or with `migrate.mjs` below). When you change `schema.sql`, also add a migration that makes the same change (`schema.sql` is the state with every migration applied: `migrate.mjs` runs it on a new database and records every migration as applied).
 
 ```bash
 mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_ip_udp_idle.sql
 ```
+
+## migrate.mjs
+
+`node db/migrate.mjs` applies `migrations/` in number order and records what it applied in `schema_migrations`. The Kubernetes chart runs it in its migration Job ([docs/en/KUBERNETES.md](../docs/en/KUBERNETES.md)); with the .deb it is `/usr/share/rproxy-ui/db/migrate.mjs` (the driver comes from `/usr/lib/rproxy-ui/node_modules`; elsewhere set `RPROXY_UI_LIB`).
+
+```bash
+DB_HOST=db.example DB_DATABASE=rproxy DB_ADMIN_USER=root DB_ADMIN_PASSWORD=... node db/migrate.mjs [--baseline 012] [--create-database] [--wait 300] [--dry-run | --status]
+```
+
+- A new database (no `forward_rules`) gets `schema.sql`, and every migration is recorded as applied (`method` `schema`).
+- An existing database without `schema_migrations` (migrated by hand) is refused without `--baseline <number>` (the last migration applied). Everything up to it is recorded as `baseline`; the rest is applied.
+- `003` (the one-time manual template) is never run; it is recorded as `skipped`. A migration whose content changed after it was applied only gets a warning.
+- Concurrent runs take turns (`GET_LOCK('rproxy-ui-migrate')`); later runs apply only what is missing.
+- It connects with `DB_HOST`, `DB_PORT`, `DB_DATABASE` and the admin that runs DDL, `DB_ADMIN_USER` and `DB_ADMIN_PASSWORD` (else `DB_USER` and `DB_PASSWORD`). `--create-database` creates the database if missing; `--wait <seconds>` waits until it can connect.
+- With `DB_APP_USER` and `DB_APP_PASSWORD` (`DB_APP_HOST`, default `%`) it creates the UI's user (or sets its password) and grants it the UI's privileges of "DB users" below (on the tables that exist). `DB_BACKUP_USER` and `DB_BACKUP_PASSWORD` (`DB_BACKUP_HOST`) make a read-only user for backups (`SELECT, LOCK TABLES, SHOW VIEW`).
+
+Columns of `schema_migrations`: `version` (the file name without `.sql`), `applied_at` (UTC), `checksum` (SHA-256 of the file), `method` (`applied`, `schema`, `baseline`, `skipped`). Only `migrate.mjs` writes it; the UI and rproxy do not use it.
 
 ## Tables
 

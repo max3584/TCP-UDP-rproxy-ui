@@ -1,0 +1,24 @@
+# helm template / kubeconform in CI (.github/workflows/ci.yml): everything on
+url: https://rproxy-ui.example.com
+existingSecret: rproxy-ui
+keycloak: {issuer: https://sso.example.com/realms/rproxy}
+roles: {userPorts: 1024-65535}
+mariadb: {enabled: true, existingSecret: rproxy-ui-mariadb}
+backup: {enabled: true, existingSecret: rproxy-ui-backup}
+networkPolicy:
+  enabled: true
+  ingressFrom: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress}}}]
+ingress:
+  enabled: true
+  className: nginx
+  hosts: [{host: rproxy-ui.example.com}]
+  tls: [{secretName: rproxy-ui-tls, hosts: [rproxy-ui.example.com]}]
+httpRoute:
+  enabled: true
+  parentRefs: [{name: web, namespace: gateways}]
+  hostnames: [rproxy-ui.example.com]
+rproxy: {discovery: {enabled: true}}
+nodes: |
+  nodes:
+    - {name: vm1, url: "https://10.0.0.11:8443", token_file: /etc/rproxy-ui/tokens/vm1}
+nodeTokensSecret: rproxy-ui-node-tokens

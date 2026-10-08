@@ -1,0 +1,91 @@
+{{- if .Values.backup.enabled }}
+{{- $_ := required "backup.existingSecret is required: a Secret with DB_BACKUP_USER and DB_BACKUP_PASSWORD" .Values.backup.existingSecret }}
+{{- $claim := default (printf "%s-backup" (include "rproxy-ui.fullname" .)) .Values.backup.persistence.existingClaim }}
+{{- if not .Values.backup.persistence.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  labels: {{- include "rproxy-ui.labels" . | nindent 4 }}
+  annotations:
+    # helm uninstall keeps the dumps
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.backup.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.persistence.size }}
+---
+{{- end }}
+# mariadb-dump --single-transaction (rproxy-api docs/BACKUP.md) into the PVC; dumps older than `keep` days go
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "rproxy-ui.fullname" . }}-backup
+  labels: {{- include "rproxy-ui.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "rproxy-ui.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: backup
+              image: {{ printf "%s:%s" .Values.mariadb.image.repository .Values.mariadb.image.tag }}
+              imagePullPolicy: {{ .Values.mariadb.image.pullPolicy }}
+              command: [/bin/sh, -ec]
+              args:
+                - |
+                  umask 077
+                  printf '[client]\nuser=%s\npassword=%s\n' "$DB_BACKUP_USER" "$DB_BACKUP_PASSWORD" > /tmp/my.cnf
+                  out="/backup/rproxy-ui-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+                  mariadb-dump --defaults-extra-file=/tmp/my.cnf -h "$DB_HOST" -P "$DB_PORT" \
+                    --single-transaction --routines --no-tablespaces --databases "$DB_DATABASE" | gzip > "$out.part"
+                  mv "$out.part" "$out"
+                  find /backup -name 'rproxy-ui-*.sql.gz' -mtime +"$KEEP" -delete
+                  ls -l /backup
+              env:
+                - name: DB_HOST
+                  value: {{ include "rproxy-ui.dbHost" . | quote }}
+                - name: DB_PORT
+                  value: {{ .Values.db.port | quote }}
+                - name: DB_DATABASE
+                  value: {{ .Values.db.database | quote }}
+                - name: KEEP
+                  value: {{ .Values.backup.keep | quote }}
+                - name: DB_BACKUP_USER
+                  valueFrom: {secretKeyRef: {name: {{ .Values.backup.existingSecret }}, key: DB_BACKUP_USER}}
+                - name: DB_BACKUP_PASSWORD
+                  valueFrom: {secretKeyRef: {name: {{ .Values.backup.existingSecret }}, key: DB_BACKUP_PASSWORD}}
+              resources: {{- toYaml .Values.backup.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              volumeMounts:
+                - {name: backup, mountPath: /backup}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backup
+              persistentVolumeClaim: {claimName: {{ $claim }}}
+            - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+{{- end }}

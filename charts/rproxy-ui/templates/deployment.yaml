@@ -1,0 +1,146 @@
+{{- $_ := required "url is required (NEXTAUTH_URL)" .Values.url }}
+{{- $_ := required "keycloak.issuer is required" .Values.keycloak.issuer }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rproxy-ui.fullname" . }}
+  labels:
+    {{- include "rproxy-ui.labels" . | nindent 4 }}
+    {{- include "rproxy-ui.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "rproxy-ui.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        {{- include "rproxy-ui.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ui
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{ end }}
+      annotations:
+        {{- if .Values.nodes }}
+        checksum/nodes: {{ .Values.nodes | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{ end }}
+    spec:
+      serviceAccountName: {{ include "rproxy-ui.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- include "rproxy-ui.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: rproxy-ui
+          image: {{ include "rproxy-ui.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 3000, protocol: TCP}
+          env:
+            - {name: HOSTNAME, value: 0.0.0.0}
+            - {name: PORT, value: "3000"}
+            - name: NEXTAUTH_URL
+              value: {{ .Values.url | quote }}
+            - name: NEXTAUTH_SECRET
+              valueFrom: {secretKeyRef: {name: {{ include "rproxy-ui.existingSecret" . }}, key: NEXTAUTH_SECRET}}
+            - name: KEYCLOAK_ISSUER
+              value: {{ .Values.keycloak.issuer | quote }}
+            - name: KEYCLOAK_CLIENT_ID
+              value: {{ .Values.keycloak.clientId | quote }}
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: {{ include "rproxy-ui.existingSecret" . }}, key: KEYCLOAK_CLIENT_SECRET}}
+            {{- include "rproxy-ui.dbEnv" . | nindent 12 }}
+            - name: RPROXY_UI_USAGE_SECS
+              value: {{ .Values.usage.intervalSeconds | quote }}
+            {{- range $k, $v := dict "RPROXY_UI_ROLES_CLAIM" .Values.roles.claim "RPROXY_UI_ADMIN_ROLE" .Values.roles.adminRole "RPROXY_UI_USER_ROLE" .Values.roles.userRole "RPROXY_UI_USER_PORTS" .Values.roles.userPorts "RPROXY_UI_USER_NODES" .Values.roles.userNodes }}
+            {{- if $v }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.rproxyApi.url }}
+            - name: RPROXY_API_URL
+              value: {{ .Values.rproxyApi.url | quote }}
+            {{- end }}
+            {{- if .Values.rproxyApi.existingSecret }}
+            - name: RPROXY_API_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ .Values.rproxyApi.existingSecret }}, key: {{ .Values.rproxyApi.tokenKey }}}}
+            {{- end }}
+            {{- if .Values.nodes }}
+            - {name: RPROXY_UI_NODES, value: /etc/rproxy-ui/nodes/nodes.yaml}
+            {{- end }}
+            {{- if .Values.rproxy.discovery.enabled }}
+            - {name: RPROXY_UI_K8S_DISCOVERY, value: /etc/rproxy-ui/k8s}
+            {{- end }}
+            {{- with .Values.extraEnv }}{{ toYaml . | nindent 12 }}{{ end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # no auth, no DB: a DB outage does not take every replica out at once
+          startupProbe:
+            httpGet: {path: /api/healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /api/healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /api/healthz, port: http}
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: cache, mountPath: /app/.next/cache}
+            {{- if .Values.nodes }}
+            - {name: nodes, mountPath: /etc/rproxy-ui/nodes, readOnly: true}
+            {{- end }}
+            {{- if .Values.nodeTokensSecret }}
+            - {name: node-tokens, mountPath: /etc/rproxy-ui/tokens, readOnly: true}
+            {{- end }}
+            {{- if .Values.rproxy.discovery.enabled }}
+            - {name: k8s-discovery, mountPath: /etc/rproxy-ui/k8s, readOnly: true}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}{{ toYaml . | nindent 12 }}{{ end }}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        - {name: cache, emptyDir: {sizeLimit: 256Mi}}
+        {{- if .Values.nodes }}
+        - name: nodes
+          configMap: {name: {{ include "rproxy-ui.fullname" . }}-nodes}
+        {{- end }}
+        {{- if .Values.nodeTokensSecret }}
+        - name: node-tokens
+          secret: {secretName: {{ .Values.nodeTokensSecret }}, defaultMode: 0440}
+        {{- end }}
+        {{- if .Values.rproxy.discovery.enabled }}
+        # written by rproxy-gateway (ui.namespace); absent until a Gateway is shown to the UI
+        - name: k8s-discovery
+          secret: {secretName: {{ .Values.rproxy.discovery.secretName }}, optional: true, defaultMode: 0440}
+        {{- end }}
+        {{- with .Values.extraVolumes }}{{ toYaml . | nindent 8 }}{{ end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      topologySpreadConstraints:
+        {{- if .Values.topologySpreadConstraints }}
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+        {{- else }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "rproxy-ui.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: ui
+        {{- end }}

@@ -1,0 +1,195 @@
+# rproxy-ui: the web UI of rproxy-api (docs/KUBERNETES.md).
+# The chart creates no secrets: create them first and name them here (existingSecret, ...).
+
+image:
+  repository: ghcr.io/max3584/rproxy-ui
+  # defaults to the chart's appVersion
+  tag: ""
+  # sha256:...: pins the image (used instead of the tag)
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# UI pods. Usage collection and the active/standby resend run in one pod at a time (a DB lock), sessions are
+# JWTs (the same NEXTAUTH_SECRET everywhere): any number of replicas, no sticky sessions
+replicas: 2
+
+# the URL users open (NEXTAUTH_URL; register <url>/api/auth/callback/keycloak in Keycloak). Required
+url: ""
+
+# Secret with NEXTAUTH_SECRET, KEYCLOAK_CLIENT_SECRET and DB_PASSWORD (the UI's DB user). Required
+existingSecret: ""
+
+keycloak:
+  # e.g. https://sso.example.com/realms/rproxy. Required
+  issuer: ""
+  clientId: rproxy-ui
+
+# roles (README, "Roles"); empty: the UI's defaults
+roles:
+  claim: ""        # RPROXY_UI_ROLES_CLAIM (realm_access.roles)
+  adminRole: ""    # RPROXY_UI_ADMIN_ROLE (rproxy-admin)
+  userRole: ""     # RPROXY_UI_USER_ROLE (empty: anyone who signs in is a user)
+  userPorts: ""    # RPROXY_UI_USER_PORTS, e.g. 1024-65535
+  userNodes: ""    # RPROXY_UI_USER_NODES, e.g. node1,node2
+
+# the database (MariaDB). External by default; mariadb.enabled bundles one
+db:
+  # empty with mariadb.enabled: the bundled one
+  host: ""
+  port: 3306
+  database: rproxy
+  user: rproxy_ui
+
+# schema migrations: a Job (Helm hook post-install, pre-upgrade) running `node db/migrate.mjs` with the
+# DB's admin credentials (the UI pods only get DML: db/README.md). Reruns do nothing (schema_migrations)
+migrate:
+  enabled: true
+  # Secret with DB_ADMIN_USER and DB_ADMIN_PASSWORD (external DB). With mariadb.enabled the root password is used
+  existingSecret: ""
+  # an existing DB that was migrated by hand (the .deb) and has no schema_migrations: the last migration
+  # applied, e.g. "012" (docs/KUBERNETES.md, "Moving a database")
+  baseline: ""
+  # external DB: also create the database (if missing) and the UI's user (db.user, DB_PASSWORD) with its grants.
+  # Always done with mariadb.enabled
+  createDatabase: false
+  createUser: false
+  # seconds to wait for the DB to accept connections
+  waitSeconds: 300
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  resources: {}
+
+# the bundled MariaDB (off by default): one pod (a StatefulSet) with a PVC. No HA: for that use an
+# external DB or an operator (docs/KUBERNETES.md)
+mariadb:
+  enabled: false
+  image:
+    # the official image (https://hub.docker.com/_/mariadb)
+    repository: mariadb
+    tag: "11.8"
+    pullPolicy: IfNotPresent
+  # Secret with MARIADB_ROOT_PASSWORD. Required when enabled
+  existingSecret: ""
+  persistence:
+    size: 10Gi
+    # empty: the cluster's default StorageClass
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}
+  # extra server options (mariadbd arguments), e.g. ["--innodb-buffer-pool-size=256M"]
+  args: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# rproxy-api on VMs: one rproxy (RPROXY_API_URL with its token) ...
+rproxyApi:
+  url: ""
+  # Secret with the token (key below); empty: none
+  existingSecret: ""
+  tokenKey: RPROXY_API_TOKEN
+# ... or several: the content of RPROXY_UI_NODES (README, "Several rproxy"); token_file entries point at
+# /etc/rproxy-ui/tokens/<key> of nodeTokensSecret
+nodes: ""
+nodeTokensSecret: ""
+
+# rproxy pods of Gateways on this cluster, read-only (rproxy-gateway's ui.namespace = this namespace and
+# the Gateway's parameters ui.visible): the Secret the controller writes, mounted at /etc/rproxy-ui/k8s
+# (RPROXY_UI_K8S_DISCOVERY). Admins only; the token can only read (rules:read, metrics:read)
+rproxy:
+  discovery:
+    enabled: false
+    secretName: rproxy-ui-discovery
+
+usage:
+  # RPROXY_UI_USAGE_SECS: how often usage is collected (0: off). A stopping rproxy pod's last interval is lost
+  intervalSeconds: 60
+
+# a mariadb-dump into a PVC on a schedule (docs/KUBERNETES.md, "Backup")
+backup:
+  enabled: false
+  schedule: "15 3 * * *"
+  # days of dumps to keep
+  keep: 14
+  # Secret with DB_BACKUP_USER and DB_BACKUP_PASSWORD: a read-only user (SELECT, LOCK TABLES, SHOW VIEW).
+  # With mariadb.enabled the migration Job creates it. Required when enabled
+  existingSecret: ""
+  persistence:
+    size: 20Gi
+    storageClass: ""
+    # use this PVC instead of creating one
+    existingClaim: ""
+  resources: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  #  - host: rproxy-ui.example.com
+  #    paths: [{path: /, pathType: Prefix}]
+  tls: []
+  #  - secretName: rproxy-ui-tls
+  #    hosts: [rproxy-ui.example.com]
+
+# a Gateway API HTTPRoute (e.g. through rproxy-gateway)
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  #  - name: web
+  #    namespace: gateways
+  #    sectionName: https
+  hostnames: []
+
+networkPolicy:
+  enabled: false
+  # who may reach the UI on its port (NetworkPolicyPeer list; empty: anyone). The bundled MariaDB is
+  # reachable only from this release's UI, migration and backup pods
+  ingressFrom: []
+  #  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
+
+podDisruptionBudget:
+  # with replicas >= 2
+  enabled: true
+  maxUnavailable: 1
+
+serviceAccount:
+  create: true
+  name: ""
+
+resources:
+  requests: {cpu: 50m, memory: 192Mi}
+  limits: {memory: 768Mi}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# empty: spread over nodes when possible (kubernetes.io/hostname, ScheduleAnyway)
+topologySpreadConstraints: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []

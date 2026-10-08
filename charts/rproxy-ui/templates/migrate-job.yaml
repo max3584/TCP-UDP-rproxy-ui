@@ -1,0 +1,88 @@
+{{- if .Values.migrate.enabled }}
+{{- $bundled := and .Values.mariadb.enabled (not .Values.db.host) }}
+{{- if $bundled }}
+{{- $_ := required "mariadb.existingSecret is required: a Secret with MARIADB_ROOT_PASSWORD" .Values.mariadb.existingSecret }}
+{{- else }}
+{{- $_ := required "migrate.existingSecret is required: a Secret with DB_ADMIN_USER and DB_ADMIN_PASSWORD (or migrate.enabled=false)" .Values.migrate.existingSecret }}
+{{- end }}
+# node db/migrate.mjs with the DB's admin credentials (docs/KUBERNETES.md). post-install: the bundled MariaDB
+# exists by then; pre-upgrade: the new schema is in place before the new UI pods start. A rerun does nothing
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "rproxy-ui.fullname" . }}-migrate
+  labels:
+    {{- include "rproxy-ui.labels" . | nindent 4 }}
+    {{- include "rproxy-ui.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: post-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "rproxy-ui.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "rproxy-ui.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- include "rproxy-ui.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "rproxy-ui.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [node, db/migrate.mjs]
+          args:
+            - --wait
+            - {{ .Values.migrate.waitSeconds | quote }}
+            {{- if or $bundled .Values.migrate.createDatabase }}
+            - --create-database
+            {{- end }}
+            {{- with .Values.migrate.baseline }}
+            - --baseline
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: DB_HOST
+              value: {{ include "rproxy-ui.dbHost" . | quote }}
+            - name: DB_PORT
+              value: {{ .Values.db.port | quote }}
+            - name: DB_DATABASE
+              value: {{ .Values.db.database | quote }}
+            {{- if $bundled }}
+            - {name: DB_ADMIN_USER, value: root}
+            - name: DB_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.mariadb.existingSecret }}, key: MARIADB_ROOT_PASSWORD}}
+            {{- else }}
+            - name: DB_ADMIN_USER
+              valueFrom: {secretKeyRef: {name: {{ .Values.migrate.existingSecret }}, key: DB_ADMIN_USER}}
+            - name: DB_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.migrate.existingSecret }}, key: DB_ADMIN_PASSWORD}}
+            {{- end }}
+            {{- if or $bundled .Values.migrate.createUser }}
+            - name: DB_APP_USER
+              value: {{ .Values.db.user | quote }}
+            - name: DB_APP_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ include "rproxy-ui.existingSecret" . }}, key: DB_PASSWORD}}
+            {{- end }}
+            {{- if and $bundled .Values.backup.enabled }}
+            - name: DB_BACKUP_USER
+              valueFrom: {secretKeyRef: {name: {{ required "backup.existingSecret is required" .Values.backup.existingSecret }}, key: DB_BACKUP_USER}}
+            - name: DB_BACKUP_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.backup.existingSecret }}, key: DB_BACKUP_PASSWORD}}
+            {{- end }}
+          resources: {{- toYaml .Values.migrate.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+{{- end }}

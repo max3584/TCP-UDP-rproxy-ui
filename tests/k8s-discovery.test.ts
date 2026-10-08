@@ -270,7 +270,7 @@ describe('the API: read-only, admins only', () => {
 
 describe('usage of the Kubernetes rproxy', () => {
   it('counters per pod, rows per Gateway with origin ruleset', async () => {
-    const q = vi.fn(async (sql: string) => (sql.startsWith('SELECT') ? [] : { affectedRows: 1 }));
+    const q = vi.fn(async (sql: string): Promise<unknown> => (sql.startsWith('SELECT') ? [] : { affectedRows: 1 }));
     const prev = [{ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 443, counters_since: 1000, started_at: 1000, rx_bytes: 40, tx_bytes: 50, connections: 4, sampled_at: '2026-10-08 00:00:00.000' }];
     q.mockImplementationOnce(async () => prev);
     await collectNode({ query: q } as never, POD_A, [status(443) as never], new Map(), new Date('2026-10-08T00:01:00Z'), { rowNode: GW, k8s: true });

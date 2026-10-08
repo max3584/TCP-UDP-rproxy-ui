@@ -1,0 +1,9 @@
+# helm template / kubeconform in CI: an external DB, one replica, a VM rproxy, pinned image
+url: https://rproxy-ui.example.com
+existingSecret: rproxy-ui
+keycloak: {issuer: https://sso.example.com/realms/rproxy}
+db: {host: mariadb.db.svc}
+migrate: {existingSecret: rproxy-ui-db-admin, baseline: "012", createUser: true}
+replicas: 1
+image: {digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+rproxyApi: {url: "https://10.0.0.11:8443", existingSecret: rproxy-ui-api}

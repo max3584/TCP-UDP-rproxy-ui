@@ -1,0 +1,98 @@
+{{- if .Values.mariadb.enabled }}
+{{- $_ := required "mariadb.existingSecret is required: a Secret with MARIADB_ROOT_PASSWORD" .Values.mariadb.existingSecret }}
+# the bundled MariaDB (the official image): one pod and its PVC. No replication or failover (docs/KUBERNETES.md)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rproxy-ui.mariadbName" . }}
+  labels:
+    {{- include "rproxy-ui.labels" . | nindent 4 }}
+    {{- include "rproxy-ui.mariadbSelectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{- include "rproxy-ui.mariadbSelectorLabels" . | nindent 4 }}
+  ports:
+    - {name: mysql, port: 3306, targetPort: mysql, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "rproxy-ui.mariadbName" . }}
+  labels:
+    {{- include "rproxy-ui.labels" . | nindent 4 }}
+    {{- include "rproxy-ui.mariadbSelectorLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "rproxy-ui.mariadbName" . }}
+  selector:
+    matchLabels: {{- include "rproxy-ui.mariadbSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rproxy-ui.mariadbSelectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      # the image's mysql user
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: mariadb
+          image: {{ printf "%s:%s" .Values.mariadb.image.repository .Values.mariadb.image.tag }}
+          imagePullPolicy: {{ .Values.mariadb.image.pullPolicy }}
+          {{- with .Values.mariadb.args }}
+          args: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.mariadb.existingSecret }}, key: MARIADB_ROOT_PASSWORD}}
+            # the database and the UI's user are made by the migration Job (db/migrate.mjs)
+            - {name: MARIADB_AUTO_UPGRADE, value: "1"}
+          ports:
+            - {name: mysql, containerPort: 3306, protocol: TCP}
+          # the port opens once initialization is over (the entrypoint's first server has no networking)
+          readinessProbe:
+            tcpSocket: {port: mysql}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: mysql}
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.mariadb.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/mysql}
+            - {name: run, mountPath: /run/mysqld}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: run, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+      {{- with .Values.mariadb.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mariadb.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mariadb.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels: {{- include "rproxy-ui.mariadbSelectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: {{- toYaml .Values.mariadb.persistence.accessModes | nindent 10 }}
+        {{- with .Values.mariadb.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mariadb.persistence.size }}
+{{- end }}

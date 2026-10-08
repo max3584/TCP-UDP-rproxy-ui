@@ -15,6 +15,10 @@ PR のブランチに追加で push する前に、その PR がまだ開いて�
 CPU ごとのネイティブなモジュール（`.node`）が入ると `all` にできないので、build-deb.sh が見つけたら止める。依存を足すときに気をつける。
 CI の `Debian package` ジョブ（systemd を init にした debian:trixie-slim のコンテナで作り、`scripts/test-deb.sh` で実際に入れる。nodejs は `scripts/install-nodejs.sh` で NodeSource の 24）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の `release.yml` を `ui_tag` で手動実行すると apt リポジトリに載る（docs/RELEASING.md）。
 
+## コンテナイメージと Helm chart（Kubernetes）
+
+`Dockerfile`（`ghcr.io/max3584/rproxy-ui`）と `charts/rproxy-ui`（`oci://ghcr.io/max3584/charts/rproxy-ui`）。CI の `container image` ジョブ（作って `--read-only` で起動し `/api/healthz`。push しない）と `helm chart` ジョブ（lint・template・kubeconform）で確かめ、リリース（`release.yml` の `image`）でタグの版を push する。chart は rproxy-gateway の chart の subchart にしない（版を別に進める）。.deb の動きは変えない。
+
 ## ドキュメント（日本語と英語）
 
 利用者向けのドキュメントは日本語と英語の両方がある：`README.md` ↔ `README.en.md`、`docs/<NAME>.md` ↔ `docs/en/<NAME>.md`、`db/README.md` ↔ `db/README.en.md`。
@@ -78,6 +82,9 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/Tabs.tsx` | WAI-ARIA のタブの並び（矢印キー / Home / End）と `tabPanelProps`。ダッシュボードとルールの詳細の「全体 / ノードごと」 |
 | `components/fanout.ts` | グループの変更を全ノードに送る `applyToNodes`（`withNode` でノードごとに実行。1 台でも失敗したら成功したノードの undo を実行して `FanoutError`（ノードごとの結果 `results`）。ノードが 1 つなら例外をそのまま投げる） |
 | `db/node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけのユーザーの SQL を出す（依存のない JS。`npm run db:node-view -- <ノード>`。.deb の db/ からも動く） |
+| `db/migrate.mjs` | migration を順に当てる（`schema_migrations`：version・applied_at・checksum・method。新しい DB は `schema.sql` で全部を `schema`、表のない古い DB は `--baseline <番号>` がなければ断る、`003` は `skipped`、`GET_LOCK('rproxy-ui-migrate')` で同時に 1 つ、2 回目は何もしない。`DB_APP_*`・`DB_BACKUP_*` でユーザーと権限）。ドライバは mariadb（.deb では `/usr/lib/rproxy-ui/node_modules`、`RPROXY_UI_LIB`）。テストは `tests/migrate.test.ts`（純粋な部分）と CI の e2e ジョブ（本物の MariaDB で空の DB・2 回目・同時に 3 つ・`--baseline`） |
+| `pages/api/healthz.ts` | プローブ（Kubernetes）。サインインなしで `{"ok":true}` だけ。DB・rproxy に聞かない |
+| `Dockerfile` / `charts/rproxy-ui/` | コンテナイメージ（node:24-alpine、standalone + db/、uid 65532、ルートは読むだけでよい。JS は `$BUILDPLATFORM` で 1 回作り amd64・arm64 に同じもの）と Helm chart（UI の Deployment・Service・PDB・Ingress / HTTPRoute・migration の Job（フック `post-install,pre-upgrade`）・任意の MariaDB の StatefulSet（公式イメージ、1 台、PVC）・任意のバックアップの CronJob・NetworkPolicy・Gateway の rproxy の発見の Secret のボリューム）。chart は秘密を作らない（`existingSecret`）。`Chart.yaml` の `version`・`appVersion` は package.json と同じ（CI の `helm chart` とリリースが確かめる）。`charts/rproxy-ui/ci/*.yaml` は CI の helm template + kubeconform の値。文書は docs/KUBERNETES.md |
 | `instrumentation.ts` | 起動時に `RPROXY_UI_NODES` を確かめ、誤りなら理由を出して終了する。各ノードの rproxy-api の版をログに出す（`logVersions`。待たない・失敗しても起動を止めない） |
 | `components/version.ts` | UI の版（`UI_VERSION`。`next.config.mjs` の `env` が package.json から埋め込む）、必要な rproxy-api の最小の版（`MIN_RPROXY_VERSION`）と知っているマイナー（`KNOWN_RPROXY_MINOR`）、版の比較と判定（`versionStatus`：ok / old / unknown / newer / unreachable）。React に依存しない |
 | `components/versioncheck.ts` / `pages/api/forward/versions.ts` | 各ノードの `GET /capabilities` の `version` を聞く（`checkVersions`）。`/api/forward/versions` は問い合わせできないノードがあっても 200 |

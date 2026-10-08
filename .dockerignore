@@ -1,0 +1,22 @@
+# only what the build needs (Dockerfile)
+.git
+.github
+node_modules
+.next
+dist
+coverage
+playwright-report
+test-results
+tests
+charts
+docs
+scripts/screenshots
+packaging
+contrib
+keycloak
+*.tsbuildinfo
+next-env.d.ts
+.env*
+*.pem
+Dockerfile
+.dockerignore

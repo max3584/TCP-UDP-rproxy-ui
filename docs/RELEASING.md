@@ -36,11 +36,11 @@ rproxy-api（[max3584/rproxy-api](https://github.com/max3584/rproxy-api)）と U
 
 1. **バージョンを上げる PR**（ブランチ `release/vX.Y.Z`）
    - rproxy-api: `Cargo.toml` の `version` と、`Cargo.lock` の rproxy-api の版（`cargo update -p rproxy-api --offline`）。`Cargo.lock` を直し忘れると、`--locked` でビルドする CI とリリースが止まる
-   - UI: `npm version X.Y.Z --no-git-tag-version`（`package.json` と `package-lock.json`）。新しい rproxy-api の機能が要るようになったら、必要な rproxy-api の最小の版（UI の `components/version.ts`）も上げる
+   - UI: `npm version X.Y.Z --no-git-tag-version`（`package.json` と `package-lock.json`）と、Helm chart の `charts/rproxy-ui/Chart.yaml` の `version`・`appVersion`（同じ番号。CI の `helm chart` ジョブとリリースが確かめる）。新しい rproxy-api の機能が要るようになったら、必要な rproxy-api の最小の版（UI の `components/version.ts`）も上げる
    - 両方のリポジトリにまたがる変更は、両方で同じ名前のブランチにする（UI の e2e は同じ名前の rproxy-api のブランチがあればそれで、なければ既定ブランチでテストする）
 2. **マージされたらリリースする**（`vX.Y.Z`。タグはルールセットで削除・付け替えができないので、打つ前にコミットを確かめる）
    - rproxy-api: タグの push で `release.yml` がバイナリ・.deb を作り、GitHub Release に添付し、apt リポジトリに rproxy-api を載せる。タグと `Cargo.toml` の `version` が違うと止まる
-   - UI: `gh release create vX.Y.Z --target <マージコミットの完全な ID>` でタグとリリースを作る。公開すると `release.yml` が `rproxy-ui_X.Y.Z-1_all.deb` を作って添付する。添付されたら、rproxy-api の `release.yml` を手動で実行して apt に載せる（`gh workflow run release.yml -R max3584/rproxy-api -f ui_tag=vX.Y.Z`。rproxy-api はビルドしない）
+   - UI: `gh release create vX.Y.Z --target <マージコミットの完全な ID>` でタグとリリースを作る。公開すると `release.yml` が `rproxy-ui_X.Y.Z-1_all.deb` を作って添付し、コンテナイメージ `ghcr.io/max3584/rproxy-ui:X.Y.Z`（amd64・arm64）と chart（`oci://ghcr.io/max3584/charts/rproxy-ui`、`.tgz` も添付）を push する（タグ・`package.json`・`Chart.yaml` が違うと止まる）。添付されたら、rproxy-api の `release.yml` を手動で実行して apt に載せる（`gh workflow run release.yml -R max3584/rproxy-api -f ui_tag=vX.Y.Z`。rproxy-api はビルドしない）
 3. **リリースノート**: そのマイルストーンでマージした PR から、日本語で「主な変更」を書く。UI のリリースノートには、必要な rproxy-api の最小の版（例「rproxy-api v0.3.18 以上」）を書く
 4. **マイルストーンを閉じ**、次のパッチのマイルストーンを作る
 5. apt で公開されたこと（`apt-cache policy rproxy-api` / `apt-cache policy rproxy-ui` で新しいバージョンが見える）を確かめる
