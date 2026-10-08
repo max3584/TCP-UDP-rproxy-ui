@@ -31,6 +31,75 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # コンテナイメージ（Dockerfile。charts/rproxy-ui が使う）：作って、ルートを読むだけにして起動し、/api/healthz が答えること。
+  # PR では push しない（release.yml がタグで ghcr.io/max3584/rproxy-ui に amd64・arm64 を push する）
+  image:
+    name: container image (build, run read-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - name: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: rproxy-ui:ci
+          build-args: VERSION=ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: run with a read-only root file system
+        run: |
+          docker run -d --name ui --read-only --tmpfs /tmp --tmpfs /app/.next/cache:uid=65532,gid=65532 \
+            --cap-drop ALL --security-opt no-new-privileges -p 3000:3000 rproxy-ui:ci
+          for i in $(seq 1 30); do
+            if out=$(curl -sf http://127.0.0.1:3000/api/healthz); then echo "$out"; break; fi
+            sleep 1
+          done
+          test "$out" = '{"ok":true}'
+          test "$(docker inspect -f '{{.Config.User}}' rproxy-ui:ci)" = 65532:65532
+          # migrate.mjs finds the driver in the image (and then fails to connect: no DB here)
+          docker run --rm --read-only -e DB_HOST=127.0.0.1 -e DB_DATABASE=x rproxy-ui:ci node db/migrate.mjs > migrate.log 2>&1 || true
+          cat migrate.log
+          grep -q 'ECONNREFUSED\|connect' migrate.log
+          if grep -q 'ドライバが見つかりません' migrate.log; then exit 1; fi
+          # no native modules, no build-time secrets
+          test -z "$(docker run --rm rproxy-ui:ci find /app -name '*.node' -o -name '.env*' | head -1)"
+      - name: logs
+        if: always()
+        run: docker logs ui || true
+
+  # Helm chart（charts/rproxy-ui）：lint と、値の組ごとに helm template + kubeconform
+  chart:
+    name: helm chart (lint, template, kubeconform)
+    runs-on: ubuntu-latest
+    container: alpine:3.24
+    steps:
+      - run: apk add --no-cache git curl tar helm jq
+      - uses: actions/checkout@v7
+      - name: kubeconform
+        run: curl -sfL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz | tar xz -C /usr/local/bin kubeconform
+      - name: chart version = package.json version
+        run: |
+          v=$(jq -r .version package.json)
+          grep -qx "version: $v" charts/rproxy-ui/Chart.yaml
+          grep -qx "appVersion: \"$v\"" charts/rproxy-ui/Chart.yaml
+      - name: lint, template, kubeconform
+        run: |
+          set -e
+          for f in charts/rproxy-ui/ci/*.yaml; do
+            echo "== $f"
+            helm lint --strict charts/rproxy-ui -f "$f"
+            helm template ui charts/rproxy-ui -f "$f" > "$RUNNER_TEMP/out.yaml"
+            kubeconform -strict -summary -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              "$RUNNER_TEMP/out.yaml"
+          done
+          # values without the required ones are refused
+          if helm template ui charts/rproxy-ui >/dev/null 2>&1; then echo "rendered without existingSecret/url"; exit 1; fi
+
   # .deb の作成と確かめは Debian が対象そのものなので、debian:trixie-slim（Debian 13）で動かす。
   # test-deb.sh は systemd（systemctl enable --now、journalctl）が要り、ジョブのコンテナでは systemd を PID 1 にできないので、
   # ランナーの docker で systemd を init にしたコンテナを起こし、その中で作って入れる。
@@ -110,8 +179,41 @@ jobs:
 
       - run: npm ci
 
-      - name: create tables from db/schema.sql
-        run: mariadb -uroot -p"$DB_PASSWORD" "$DB_DATABASE" < db/schema.sql
+      # 表は db/migrate.mjs で作る（Kubernetes の chart の migration の Job と同じ。空の DB なので schema.sql を流す）
+      - name: create tables with db/migrate.mjs
+        env:
+          DB_ADMIN_USER: root
+          DB_ADMIN_PASSWORD: root
+        run: |
+          node db/migrate.mjs
+          # 2 回目は何もしない
+          node db/migrate.mjs | tee "$RUNNER_TEMP/migrate-again.log"
+          grep -q '当てるものはありません' "$RUNNER_TEMP/migrate-again.log"
+
+      - name: db/migrate.mjs (concurrent runs, an app user, --baseline on a hand-migrated DB)
+        env:
+          DB_ADMIN_USER: root
+          DB_ADMIN_PASSWORD: root
+        run: |
+          set -e
+          # 3 つ同時に動かしても、表を作るのは 1 つだけ（GET_LOCK）。UI のユーザーには DML だけ
+          for i in 1 2 3; do
+            DB_DATABASE=migrate_conc DB_APP_USER=rproxy_ui_ci DB_APP_PASSWORD=ci-pw node db/migrate.mjs --create-database > "$RUNNER_TEMP/m$i.log" 2>&1 &
+          done
+          wait
+          cat "$RUNNER_TEMP"/m?.log
+          test "$(grep -l 'schema.sql を流します' "$RUNNER_TEMP"/m?.log | wc -l)" = 1
+          test "$(mariadb -uroot -p"$DB_PASSWORD" -N migrate_conc -e 'SELECT COUNT(*) FROM schema_migrations')" = "$(ls db/migrations/*.sql | wc -l)"
+          mariadb -h127.0.0.1 -urproxy_ui_ci -pci-pw migrate_conc -e "INSERT INTO forward_rules (auth_id, protocol, src_addr, src_port, dist_addr, dist_port) VALUES ('ci', 'tcp', '0.0.0.0', 1, '192.0.2.1', 1)"
+          if mariadb -h127.0.0.1 -urproxy_ui_ci -pci-pw migrate_conc -e 'DROP TABLE forward_rules' 2>/dev/null; then echo "the UI user may DROP"; exit 1; fi
+          # .deb で手で 001・002 まで当てた DB：--baseline がなければ断り、あれば残りを当てる
+          mariadb -uroot -p"$DB_PASSWORD" -e 'CREATE DATABASE migrate_old'
+          mariadb -uroot -p"$DB_PASSWORD" migrate_old < db/migrations/001_initial.sql
+          mariadb -uroot -p"$DB_PASSWORD" migrate_old < db/migrations/002_source_ip_udp_idle.sql
+          if DB_DATABASE=migrate_old node db/migrate.mjs; then echo "an old DB without --baseline was migrated"; exit 1; fi
+          DB_DATABASE=migrate_old node db/migrate.mjs --baseline 2
+          DB_DATABASE=migrate_old node db/migrate.mjs --status
+          mariadb -uroot -p"$DB_PASSWORD" -N migrate_old -e "SELECT method FROM schema_migrations WHERE version LIKE '003%'" | grep -qx skipped
 
       # ACME（rproxy-api v0.3.21。docs/ACME.md がある版だけ）：Pebble を動かし、rproxy の設定ファイルに global.acme を書く
       - name: Pebble (ACME test CA) and global.acme

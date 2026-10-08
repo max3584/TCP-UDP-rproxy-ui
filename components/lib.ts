@@ -290,6 +290,8 @@ export interface ForwardRules extends ForwardRule {
   conditions?: Condition[];
   // ルールの組（rproxy v0.4 の rulesets。k8s のコントローラなど）に属するときの組の名前。組のルールは個別に変えられない（409 owned）
   ruleset?: string;
+  // 見るだけのノード（Kubernetes の rproxy。RPROXY_UI_K8S_DISCOVERY）のルール。画面からは何も変えられない（409 readonly_node）
+  readonlyNode?: boolean;
   // API のルール（origin: api）：rproxy_rules に保存しているか、作ったトークンと時刻（Unix 秒）
   persisted?: boolean;
   createdBy?: string;
@@ -346,6 +348,8 @@ export interface NodeSummary {
   drifted: number;
   // このノードに最後に反映した時刻（ISO 8601。このノードを含むノード／グループの履歴の最後。なければ null）
   lastSync?: string | null;
+  // Kubernetes の rproxy（見るだけ。RPROXY_UI_K8S_DISCOVERY）
+  readonly?: boolean;
 }
 
 // ダッシュボードの active_standby のグループ（vip を設定したものだけ）
@@ -361,8 +365,9 @@ export type GroupMode = 'single' | 'active_standby';
 export interface NodesInfo {
   // RPROXY_UI_NODES を使っているか
   configured: boolean;
-  nodes: { name: string }[];
-  groups: { name: string; mode: GroupMode; nodes: string[]; vips?: string[]; autoResend?: boolean }[];
+  // readonly：Kubernetes の rproxy（見るだけ。管理者にだけ出る）
+  nodes: { name: string; readonly?: boolean }[];
+  groups: { name: string; mode: GroupMode; nodes: string[]; vips?: string[]; autoResend?: boolean; readonly?: boolean }[];
   // 追加の画面で最初に選ぶノード／グループ。null なら選んでもらう
   defaultTarget: string | null;
   // 利用者が使えるノード／グループ（RPROXY_UI_USER_NODES で絞ったときだけ。admin には付かない）

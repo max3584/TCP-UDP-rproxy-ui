@@ -3,7 +3,7 @@ import { isIP } from 'node:net';
 import { Logger } from '@/components/lib';
 import { requireRole } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
-import { NodesConfigError, loadNodes, normalizeIp, targetNodes } from '@/components/nodes';
+import { NodesConfigError, loadNodes, normalizeIp, targetNodes, usageRowNode } from '@/components/nodes';
 import { getPool, loadOverrides } from '@/components/ruledb';
 import { RANGE_SPECS, USAGE_ERROR_HIDDEN, bucketKey, bucketStarts, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, parseRange, reportCsv } from '@/components/usage';
 import type { UsageRow } from '@/components/usage';
@@ -93,8 +93,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (nodes.length === 0) throw new BadRequest(`ノード ${only} は ${target} にありません。`);
         // グループのルールは、ノードごとの上書きの待ち受けアドレスで rproxy に置かれる（集計の行もそのアドレス）
         const addrs = await nodeListenAddrs(pool, target, protocol, normalizeIp(addr), port, nodes.map((n) => n.name));
-        where.push(`protocol = ? AND listen_port = ? AND (${nodes.map(() => '(node = ? AND listen_addr = ?)').join(' OR ')})`);
-        params.push(protocol, port, ...nodes.flatMap((n) => [n.name, addrs.get(n.name) ?? normalizeIp(addr)]));
+        // Kubernetes の rproxy の Pod の分は Gateway（グループ）の行にまとめてある（usageRowNode）
+        const pairs = [...new Map(nodes.map((n) => {
+          const row = usageRowNode(cfg, n.name);
+          const at = addrs.get(n.name) ?? normalizeIp(addr);
+          return [`${row}|${at}`, [row, at]] as const;
+        })).values()];
+        where.push(`protocol = ? AND listen_port = ? AND (${pairs.map(() => '(node = ? AND listen_addr = ?)').join(' OR ')})`);
+        params.push(protocol, port, ...pairs.flat());
       } else {
         where.push('protocol = ? AND listen_addr = ? AND listen_port = ?');
         params.push(protocol, normalizeIp(addr), port);

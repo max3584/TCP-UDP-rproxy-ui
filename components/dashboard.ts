@@ -685,11 +685,11 @@ function acmeRank(list: AcmeCertStatus[] | undefined): number {
 
 // 画面に出すノード／グループの名前の一覧（追加の画面の選択肢）。グループは「名前（ノード a, b）」
 export function targetChoices(info: NodesInfo): { value: string; label: string; group: boolean }[] {
-  // RPROXY_UI_USER_NODES で絞った利用者には、使えるものだけを出す
+  // RPROXY_UI_USER_NODES で絞った利用者には、使えるものだけを出す。見るだけのノード・グループ（Kubernetes の rproxy）は選ばせない
   const allowed = (v: { value: string }) => info.allowedTargets === undefined || info.allowedTargets.includes(v.value);
   return [
-    ...info.groups.map((g) => ({ value: g.name, label: `${g.name}（${g.mode === 'active_standby' ? 'act/stb' : 'グループ'}: ${g.nodes.join(', ')}）`, group: true })),
-    ...info.nodes.map((n) => ({ value: n.name, label: n.name, group: false })),
+    ...info.groups.filter((g) => !g.readonly).map((g) => ({ value: g.name, label: `${g.name}（${g.mode === 'active_standby' ? 'act/stb' : 'グループ'}: ${g.nodes.join(', ')}）`, group: true })),
+    ...info.nodes.filter((n) => !n.readonly).map((n) => ({ value: n.name, label: n.name, group: false })),
   ].filter(allowed);
 }
 

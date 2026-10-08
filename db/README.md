@@ -19,13 +19,31 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrations/011_usage_attr.sql` | 利用量の行を持ち主・印ごとに分ける（UI v0.4.0 のセキュリティレビュー M1）：`usage_hourly`・`usage_daily` に `attr` 列を足し、主キーに入れる。010 を適用した環境では UI を上げる前に適用する |
 | `migrations/009_rproxy_rules.sql` | rproxy-api v0.4 が API で作ったルールを保存する `rproxy_rules`（#76。書くのは rproxy だけ）。複数の rproxy では適用したらノードごとのビューを作り直す |
 | `migrations/012_rproxy_rule_sets.sql` | rproxy-api v0.4.2 が `persist: true` のトークンのルールの組を保存する `rproxy_rule_sets`（rproxy-api #241。書くのは rproxy だけ。組ごとに 1 行）。適用しなくても動く（組を保存しないだけ）。複数の rproxy では適用したらノードごとのビューを作り直す |
+| `migrate.mjs` | migration を順に当て、当てたものを `schema_migrations` に書く（下の「migrate.mjs」。Kubernetes の chart の migration の Job が使う。.deb でも使える） |
 | `node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけの DB ユーザーの SQL を出す（下の「複数の rproxy（ノードごとのビュー）」） |
 
-既存の環境では `002` から順に適用する。`schema.sql` を変えたときは、同じ変更をする migration も追加すること。
+既存の環境では `002` から順に適用する（手で流すか、下の `migrate.mjs`）。`schema.sql` を変えたときは、同じ変更をする migration も追加すること（`schema.sql` はすべての migration を当てた形にする。`migrate.mjs` は新しい DB に `schema.sql` を流し、すべてを当てたことにする）。
 
 ```bash
 mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_ip_udp_idle.sql
 ```
+
+## migrate.mjs
+
+`node db/migrate.mjs` は `migrations/` を番号の順に当て、当てたものを `schema_migrations` に書く。Kubernetes の chart では migration の Job（[docs/KUBERNETES.md](../docs/KUBERNETES.md)）、.deb では `/usr/share/rproxy-ui/db/migrate.mjs`（ドライバは `/usr/lib/rproxy-ui/node_modules`、ほかの場所なら `RPROXY_UI_LIB`）。
+
+```bash
+DB_HOST=db.example DB_DATABASE=rproxy DB_ADMIN_USER=root DB_ADMIN_PASSWORD=... node db/migrate.mjs [--baseline 012] [--create-database] [--wait 300] [--dry-run | --status]
+```
+
+- 新しい DB（`forward_rules` がない）は `schema.sql` を流し、すべての migration を当てたことにする（`method` は `schema`）。
+- `schema_migrations` のない既存の DB（手で当ててきた DB）は、`--baseline <番号>`（最後に当てた番号）がないと断る。番号までを `baseline` で記録し、その後を当てる。
+- `003`（一度だけの手作業のテンプレート）は流さずに `skipped` で記録する。当てた後で中身の変わった migration は警告だけ。
+- 同時に動かしても `GET_LOCK('rproxy-ui-migrate')` で 1 つずつになり、2 回目からは当てていないものだけを当てる。
+- 接続は `DB_HOST`・`DB_PORT`・`DB_DATABASE` と、DDL を流す管理者の `DB_ADMIN_USER`・`DB_ADMIN_PASSWORD`（なければ `DB_USER`・`DB_PASSWORD`）。`--create-database` はデータベースがなければ作る。`--wait <秒>` は接続できるまで待つ。
+- `DB_APP_USER`・`DB_APP_PASSWORD`（`DB_APP_HOST`、既定 `%`）があれば UI のユーザーを作り（あればパスワードを合わせ）、下の「DB ユーザー」の UI の権限を渡す（ある表だけ）。`DB_BACKUP_USER`・`DB_BACKUP_PASSWORD`（`DB_BACKUP_HOST`）はバックアップ用の読むだけのユーザー（`SELECT, LOCK TABLES, SHOW VIEW`）。
+
+`schema_migrations` の列：`version`（ファイル名から `.sql` を除いたもの）、`applied_at`（UTC）、`checksum`（ファイルの SHA-256）、`method`（`applied`・`schema`・`baseline`・`skipped`）。書くのは `migrate.mjs` だけで、UI と rproxy は使わない。
 
 ## テーブル
 

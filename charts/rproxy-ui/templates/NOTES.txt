@@ -1,0 +1,15 @@
+rproxy-ui {{ .Chart.AppVersion }} is installed as {{ include "rproxy-ui.fullname" . }} (namespace {{ .Release.Namespace }}).
+
+- URL: {{ .Values.url }} (register {{ .Values.url }}/api/auth/callback/keycloak in Keycloak)
+- Database: {{ include "rproxy-ui.dbHost" . }}:{{ .Values.db.port }}/{{ .Values.db.database }}{{ if .Values.mariadb.enabled }} (bundled MariaDB, one pod, no HA){{ end }}
+{{- if .Values.migrate.enabled }}
+- Migrations ran in the Job {{ include "rproxy-ui.fullname" . }}-migrate (kubectl logs job/{{ include "rproxy-ui.fullname" . }}-migrate while it exists)
+{{- end }}
+{{- if .Values.rproxy.discovery.enabled }}
+- Gateways' rproxy (read-only, admins only): set rproxy-gateway's ui.namespace={{ .Release.Namespace }}; the controller writes the Secret {{ .Values.rproxy.discovery.secretName }}
+{{- end }}
+{{- if .Values.backup.enabled }}
+- Backups: CronJob {{ include "rproxy-ui.fullname" . }}-backup ({{ .Values.backup.schedule }}), {{ .Values.backup.keep }} days kept
+{{- end }}
+
+docs: https://github.com/max3584/TCP-UDP-rproxy-ui/blob/main/docs/en/KUBERNETES.md

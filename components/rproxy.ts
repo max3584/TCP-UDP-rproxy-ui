@@ -213,6 +213,8 @@ export interface ClientTls {
   cert?: string;
   key?: string;
   ca?: string;
+  // 証明書を確かめる名前（SNI）。Pod の IP で接続する Kubernetes の rproxy（証明書は <id>.rproxy-api.rproxy-gateway.internal）
+  servername?: string;
 }
 
 // 問い合わせ先の rproxy（#98 のノード）。url は RPROXY_API_URL と同じ書き方
@@ -222,6 +224,20 @@ export interface RproxyNode {
   token?: string;
   // https:// の制御 API に、クライアント証明書・CA を使うとき（RPROXY_UI_NODES の tls_cert・tls_key・tls_ca）
   tls?: ClientTls;
+  // Kubernetes の rproxy（RPROXY_UI_K8S_DISCOVERY。見るだけ）
+  readonly?: boolean;
+}
+
+// Kubernetes の rproxy で 401 を返したノード。発見の Secret を読み直すまで聞かない（入れ替わりの間の古い Pod は UI のトークンを
+// 知らない。rproxy は認証の失敗が続いた送信元を締め出すので、間隔ごとに聞き直さない）
+const staleNodes = new Set<string>();
+
+export function clearStaleNodes(): void {
+  staleNodes.clear();
+}
+
+export function isStaleNode(name: string): boolean {
+  return staleNodes.has(name);
 }
 
 // withNode の外（RPROXY_API_URL）で使うクライアント証明書（RPROXY_API_TLS_CERT・RPROXY_API_TLS_KEY・RPROXY_API_TLS_CA）
@@ -250,12 +266,12 @@ function mtime(path: string | undefined): number {
 }
 
 export function tlsAgent(tls: ClientTls): Agent {
-  const files = JSON.stringify([tls.cert, tls.key, tls.ca]);
+  const files = JSON.stringify([tls.cert, tls.key, tls.ca, tls.servername]);
   const id = JSON.stringify([mtime(tls.cert), mtime(tls.key), mtime(tls.ca)]);
   const cur = tlsAgents.get(files);
   if (cur?.id === id) return cur.agent;
   const read = (path: string | undefined) => (path ? readFileSync(path) : undefined);
-  const agent = new Agent({ connect: { cert: read(tls.cert), key: read(tls.key), ca: read(tls.ca) } });
+  const agent = new Agent({ connect: { cert: read(tls.cert), key: read(tls.key), ca: read(tls.ca), ...(tls.servername ? { servername: tls.servername } : {}) } });
   tlsAgents.set(files, { id: id, agent: agent });
   // 古い Agent は使い終わった接続から閉じる（進行中の問い合わせは終わるまで待つ）
   if (cur) void cur.agent.close().catch(() => undefined);
@@ -327,6 +343,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
+  if (node?.readonly && staleNodes.has(node.name)) {
+    throw new RproxyError(`rproxy に接続できません: ノード ${node.name} は UI のトークンを受け付けませんでした（Kubernetes の rproxy の入れ替わりの間。次に発見の Secret が変わるまで聞きません）`, 'unreachable', 0);
+  }
+
   let res: FetchResponse;
   try {
     const token = node ? node.token : envApiToken();
@@ -365,6 +385,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       // JSON でない応答はそのまま message にする
     }
+    if (res.status === 401 && node?.readonly) staleNodes.add(node.name);
     const retry = Number(res.headers?.get('retry-after') ?? '');
     throw new RproxyError(message, code, res.status, Number.isFinite(retry) && retry > 0 ? retry : undefined);
   }

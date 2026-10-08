@@ -1,6 +1,9 @@
 name: Release
 
-# GitHub Release を公開したら .deb を作って添付する（rproxy-api の apt リポジトリがここから取る）。
+# GitHub Release を公開したら（タグ vX.Y.Z）:
+# - .deb を作って添付する（rproxy-api の apt リポジトリがここから取る）
+# - コンテナイメージ ghcr.io/max3584/rproxy-ui:<版>（linux/amd64・linux/arm64）と、Helm chart（oci://ghcr.io/max3584/charts/rproxy-ui）を push し、
+#   chart の .tgz も添付する（docs/KUBERNETES.md）
 # 手順は docs/RELEASING.md。
 on:
   release:
@@ -40,3 +43,53 @@ jobs:
       - run: scripts/build-deb.sh dist
       - name: Attach to the release
         run: gh release upload "$TAG" dist/*.deb --clobber -R "$GITHUB_REPOSITORY"
+
+  # コンテナイメージと Helm chart（Kubernetes。docs/KUBERNETES.md）。JS は 1 回だけ作り、amd64・arm64 に同じものを入れる（Dockerfile）
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - name: Tag, package.json and Chart.yaml agree
+        run: |
+          version=$(jq -r .version package.json)
+          chart=$(sed -n 's/^version: //p' charts/rproxy-ui/Chart.yaml)
+          app=$(sed -n 's/^appVersion: "\(.*\)"/\1/p' charts/rproxy-ui/Chart.yaml)
+          if [ "v$version" != "$TAG" ] || [ "$chart" != "$version" ] || [ "$app" != "$version" ]; then
+            echo "::error::release $TAG, package.json $version, Chart.yaml version $chart / appVersion $app differ"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ env.VERSION }}
+          tags: ghcr.io/max3584/rproxy-ui:${{ env.VERSION }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/max3584/TCP-UDP-rproxy-ui
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ env.VERSION }}
+      - uses: azure/setup-helm@v4
+      - name: chart
+        run: |
+          helm package charts/rproxy-ui -d dist/chart
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "dist/chart/rproxy-ui-$VERSION.tgz" oci://ghcr.io/max3584/charts
+          gh release upload "$TAG" "dist/chart/rproxy-ui-$VERSION.tgz" --clobber -R "$GITHUB_REPOSITORY"

@@ -15,6 +15,10 @@ PR のブランチに追加で push する前に、その PR がまだ開いて�
 CPU ごとのネイティブなモジュール（`.node`）が入ると `all` にできないので、build-deb.sh が見つけたら止める。依存を足すときに気をつける。
 CI の `Debian package` ジョブ（systemd を init にした debian:trixie-slim のコンテナで作り、`scripts/test-deb.sh` で実際に入れる。nodejs は `scripts/install-nodejs.sh` で NodeSource の 24）で確かめる。GitHub Release を公開すると `release.yml` が .deb を添付し、rproxy-api の `release.yml` を `ui_tag` で手動実行すると apt リポジトリに載る（docs/RELEASING.md）。
 
+## コンテナイメージと Helm chart（Kubernetes）
+
+`Dockerfile`（`ghcr.io/max3584/rproxy-ui`）と `charts/rproxy-ui`（`oci://ghcr.io/max3584/charts/rproxy-ui`）。CI の `container image` ジョブ（作って `--read-only` で起動し `/api/healthz`。push しない）と `helm chart` ジョブ（lint・template・kubeconform）で確かめ、リリース（`release.yml` の `image`）でタグの版を push する。chart は rproxy-gateway の chart の subchart にしない（版を別に進める）。.deb の動きは変えない。
+
 ## ドキュメント（日本語と英語）
 
 利用者向けのドキュメントは日本語と英語の両方がある：`README.md` ↔ `README.en.md`、`docs/<NAME>.md` ↔ `docs/en/<NAME>.md`、`db/README.md` ↔ `db/README.en.md`。
@@ -65,7 +69,7 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/tls.ts` | TLS / STARTTLS / ポート範囲 / allow_from / unmatched の正規化と検証、DB の `options` 列の読み書き。画面と API route の両方で使う |
 | `components/cidr.ts` | allow_from の CIDR / 単一 IP の検証と正規化（rproxy の `src/net/cidr.rs` と同じ規則。Node の `net` を使わないので画面でも使える） |
 | `components/lib.ts` | 共通の型（`ForwardRule`、`TlsSpec`、`ForwardRules`、`RuleStats`、`DashboardData`、`sessionUser` など）と pino ロガー |
-| `components/nodes.ts` | 複数の rproxy（#98）の設定。`RPROXY_UI_NODES`（YAML / JSON）の `nodes`（name・url・token_file）と `groups`（name・nodes・mode: single / active_standby）、`default_target` を読んで確かめる（`parseNodesConfig`、誤りは `NodesConfigError`）。なければ `RPROXY_API_URL` / `RPROXY_API_TOKEN` の 1 台（`implicitConfig`、名前 `default`、`configured: false`）。グループのノード（`targetNodes`）、重なり（`targetsOverlap`）、`forward_rule_targets` の行（`membership`）、1 台に聞く問い合わせの相手（`probeNode`） |
+| `components/nodes.ts` | 複数の rproxy（#98）の設定。`RPROXY_UI_NODES`（YAML / JSON）の `nodes`（name・url・token_file）と `groups`（name・nodes・mode: single / active_standby）、`default_target` を読んで確かめる（`parseNodesConfig`、誤りは `NodesConfigError`）。なければ `RPROXY_API_URL` / `RPROXY_API_TOKEN` の 1 台（`implicitConfig`、名前 `default`、`configured: false`）。グループのノード（`targetNodes`）、重なり（`targetsOverlap`）、`forward_rule_targets` の行（`membership`）、1 台に聞く問い合わせの相手（`probeNode`）。Kubernetes の rproxy（`RPROXY_UI_K8S_DISCOVERY`、下の「Kubernetes の rproxy」）を `loadDiscovery`・`withDiscovery` で足す |
 | `components/overrides.ts` | グループのルールのノードごとの上書き（`NodeOverride`：待ち受けアドレス・追加の待ち受けアドレス・転送先（1 つか複数）・allow_from・このノードだけの停止）。検証 `normalizeOverride`、そのノードで動かす内容 `effectiveRule`、DB の行 `overrideRow` / `overrideFromRow`（options は JSON_MERGE_PATCH の差分。ビューと同じ重ね方）、エクスポートの形 `toSettingsOverride` / `settingsOverridesToBody`。React と Node に依存しない |
 | `components/OverrideEditor.tsx` | ルールの詳細のノードのタブの「このノードだけの設定（上書き）」 |
 | `components/hasync.ts` | act / stb の昇格の前に揃える（#109）：自動の送り直し（`startHaSync` を instrumentation から 1 回。状態は globalThis、見回りは DB の `GET_LOCK` で 1 つの UI だけ。`runHaSyncOnce`・`syncNode`。履歴は RESEND で操作者 `system`）、昇格してよいか（`nodeReadiness`）、act / stb の画面の元（`haOverview`）、失敗の数（`haSyncStatus`） |
@@ -78,6 +82,9 @@ npm run screenshots # README の画面の画像（docs/images/<名前>.<ja|en>.p
 | `components/Tabs.tsx` | WAI-ARIA のタブの並び（矢印キー / Home / End）と `tabPanelProps`。ダッシュボードとルールの詳細の「全体 / ノードごと」 |
 | `components/fanout.ts` | グループの変更を全ノードに送る `applyToNodes`（`withNode` でノードごとに実行。1 台でも失敗したら成功したノードの undo を実行して `FanoutError`（ノードごとの結果 `results`）。ノードが 1 つなら例外をそのまま投げる） |
 | `db/node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけのユーザーの SQL を出す（依存のない JS。`npm run db:node-view -- <ノード>`。.deb の db/ からも動く） |
+| `db/migrate.mjs` | migration を順に当てる（`schema_migrations`：version・applied_at・checksum・method。新しい DB は `schema.sql` で全部を `schema`、表のない古い DB は `--baseline <番号>` がなければ断る、`003` は `skipped`、`GET_LOCK('rproxy-ui-migrate')` で同時に 1 つ、2 回目は何もしない。`DB_APP_*`・`DB_BACKUP_*` でユーザーと権限）。ドライバは mariadb（.deb では `/usr/lib/rproxy-ui/node_modules`、`RPROXY_UI_LIB`）。テストは `tests/migrate.test.ts`（純粋な部分）と CI の e2e ジョブ（本物の MariaDB で空の DB・2 回目・同時に 3 つ・`--baseline`） |
+| `pages/api/healthz.ts` | プローブ（Kubernetes）。サインインなしで `{"ok":true}` だけ。DB・rproxy に聞かない |
+| `Dockerfile` / `charts/rproxy-ui/` | コンテナイメージ（node:24-alpine、standalone + db/、uid 65532、ルートは読むだけでよい。JS は `$BUILDPLATFORM` で 1 回作り amd64・arm64 に同じもの）と Helm chart（UI の Deployment・Service・PDB・Ingress / HTTPRoute・migration の Job（フック `post-install,pre-upgrade`）・任意の MariaDB の StatefulSet（公式イメージ、1 台、PVC）・任意のバックアップの CronJob・NetworkPolicy・Gateway の rproxy の発見の Secret のボリューム）。chart は秘密を作らない（`existingSecret`）。`Chart.yaml` の `version`・`appVersion` は package.json と同じ（CI の `helm chart` とリリースが確かめる）。`charts/rproxy-ui/ci/*.yaml` は CI の helm template + kubeconform の値。文書は docs/KUBERNETES.md |
 | `instrumentation.ts` | 起動時に `RPROXY_UI_NODES` を確かめ、誤りなら理由を出して終了する。各ノードの rproxy-api の版をログに出す（`logVersions`。待たない・失敗しても起動を止めない） |
 | `components/version.ts` | UI の版（`UI_VERSION`。`next.config.mjs` の `env` が package.json から埋め込む）、必要な rproxy-api の最小の版（`MIN_RPROXY_VERSION`）と知っているマイナー（`KNOWN_RPROXY_MINOR`）、版の比較と判定（`versionStatus`：ok / old / unknown / newer / unreachable）。React に依存しない |
 | `components/versioncheck.ts` / `pages/api/forward/versions.ts` | 各ノードの `GET /capabilities` の `version` を聞く（`checkVersions`）。`/api/forward/versions` は問い合わせできないノードがあっても 200 |
@@ -180,6 +187,10 @@ rproxy は起動時に `forward_rules` を読んでルールを復元する（�
   Gateway API 向けの L7・TLS（rproxy-api #237、docs/API.md「Gateway API 向けの L7・TLS」）：`headers` の `add`、リダイレクトの `status`、ルートの `timeouts`、`replace_host`・`cors`・`mirror`、`servers[]` の `middlewares` と `status`（`url` の代わり。`ServerSpec.url` は省略できる）、`retry` の `status`、サービスの `protocol`・`tls`、`tls.routes[]` の `targets` / `balance`（`TlsRoute.remote_addr` / `remote_port` は省略できる。宛先は `routeTargets`）。
   `features.http_options`（RuleForm の `caps.features.httpOptions`。返さない rproxy では空）・`features.services`・`features.middlewares`・`features.tls_route_targets` で欄を出し分け、使えない項目の値は消さずに読み取り専用で残して送る（rproxy が断る）。`validateHttp` は使えない項目を誤りにしない（使えないミドルウェアの種類だけは今までどおり誤り）。サーバの重みは rproxy と同じく 1 以上。
   `KNOWN_RPROXY_MINOR` は 0.4。`MIN_RPROXY_VERSION` は上げていない（v0.4 の項目は `features` で判断する）。
+- Kubernetes の rproxy（rproxy-gateway の docs/DESIGN-v0.4.x.md 4.、docs/KUBERNETES.md）：rproxy-gateway が UI の namespace に書く Secret `rproxy-ui-discovery` を `RPROXY_UI_K8S_DISCOVERY`（ディレクトリ）で読む（`parseDiscovery`。`nodes.yaml` の更新時刻で読み直し、誤りはログに出して空にする。コントローラの新しい項目は無視する）。Pod はノード `k8s:<ns>/<gw>/<pod>`、Gateway はグループ `k8s:<ns>/<gw>`（`readonly`。`NAME_PATTERN` の外の名前なので DB の `target` には入れない。`membership` も外す）。制御 API は Pod の IP に `tls_server_name` を undici の `servername`、`tls_ca` で確かめる。見るだけのノードが 401 を返したら、発見の Secret を読み直すまで聞かない（`staleNodes`。入れ替わりの間の古い Pod は UI のトークンを知らず、rproxy は認証の失敗が続いた送信元を締め出す）。
+  見るだけ：`[forward].ts` は POST の `target`・`node`・`to` と、変更を送る先（`checkNodes`）・API のルールのノード（`apiRuleNode`）に見るだけのものがあれば管理者でも 409 `readonly_node`（`READONLY_NODE_MESSAGE`）。応答の行に `readonlyNode`、ノードに `readonly`。画面は `targetChoices` から外し、詳細・変更の画面とノードの一覧に `K8sBadge`。
+  管理者だけ（Q9）：利用者には `visibleNodes(cfg, false)` で外す（`[forward].ts`・versions・system・config）。利用量は `usage_counters` が Pod ごと、`usage_hourly`・`usage_daily` は `usageRowNode` で Gateway にまとめ、組のルールは origin `ruleset`（利用者は `owner = ?` なので見えない）。見なくなった Pod の基準は 24 時間で消す。終わる Pod の最後の 1 間隔は取らない（Q16）。
+  `RPROXY_UI_NODES`・`RPROXY_API_URL` がなく Kubernetes の rproxy だけなら `default` のノードは作らない（`default_target` なし）。Kubernetes の rproxy がなければ設定は今までと同じ。
 - v0.4.0 のセキュリティレビューの修正（守ること）：
   - shadow（UI のルールのキーを rproxy で API のルール・組のルールが使っている。`isShadowing`：static でなく、`ruleset` があるか origin が dynamic 以外。origin のない古い rproxy は UI のもの）：UI のルールの操作で rproxy に書く前に `liveRule` で確かめる。変更・再開・送り直し・差分（plan の modify / delete）・上書きの変更は 409 `shadowed`（`ensureNotShadowed`）、削除・停止はそのノードは DB だけ（API のルールを消さない）、置き換えの作り直し・重なる先への移動は先に `ensureNotShadowedOnNodes`。`resendOne` は `shadowed` を返して何もしない（hasync は履歴を残さず、readiness は `shadowed` の issue で ready を止めない）。管理者でなければ shadow の行は `missing` で稼働情報・`drift`・`conditions` を付けず、`shadowedBy` に `createdBy` を付けず `ruleset` は `''`（`shadowField`）。
   - 利用量の行は主キーに `attr`（`attributionKey`：持ち主・target・origin・ラベルの SHA-256。migration 011）。`ON DUPLICATE KEY UPDATE` で owner・labels を書き換えない。

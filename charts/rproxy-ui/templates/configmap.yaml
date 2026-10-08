@@ -1,0 +1,9 @@
+{{- if .Values.nodes }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rproxy-ui.fullname" . }}-nodes
+  labels: {{- include "rproxy-ui.labels" . | nindent 4 }}
+data:
+  nodes.yaml: {{- toYaml .Values.nodes | nindent 4 }}
+{{- end }}

@@ -58,9 +58,13 @@ sudo apt update && sudo apt install rproxy-ui
 - `NEXTAUTH_SECRET` is generated at install time. If rproxy-api is on the same host, its API URL and its token file (`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`, when it holds one token per line) are filled in too
 - The `rproxy-ui` user joins the group `rproxy` shared with rproxy-api (created at install time if missing; the unit has `SupplementaryGroups=rproxy`), so it reads rproxy-api's group-readable files (token file, certificates, the control API's Unix socket, owned by `rproxy-api:rproxy` or `root:rproxy`) in place instead of copying them. A token copied into `RPROXY_API_TOKEN` by an earlier version keeps being used
 - It listens on `127.0.0.1:3000` by default (`HOSTNAME` / `PORT`). To expose it, put an rproxy static rule in front of it (TLS termination, routing by server name, `allow_from`; see "Static rules and exposing the dashboard" in the rproxy-api README)
-- Create the DB tables with `/usr/share/rproxy-ui/db/schema.sql` (see [db/README.en.md](db/README.en.md))
+- Create the DB tables with `/usr/share/rproxy-ui/db/schema.sql` (see [db/README.en.md](db/README.en.md)), or with `node /usr/share/rproxy-ui/db/migrate.mjs` ("migrate.mjs" in db/README.en.md)
 - `server.js` in `/usr/lib/rproxy-ui` (the Next.js standalone output) runs as the `rproxy-ui` user. Logs are in `journalctl -u rproxy-ui`
 - The UI and rproxy-api have independent version numbers (their release tags differ). The UI needs rproxy-api v0.3.5 or later. The UI version and each node's rproxy-api version are shown at the bottom of the sidebar (the menu on narrow screens) and in "Versions" on the dashboard. When rproxy-api is too old or its version is unknown (releases before v0.3.18 do not report it), the dashboard shows a notice (a newer minor than the UI knows is only reported for information). The versions are also logged for each node at startup
+
+## Kubernetes
+
+The container image `ghcr.io/max3584/rproxy-ui` and the Helm chart `oci://ghcr.io/max3584/charts/rproxy-ui` (an external DB or a bundled MariaDB, a migration Job, backups, read-only views of rproxy-gateway Gateways' rproxy). See [docs/en/KUBERNETES.md](docs/en/KUBERNETES.md).
 
 ## Development
 

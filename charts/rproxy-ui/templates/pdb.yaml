@@ -1,0 +1,13 @@
+{{- if and .Values.podDisruptionBudget.enabled (ge (int .Values.replicas) 2) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "rproxy-ui.fullname" . }}
+  labels: {{- include "rproxy-ui.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "rproxy-ui.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ui
+{{- end }}
