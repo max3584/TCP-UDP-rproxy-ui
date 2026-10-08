@@ -18,6 +18,7 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrations/010_usage.sql` | 利用量の集計（#101）：`usage_counters`（差分を取るための最後に見た数）・`usage_hourly`・`usage_daily`。書くのも読むのも UI だけ。適用しなければ集計しない |
 | `migrations/011_usage_attr.sql` | 利用量の行を持ち主・印ごとに分ける（UI v0.4.0 のセキュリティレビュー M1）：`usage_hourly`・`usage_daily` に `attr` 列を足し、主キーに入れる。010 を適用した環境では UI を上げる前に適用する |
 | `migrations/009_rproxy_rules.sql` | rproxy-api v0.4 が API で作ったルールを保存する `rproxy_rules`（#76。書くのは rproxy だけ）。複数の rproxy では適用したらノードごとのビューを作り直す |
+| `migrations/012_rproxy_rule_sets.sql` | rproxy-api v0.4.2 が `persist: true` のトークンのルールの組を保存する `rproxy_rule_sets`（rproxy-api #241。書くのは rproxy だけ。組ごとに 1 行）。適用しなくても動く（組を保存しないだけ）。複数の rproxy では適用したらノードごとのビューを作り直す |
 | `node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけの DB ユーザーの SQL を出す（下の「複数の rproxy（ノードごとのビュー）」） |
 
 既存の環境では `002` から順に適用する。`schema.sql` を変えたときは、同じ変更をする migration も追加すること。
@@ -55,6 +56,8 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `rproxy_rules`（009）：rproxy-api v0.4 が、`persist: true` のトークンで API から作った・変えたルールを保存する（`(node, protocol, listen_addr, listen_port)` で一意。`spec` は `POST /rules` の本文と同じ形の JSON、`created_by` / `updated_by` はトークンの名前）。書くのは rproxy だけで、UI は読んで管理者のダッシュボードに「API」のルールとして出す（変えるときは rproxy の API）。
   `node` は rproxy の `RPROXY_NODE_NAME`（既定はホスト名）。複数の rproxy では UI の `RPROXY_UI_NODES` のノードの名前と揃える。rproxy は起動時に自分の `node` の行を UI のテーブルのあとに復元し、同じキーが両方にあれば UI の行を使う。
 
+- `rproxy_rule_sets`（012）：rproxy-api v0.4.2 が、`persist: true` のトークンで `PUT /rulesets/{name}` した組を保存する（`(node, name)` で一意。`rules` は組のルールの配列（各要素は `POST /rules` の本文の形）、`owner` は組の持ち主のトークンの名前、`generation`・`etag` は組の世代）。書くのは rproxy だけ。rproxy は起動時に自分の `node` の行を `rproxy_rules` のあとに戻す。
+
 - `usage_counters`・`usage_hourly`・`usage_daily`（010）：利用量の集計。UI が rproxy の統計を取り、`usage_counters` に最後に見た数（と `counters_since`・`started_at`）、その差を `usage_hourly`（`hour` は UTC の時の始まり）と `usage_daily`（`day` は UTC の日付）に、ルール・ノードごとに足す。各行の `owner`・`target`・`labels`・`origin` はそのときのルールの持ち主と印で、主キーの `attr`（011。それらの SHA-256）が違えば別の行になる（同じ日に持ち主が変わっても、前の分の持ち主を書き換えない）。古い行は UI が消す（`RPROXY_UI_USAGE_HOURLY_DAYS`・`RPROXY_UI_USAGE_DAILY_DAYS`）。
 
 ## DB ユーザー
@@ -74,6 +77,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_hourly   TO 'rproxy_ui'@'10
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_daily    TO 'rproxy_ui'@'10.0.0.%';
 -- rproxy-api v0.4 の API のルールを見せるとき（009。UI は読むだけ）
 GRANT SELECT                         ON rproxy.rproxy_rules TO 'rproxy_ui'@'10.0.0.%';
+GRANT SELECT                         ON rproxy.rproxy_rule_sets TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api は起動時に `forward_rules` を読むだけなので、読み取り専用のユーザーを使う。
@@ -85,6 +89,7 @@ CREATE USER 'rproxy'@'127.0.0.1' IDENTIFIED BY '<password>';
 GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
 -- rproxy-api v0.4 で API のルールを保存するとき（009。rproxy の RPROXY_DATABASE_URL のユーザー）
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rules TO 'rproxy'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rule_sets TO 'rproxy'@'127.0.0.1';
 ```
 
 （例ではデータベース名を `rproxy` としている。`DB_DATABASE` に合わせて読み替えること。）
@@ -116,9 +121,15 @@ CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_rules` A
    WHERE `node` = 'node1'
   WITH CHECK OPTION;
 GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_node1`.`rproxy_rules` TO 'rproxy_node1'@'10.0.0.11';
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_rule_sets` AS
+  SELECT `node`, `name`, `generation`, `etag`, `owner`, `rules`, `spec_version`, `updated_by`, `updated_at`
+    FROM `rproxy`.`rproxy_rule_sets`
+   WHERE `node` = 'node1'
+  WITH CHECK OPTION;
+GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_node1`.`rproxy_rule_sets` TO 'rproxy_node1'@'10.0.0.11';
 ```
 
-`rproxy_rules`（009。rproxy-api v0.4 が API のルールを保存する）は、そのノードの行だけを書けるビューにする（`WITH CHECK OPTION` でほかのノードの行は書けない。その rproxy の `RPROXY_NODE_NAME` をノードの名前にする）。009 を適用していなければ `--without-rproxy-rules` で出さない。
+`rproxy_rules`（009。rproxy-api v0.4 が API のルールを保存する）は、そのノードの行だけを書けるビューにする（`WITH CHECK OPTION` でほかのノードの行は書けない。その rproxy の `RPROXY_NODE_NAME` をノードの名前にする）。009 を適用していなければ `--without-rproxy-rules` で出さない。`rproxy_rule_sets`（012。rproxy-api v0.4.2 がルールの組を保存する）も同じく自分のノードの行だけのビューにする。012 を適用していなければ `--without-rproxy-rule-sets` で出さない（`--without-rproxy-rules` でも出さない）。**012 を適用する前にビューを作り直すときは `--without-rproxy-rule-sets` を付ける**（付けないとない表のビューで止まる）。
 
 その rproxy は `RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB のホスト>/rproxy_node_node1` にする。
 グループの構成を変えても `forward_rule_targets` を UI が直すので、ビューは作り直さなくてよい。ノードを足したときだけ、そのノードの分を流す。

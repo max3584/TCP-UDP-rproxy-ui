@@ -18,6 +18,7 @@ Definitions of the tables shared by the UI and rproxy-api.
 | `migrations/010_usage.sql` | Usage accounting (#101): `usage_counters` (the last values seen, for differences), `usage_hourly`, `usage_daily`. Only the UI reads and writes them. Without it nothing is collected |
 | `migrations/011_usage_attr.sql` | Split usage rows by owner and marks (UI v0.4.0 security review M1): adds an `attr` column to `usage_hourly` and `usage_daily` and puts it in the primary key. Where 010 is applied, apply it before upgrading the UI |
 | `migrations/009_rproxy_rules.sql` | `rproxy_rules`, where rproxy-api v0.4 stores rules created through its API (#76; only rproxy writes it). With several rproxy instances, recreate the per-node views after applying it |
+| `migrations/012_rproxy_rule_sets.sql` | `rproxy_rule_sets`, where rproxy-api v0.4.2 stores the rule sets of `persist: true` tokens (rproxy-api #241; only rproxy writes it; one row per set). Optional (without it sets are just not stored). With several rproxy instances, recreate the per-node views after applying it |
 | `node-view.mjs` | Prints the SQL for a per-node database with a `forward_rules` view and a read-only DB user (see "Several rproxy instances (a view per node)" below) |
 
 On existing environments, apply them in order starting from `002`. When you change `schema.sql`, also add a migration that makes the same change.
@@ -55,6 +56,8 @@ mariadb -h <host> -P <port> -u <admin> -p <database> < db/migrations/002_source_
 - `rproxy_rules` (009): rproxy-api v0.4 stores here the rules created or changed through its API with a `persist: true` token (unique on `(node, protocol, listen_addr, listen_port)`; `spec` is JSON in the shape of the `POST /rules` body; `created_by` / `updated_by` are token names). Only rproxy writes it; the UI reads it and shows those rules as "API" rules on administrators' dashboards (changes go through the rproxy API).
   `node` is rproxy's `RPROXY_NODE_NAME` (default: the host name). With several rproxy instances, match the node names in the UI's `RPROXY_UI_NODES`. At startup rproxy restores the rows of its own `node` after the UI's table; on the same key the UI's row wins.
 
+- `rproxy_rule_sets` (012): rproxy-api v0.4.2 stores here the rule sets PUT through `PUT /rulesets/{name}` with a `persist: true` token (unique on `(node, name)`; `rules` is the array of the set's rules, each in the shape of the `POST /rules` body; `owner` is the owning token's name; `generation` and `etag` are the set's). Only rproxy writes it. At startup rproxy restores the rows of its own `node` after `rproxy_rules`.
+
 - `usage_counters`, `usage_hourly`, `usage_daily` (010): usage accounting. The UI reads rproxy's statistics, keeps the last values (and `counters_since`, `started_at`) in `usage_counters`, and adds the differences per rule and node to `usage_hourly` (`hour` is the start of the UTC hour) and `usage_daily` (`day` is the UTC date). `owner`, `target`, `labels` and `origin` of each row are the rule's owner and marks at that time; a different `attr` in the primary key (011; their SHA-256) makes a separate row (when the owner changes during a day, the earlier traffic keeps its owner). The UI deletes old rows (`RPROXY_UI_USAGE_HOURLY_DAYS`, `RPROXY_UI_USAGE_DAILY_DAYS`).
 
 ## DB users
@@ -74,6 +77,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_hourly   TO 'rproxy_ui'@'10
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_daily    TO 'rproxy_ui'@'10.0.0.%';
 -- to show rproxy-api v0.4 API rules (009; the UI only reads)
 GRANT SELECT                         ON rproxy.rproxy_rules TO 'rproxy_ui'@'10.0.0.%';
+GRANT SELECT                         ON rproxy.rproxy_rule_sets TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api only reads `forward_rules` at startup, so use a read-only user.
@@ -85,6 +89,7 @@ CREATE USER 'rproxy'@'127.0.0.1' IDENTIFIED BY '<password>';
 GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'127.0.0.1';
 -- when rproxy-api v0.4 stores API rules (009; the user of rproxy's RPROXY_DATABASE_URL)
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rules TO 'rproxy'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rule_sets TO 'rproxy'@'127.0.0.1';
 ```
 
 (The examples use `rproxy` as the database name. Adjust it to match `DB_DATABASE`.)
@@ -116,9 +121,15 @@ CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_rules` A
    WHERE `node` = 'node1'
   WITH CHECK OPTION;
 GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_node1`.`rproxy_rules` TO 'rproxy_node1'@'10.0.0.11';
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_rule_sets` AS
+  SELECT `node`, `name`, `generation`, `etag`, `owner`, `rules`, `spec_version`, `updated_by`, `updated_at`
+    FROM `rproxy`.`rproxy_rule_sets`
+   WHERE `node` = 'node1'
+  WITH CHECK OPTION;
+GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_node1`.`rproxy_rule_sets` TO 'rproxy_node1'@'10.0.0.11';
 ```
 
-`rproxy_rules` (009, where rproxy-api v0.4 stores API rules) becomes a view that can write only that node's rows (`WITH CHECK OPTION` refuses other nodes' rows; set that rproxy's `RPROXY_NODE_NAME` to the node name). Without 009 applied, pass `--without-rproxy-rules` to leave it out.
+`rproxy_rules` (009, where rproxy-api v0.4 stores API rules) becomes a view that can write only that node's rows (`WITH CHECK OPTION` refuses other nodes' rows; set that rproxy's `RPROXY_NODE_NAME` to the node name). Without 009 applied, pass `--without-rproxy-rules` to leave it out. `rproxy_rule_sets` (012, where rproxy-api v0.4.2 stores rule sets) also becomes a view of that node's rows only; without 012 applied, pass `--without-rproxy-rule-sets` (`--without-rproxy-rules` leaves it out too). **When you recreate views before applying 012, pass `--without-rproxy-rule-sets`** (otherwise it stops at the view of the missing table).
 
 Set that rproxy's `RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB host>/rproxy_node_node1`.
 Changing groups needs no new view, since the UI updates `forward_rule_targets`. Run it only for a node you add.

@@ -79,6 +79,21 @@ CREATE TABLE IF NOT EXISTS rproxy_rules (
   PRIMARY KEY (node, protocol, listen_addr, listen_port)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- rproxy-api が persist: true のトークンで PUT したルールの組（rproxy-api v0.4.2 の #241。migration 012）。書くのは rproxy だけで、
+-- 1 つの組を 1 行（rules は組のルールの配列）。列は rproxy-api の docs/API.md の「ルールの組の保存」と同じ
+CREATE TABLE IF NOT EXISTS rproxy_rule_sets (
+  node         VARCHAR(255)    NOT NULL,   -- どの rproxy の組か（RPROXY_NODE_NAME、既定はホスト名）
+  name         VARCHAR(253)    NOT NULL,   -- 組の名前
+  generation   BIGINT UNSIGNED NOT NULL,   -- 呼ぶ側の世代（PUT の本文の generation）
+  etag         VARCHAR(64)     NOT NULL,
+  owner        VARCHAR(255)    NOT NULL,   -- 組の持ち主のトークンの名前
+  rules        JSON            NOT NULL,   -- 組のルール（POST /rules の本文と同じ形の配列）
+  spec_version INT UNSIGNED    NOT NULL DEFAULT 1,
+  updated_by   VARCHAR(255)    NOT NULL,   -- トークンの名前
+  updated_at   DATETIME(3)     NOT NULL,
+  PRIMARY KEY (node, name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 利用量の集計（UI #101。migration 010）。UI が rproxy の統計の差分を貯める（時刻は UTC）
 -- ルール・ノードごとの最後に見た数（差分を取るため。counters_since・started_at が変われば数え直したとみなす）
 CREATE TABLE IF NOT EXISTS usage_counters (
