@@ -24,27 +24,30 @@ const Sidebar: React.FC<{ open: boolean; onNavigate: () => void }> = ({ open, on
       aria-label="メインメニュー"
       className={`${open ? 'block' : 'hidden'} lg:block w-full lg:w-56 shrink-0 bg-gray-800 text-white p-4 max-lg:pt-0 max-lg:border-t max-lg:border-gray-700`}
     >
-      <ul className="space-y-2 lg:sticky lg:top-4 max-lg:pt-4">
-        {NAV.map((item) => {
-          const active = item.active(router.pathname);
-          return (
-            <li key={item.href}>
-              <Link
-                href={item.href}
-                aria-current={active ? 'page' : undefined}
-                onClick={onNavigate}
-                className={`block px-4 py-3 lg:py-2 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-400 ${
-                  active ? 'bg-gray-600 text-white font-semibold' : 'text-gray-200 hover:bg-gray-700 hover:text-white'
-                }`}
-              >
-                {item.label}
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
-      <AccountControls className="lg:hidden mt-4 pt-4 border-t border-gray-700 text-white" />
-      <SidebarVersions />
+      {/* メニューと版の表示を一緒に留める（前は一覧だけが sticky で、スクロールすると版の表示が一覧の裏に隠れた） */}
+      <div className="lg:sticky lg:top-4">
+        <ul className="space-y-2 max-lg:pt-4">
+          {NAV.map((item) => {
+            const active = item.active(router.pathname);
+            return (
+              <li key={item.href}>
+                <Link
+                  href={item.href}
+                  aria-current={active ? 'page' : undefined}
+                  onClick={onNavigate}
+                  className={`block px-4 py-3 lg:py-2 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                    active ? 'bg-gray-600 text-white font-semibold' : 'text-gray-200 hover:bg-gray-700 hover:text-white'
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+        <AccountControls className="lg:hidden mt-4 pt-4 border-t border-gray-700 text-white" />
+        <SidebarVersions />
+      </div>
     </nav>
   );
 };

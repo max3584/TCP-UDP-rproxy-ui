@@ -196,4 +196,15 @@ test('desktop keeps the sidebar and has no menu button', async ({ page }) => {
   await expect(menu).toBeVisible();
   await expect(menu.getByRole('link', { name: '新規ルール' })).toBeVisible();
   await expectNoPageOverflow(page);
+  // the versions under the menu stay with it when the page scrolls (they used to slide under the sticky menu)
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await page.evaluate(() => {
+    document.body.style.minHeight = '3000px';
+    window.scrollTo(0, 1200);
+  });
+  const list = await menu.locator('ul').first().boundingBox();
+  const versions = await page.getByTestId('sidebar-versions').boundingBox();
+  expect(list && versions).toBeTruthy();
+  expect(versions!.y).toBeGreaterThanOrEqual(list!.y + list!.height);
+  expect(versions!.y + versions!.height).toBeLessThanOrEqual(600);
 });
