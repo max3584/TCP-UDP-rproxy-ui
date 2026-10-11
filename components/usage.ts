@@ -57,8 +57,8 @@ export function monthKey(d: Date): string {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
 }
 
-// グラフの期間：簡易は 24h が時間ごと、7d・30d が日ごと、12m が月ごと（7 日を時間ごとの 168 本にすると、どの日がどれだけかが読めない）。
-// 詳細（DETAIL_SPECS）は一段細かく：7d・30d は時間ごと、12m は日ごと
+// グラフの期間：24h は時間ごと、7d・30d は日ごと、12m は月ごと（7 日を時間ごとの 168 本にすると、どの日がどれだけかが読めない）。
+// 期間の中をポートごとに分けて見るのは portUsage（グラフの「詳細」）
 export type UsageRange = '24h' | '7d' | '30d' | '12m';
 export const USAGE_RANGES: UsageRange[] = ['24h', '7d', '30d', '12m'];
 export type UsageBucket = 'hour' | 'day' | 'month';
@@ -78,24 +78,13 @@ export const RANGE_SPECS: Record<UsageRange, RangeSpec> = {
   '12m': { bucket: 'month', table: 'usage_daily', count: 12 },
 };
 
-// 詳細の区切り（24h はもとから時間ごとなのでない）。30d の時間ごとは usage_hourly を残す日数（RPROXY_UI_USAGE_HOURLY_DAYS、既定 32）の内だけ値がある
-export const DETAIL_SPECS: Partial<Record<UsageRange, RangeSpec>> = {
-  '7d': { bucket: 'hour', table: 'usage_hourly', count: 24 * 7 },
-  '30d': { bucket: 'hour', table: 'usage_hourly', count: 24 * 30 },
-  '12m': { bucket: 'day', table: 'usage_daily', count: 365 },
-};
-
-export function rangeSpec(range: UsageRange, detail = false): RangeSpec {
-  return (detail && DETAIL_SPECS[range]) || RANGE_SPECS[range];
-}
-
 export function parseRange(value: unknown): UsageRange {
   return USAGE_RANGES.includes(value as UsageRange) ? value as UsageRange : '24h';
 }
 
 // 棒の始まり（古い順、最後が now を含む区切り）
-export function bucketStarts(range: UsageRange, now: Date, detail = false): Date[] {
-  const spec = rangeSpec(range, detail);
+export function bucketStarts(range: UsageRange, now: Date): Date[] {
+  const spec = RANGE_SPECS[range];
   const out: Date[] = [];
   for (let i = spec.count - 1; i >= 0; i--) {
     if (spec.bucket === 'hour') out.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() - i)));
@@ -119,25 +108,56 @@ export interface UsagePoint {
 
 export interface UsageSeries {
   range: UsageRange;
-  // 詳細の区切りか（DETAIL_SPECS）
-  detail: boolean;
   bucket: UsageBucket;
   points: UsagePoint[];
   total: { rx: number; tx: number; connections: number };
 }
 
 // DB の行（key は bucketKey の形）を棒に並べ、ない区切りは 0 で埋める
-export function fillSeries(range: UsageRange, now: Date, rows: { key: string; rx: number; tx: number; connections: number }[], detail = false): UsageSeries {
-  const spec = rangeSpec(range, detail);
-  detail = spec !== RANGE_SPECS[range];
+export function fillSeries(range: UsageRange, now: Date, rows: { key: string; rx: number; tx: number; connections: number }[]): UsageSeries {
+  const spec = RANGE_SPECS[range];
   const byKey = new Map<string, { rx: number; tx: number; connections: number }>();
   for (const r of rows) {
     const cur = byKey.get(r.key) ?? { rx: 0, tx: 0, connections: 0 };
     byKey.set(r.key, { rx: cur.rx + Number(r.rx), tx: cur.tx + Number(r.tx), connections: cur.connections + Number(r.connections) });
   }
-  const points = bucketStarts(range, now, detail).map((d) => ({ at: d.toISOString(), ...(byKey.get(bucketKey(spec.bucket, d)) ?? { rx: 0, tx: 0, connections: 0 }) }));
+  const points = bucketStarts(range, now).map((d) => ({ at: d.toISOString(), ...(byKey.get(bucketKey(spec.bucket, d)) ?? { rx: 0, tx: 0, connections: 0 }) }));
   const total = points.reduce((a, p) => ({ rx: a.rx + p.rx, tx: a.tx + p.tx, connections: a.connections + p.connections }), { rx: 0, tx: 0, connections: 0 });
-  return { range: range, detail: detail, bucket: spec.bucket, points: points, total: total };
+  return { range: range, bucket: spec.bucket, points: points, total: total };
+}
+
+// 期間の中のポートごとの通信量（グラフの「詳細」）。同じポートでも TCP と UDP は別
+export interface PortUsage {
+  protocol: string;
+  port: number;
+  rx: number;
+  tx: number;
+  connections: number;
+}
+
+export interface PortUsageSeries {
+  range: UsageRange;
+  // 多い順。グラフは上から PORT_BARS 本と「その他」、表はすべて
+  ports: PortUsage[];
+  total: { rx: number; tx: number; connections: number };
+}
+
+// グラフに並べるポートの数（ほかは「その他」の 1 本にまとめる）
+export const PORT_BARS = 20;
+
+// DB の行（protocol・port ごとの合計）を多い順に。ノード・待ち受けアドレスが違っても同じポートはまとめる
+export function portUsage(range: UsageRange, rows: { protocol: string; port: number; rx: number; tx: number; connections: number }[]): PortUsageSeries {
+  const byPort = new Map<string, PortUsage>();
+  for (const r of rows) {
+    const key = `${r.protocol}/${Number(r.port)}`;
+    const cur = byPort.get(key) ?? { protocol: r.protocol, port: Number(r.port), rx: 0, tx: 0, connections: 0 };
+    byPort.set(key, { ...cur, rx: cur.rx + Number(r.rx), tx: cur.tx + Number(r.tx), connections: cur.connections + Number(r.connections) });
+  }
+  const ports = [...byPort.values()]
+    .filter((p) => p.rx + p.tx + p.connections > 0)
+    .sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx) || a.port - b.port || a.protocol.localeCompare(b.protocol));
+  const total = ports.reduce((a, p) => ({ rx: a.rx + p.rx, tx: a.tx + p.tx, connections: a.connections + p.connections }), { rx: 0, tx: 0, connections: 0 });
+  return { range: range, ports: ports, total: total };
 }
 
 // ---- 所有者・ラベルごとの集計（/usage） ----

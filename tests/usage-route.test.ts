@@ -61,6 +61,20 @@ describe('/api/forward/usage', () => {
     }
   });
 
+  it('ポートごと（by=port）：期間の表からプロトコルとポートでまとめる（利用者は自分のルールだけ）', async () => {
+    as(['rproxy-user']);
+    mocks.query.mockResolvedValue([{ protocol: 'tcp', port: 443, rx: 5, tx: 5, connections: 1 }, { protocol: 'udp', port: 53, rx: 1, tx: 1, connections: 0 }]);
+    const { status, body } = await call({ range: '7d', by: 'port' });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ available: true, by: 'port', range: '7d', total: { rx: 6, tx: 6, connections: 1 } });
+    expect(body.ports.map((p: { port: number }) => p.port)).toEqual([443, 53]);
+    const [sql, params] = mocks.query.mock.calls[0];
+    expect(sql).toContain('FROM usage_daily');
+    expect(sql).toContain('GROUP BY protocol, listen_port');
+    expect(sql).toContain('owner = ?');
+    expect(params.at(-1)).toBe('u1');
+  });
+
   it('管理者は全体。表がなければ available: false', async () => {
     as(['rproxy-admin']);
     mocks.query.mockRejectedValue(Object.assign(new Error('no table'), { errno: 1146 }));

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bucketStarts, csvCell, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, reportCsv, usageConfig, usageDelta } from '@/components/usage';
+import { bucketStarts, csvCell, portUsage, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, reportCsv, usageConfig, usageDelta } from '@/components/usage';
 import type { UsageRow } from '@/components/usage';
-import { niceMax } from '@/components/UsageChart';
+import { niceMax, portBars } from '@/components/UsageChart';
 
 vi.mock('@/components/ruledb', () => ({ getPool: vi.fn(), fromRow: vi.fn(), loadOverrides: vi.fn() }));
 import { attributionKey, collectNode, rproxyAttribution } from '@/components/usagecollect';
@@ -43,17 +43,18 @@ describe('区切りとグラフ', () => {
     expect(week.bucket).toBe('day');
     expect(week.points.at(-2)).toMatchObject({ rx: 3, tx: 4, connections: 2 });
     expect(week.total).toMatchObject({ rx: 3, tx: 4, connections: 2 });
-    expect(week.detail).toBe(false);
   });
-  it('詳細は一段細かい区切り（7 日・30 日は時間ごと、12 か月は日ごと。24 時間にはない）', () => {
-    expect(bucketStarts('7d', now, true)).toHaveLength(168);
-    expect(bucketStarts('30d', now, true)).toHaveLength(720);
-    expect(bucketStarts('12m', now, true)).toHaveLength(365);
-    expect(bucketStarts('24h', now, true)).toHaveLength(24);
-    const week = fillSeries('7d', now, [{ key: '2026-10-06 13:00:00', rx: 1, tx: 2, connections: 1 }], true);
-    expect(week).toMatchObject({ bucket: 'hour', detail: true });
-    expect(week.points.at(-1)).toMatchObject({ rx: 1, tx: 2 });
-    expect(fillSeries('24h', now, [], true).detail).toBe(false);
+  it('ポートごと（詳細）：TCP と UDP は別、アドレス・ノードが違う同じポートはまとめ、多い順', () => {
+    const p = portUsage('7d', [
+      { protocol: 'tcp', port: 443, rx: 10, tx: 5, connections: 2 },
+      { protocol: 'tcp', port: 443, rx: '20' as unknown as number, tx: 0, connections: 1 },
+      { protocol: 'udp', port: 443, rx: 1, tx: 1, connections: 0 },
+      { protocol: 'tcp', port: 22, rx: 100, tx: 100, connections: 3 },
+      { protocol: 'tcp', port: 8080, rx: 0, tx: 0, connections: 0 },
+    ]);
+    expect(p.ports.map((x) => `${x.protocol}/${x.port}`)).toEqual(['tcp/22', 'tcp/443', 'udp/443']);
+    expect(p.ports[1]).toMatchObject({ rx: 30, tx: 5, connections: 3 });
+    expect(p.total).toEqual({ rx: 131, tx: 106, connections: 6 });
     expect(bucketStarts('12m', now).map((d) => d.toISOString().slice(0, 7)).slice(-2)).toEqual(['2026-09', '2026-10']);
   });
   it('ない区切りは 0 で埋め、合計を出す', () => {
@@ -64,6 +65,13 @@ describe('区切りとグラフ', () => {
     expect(fillSeries('12m', now, [{ key: '2026-10', rx: 1, tx: 1, connections: 0 }]).points.at(-1)?.rx).toBe(1);
   });
   it('目盛りの上限', () => {
+    // ポートの棒は PORT_BARS（20）本と、残りをまとめた「その他」
+    const many = Array.from({ length: 25 }, (_, i) => ({ protocol: 'tcp', port: 1000 + i, rx: 100 - i, tx: 0, connections: 1 }));
+    const bars = portBars(many);
+    expect(bars).toHaveLength(21);
+    expect(bars[0]).toMatchObject({ tick: '1000', name: 'TCP 1000' });
+    expect(bars[20]).toMatchObject({ key: 'other', rx: 80 + 79 + 78 + 77 + 76, connections: 5 });
+    expect(portBars(many.slice(0, 3))).toHaveLength(3);
     expect(niceMax(0)).toBe(1024);
     expect(niceMax(3 * 1024 ** 2)).toBe(5 * 1024 ** 2);
     expect(niceMax(900)).toBe(1000);
