@@ -3,8 +3,8 @@ name: rproxy-ui
 description: Web UI for rproxy-api (rules, usage, multiple rproxy nodes) with an optional bundled MariaDB
 type: application
 # the same as package.json's version (the release workflow checks both against the tag)
-version: 0.4.3
-appVersion: "0.4.3"
+version: 0.4.4
+appVersion: "0.4.4"
 home: https://github.com/max3584/TCP-UDP-rproxy-ui
 sources:
   - https://github.com/max3584/TCP-UDP-rproxy-ui
