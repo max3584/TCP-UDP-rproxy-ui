@@ -42,6 +42,13 @@ test.describe('usage accounting', () => {
       await page.goto(`/rules/tcp/127.0.0.1/${PORT}`);
       await expect(page.getByTestId('usage-chart')).toBeVisible();
       await page.goto('/usage');
+      // 詳細：期間の中のポートごとの縦棒と表
+      const panel = page.getByTestId('usage-panel').first();
+      await panel.getByRole('button', { name: '詳細' }).click();
+      await expect(panel.getByTestId('usage-port-chart')).toBeVisible();
+      await expect(panel.getByTestId('usage-port-table')).toContainText(`TCP ${PORT}`);
+      await panel.getByRole('button', { name: '簡易' }).click();
+      await expect(panel.getByTestId('usage-chart')).toBeVisible();
       await page.getByTestId('usage-group').selectOption('rule');
       await expect(page.getByTestId('usage-report-table')).toContainText(`tcp/127.0.0.1:${PORT}`);
       const month = new Date().toISOString().slice(0, 7);
