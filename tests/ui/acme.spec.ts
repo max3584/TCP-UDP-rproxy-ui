@@ -29,8 +29,15 @@ function issuerOf(port: number, servername: string): Promise<string> {
   });
 }
 
+// 後始末：接続を使い回した要求がサーバの閉じた接続に当たったら（socket hang up）、1 回だけ送り直す（#143）
 async function deleteRule(page: Page, port: number): Promise<void> {
-  await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
+  const send = () => page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
+  try {
+    await send();
+  } catch (err) {
+    if (!/socket hang up|ECONNRESET/.test(String(err))) throw err;
+    await send();
+  }
 }
 
 // 白地に白文字のような読めない文字がないこと（tests/ui/contrast.spec.ts と同じ確かめ方）
