@@ -32,7 +32,9 @@ export default defineConfig({
     },
   }],
   webServer: {
-    command: `npx next start -p ${port} -H 127.0.0.1`,
+    // keep idle connections for 2 minutes: Node closes them after 5 s by default, and a request sent on a connection
+    // the server is closing at that moment fails with "socket hang up" (#143)
+    command: `npx next start -p ${port} -H 127.0.0.1 --keepAliveTimeout 120000`,
     url: `${baseURL}/api/auth/providers`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
