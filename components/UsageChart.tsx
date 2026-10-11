@@ -2,15 +2,18 @@
 // 色は rx が青、tx が橙（2 色の組み合わせは色覚の違いでも見分けられることを確かめた）。凡例と表があるので色だけには頼らない
 import React, { useEffect, useState } from 'react';
 import { formatBytes, formatCount } from './dashboard';
-import { USAGE_RANGES } from './usage';
+import { DETAIL_SPECS, USAGE_RANGES } from './usage';
 import type { UsageBucket, UsagePoint, UsageRange, UsageSeries } from './usage';
-import { localeTag } from '@/i18n/core';
+import { localeTag, tc } from '@/i18n/core';
 import { errorDetail } from './ui';
 
 export const RX_COLOR = '#2a78d6';
 export const TX_COLOR = '#eb6834';
 
 const RANGE_LABELS: Record<UsageRange, string> = { '24h': '24 時間', '7d': '7 日', '30d': '30 日', '12m': '12 か月' };
+// 簡易・詳細の区切りの名前（ボタンの説明）と、グラフの上の説明（文ごとに訳すので組み立てない）
+const BUCKET_NAMES: Record<UsageBucket, string> = { hour: '1 時間ごと', day: '1 日ごと', month: '1 か月ごと' };
+const BUCKET_TOTALS: Record<UsageBucket, string> = { hour: '1 時間ごとの合計', day: '1 日ごとの合計', month: '1 か月ごとの合計' };
 
 // 区切りの名前（画面の言語・その端末の時刻）
 export function bucketLabel(bucket: UsageBucket, iso: string, short = false): string {
@@ -45,6 +48,8 @@ const Chart: React.FC<{ series: UsageSeries; title: string }> = ({ series, title
   const barW = Math.max(1, Math.min(24, slot - 2));
   const y = (v: number) => PAD.top + plotH - (v / max) * plotH;
   const tickEvery = Math.ceil(pts.length / 6);
+  // 何日にもわたる時間ごと（詳細）の目盛りは日付も出す
+  const shortTicks = !(series.bucket === 'hour' && pts.length > 24);
   const hp: UsagePoint | null = hover !== null ? pts[hover] : null;
   // 上の端だけ丸める（4px）。高さが足りなければ丸めない
   const topBar = (x: number, top: number, h: number) => {
@@ -77,7 +82,7 @@ const Chart: React.FC<{ series: UsageSeries; title: string }> = ({ series, title
               <rect x={PAD.left + i * slot} y={PAD.top} width={slot} height={plotH + PAD.bottom} fill="transparent"
                 onMouseEnter={() => setHover(i)} onFocus={() => setHover(i)} tabIndex={-1} />
               {i % tickEvery === 0 && (
-                <text x={PAD.left + i * slot + slot / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#4b5563">{bucketLabel(series.bucket, p.at, true)}</text>
+                <text x={PAD.left + i * slot + slot / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#4b5563">{bucketLabel(series.bucket, p.at, shortTicks)}</text>
               )}
             </g>
           );
@@ -104,13 +109,17 @@ interface UsageResponse extends Partial<UsageSeries> {
 // 利用量のカード（期間の切り替え・合計・グラフ・表）。query は /api/forward/usage に足す条件（ルールの指定）
 export const UsagePanel: React.FC<{ query?: string; title: string; id: string }> = ({ query = '', title, id }) => {
   const [range, setRange] = useState<UsageRange>('24h');
+  // 簡易（まとめた区切り）か詳細（一段細かい区切り）か。24h は詳細がない
+  const [detail, setDetail] = useState(false);
+  const detailSpec = DETAIL_SPECS[range];
+  const useDetail = detail && !!detailSpec;
   const [data, setData] = useState<UsageResponse | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const res = await fetch(`/api/forward/usage?range=${range}${query ? `&${query}` : ''}`);
+        const res = await fetch(`/api/forward/usage?range=${range}${useDetail ? '&detail=1' : ''}${query ? `&${query}` : ''}`);
         if (!res.ok) throw new Error(await errorDetail(res));
         const body = await res.json() as UsageResponse;
         if (alive) {
@@ -123,7 +132,7 @@ export const UsagePanel: React.FC<{ query?: string; title: string; id: string }>
     };
     void load();
     return () => { alive = false; };
-  }, [range, query]);
+  }, [range, query, useDetail]);
   const series = data?.available && data.points ? data as UsageSeries : null;
   return (
     <section className="card p-4" aria-labelledby={id} data-testid="usage-panel">
@@ -137,6 +146,17 @@ export const UsagePanel: React.FC<{ query?: string; title: string; id: string }>
             </button>
           ))}
         </div>
+        {detailSpec && (
+          <div role="group" aria-label="表示" className="inline-flex rounded-sm border border-gray-300 overflow-hidden">
+            {([false, true] as const).map((d) => (
+              <button key={String(d)} type="button" aria-pressed={useDetail === d} onClick={() => setDetail(d)}
+                title={d ? BUCKET_NAMES[detailSpec.bucket] : undefined}
+                className={`px-2 py-1 text-xs max-lg:min-h-11 ${useDetail === d ? 'bg-blue-700 text-white' : 'bg-white text-gray-800 hover:bg-gray-100'}`}>
+                {d ? tc('詳細', 'usage') : '簡易'}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {error && <p className="text-sm text-red-800">{error}</p>}
       {data && !data.available && (
@@ -152,6 +172,7 @@ export const UsagePanel: React.FC<{ query?: string; title: string; id: string }>
             <div><dt className="inline text-gray-600"><span className="inline-block w-2 h-2 mr-1" style={{ background: TX_COLOR }} />tx（送信） </dt><dd className="inline">{formatBytes(series.total.tx)}</dd></div>
             <div><dt className="inline text-gray-600">接続 </dt><dd className="inline">{formatCount(series.total.connections)}</dd></div>
           </dl>
+          <p className="text-xs text-gray-600 mb-1" data-testid="usage-bucket">{BUCKET_TOTALS[series.bucket]}</p>
           <Chart series={series} title={title} />
           <details className="mt-2 text-sm">
             <summary className="cursor-pointer text-gray-800">表で見る</summary>

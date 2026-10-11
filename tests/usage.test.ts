@@ -36,6 +36,24 @@ describe('区切りとグラフ', () => {
     expect(h).toHaveLength(24);
     expect(h[23].toISOString()).toBe('2026-10-06T13:00:00.000Z');
     expect(bucketStarts('30d', now)[0].toISOString()).toBe('2026-09-07T00:00:00.000Z');
+    // 7 日は日ごとの 7 本（時間ごとの 168 本ではない）、今日まで
+    expect(bucketStarts('7d', now).map((d) => d.toISOString().slice(0, 10))).toEqual(
+      ['2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06']);
+    const week = fillSeries('7d', now, [{ key: '2026-10-05', rx: 3, tx: 4, connections: 2 }]);
+    expect(week.bucket).toBe('day');
+    expect(week.points.at(-2)).toMatchObject({ rx: 3, tx: 4, connections: 2 });
+    expect(week.total).toMatchObject({ rx: 3, tx: 4, connections: 2 });
+    expect(week.detail).toBe(false);
+  });
+  it('詳細は一段細かい区切り（7 日・30 日は時間ごと、12 か月は日ごと。24 時間にはない）', () => {
+    expect(bucketStarts('7d', now, true)).toHaveLength(168);
+    expect(bucketStarts('30d', now, true)).toHaveLength(720);
+    expect(bucketStarts('12m', now, true)).toHaveLength(365);
+    expect(bucketStarts('24h', now, true)).toHaveLength(24);
+    const week = fillSeries('7d', now, [{ key: '2026-10-06 13:00:00', rx: 1, tx: 2, connections: 1 }], true);
+    expect(week).toMatchObject({ bucket: 'hour', detail: true });
+    expect(week.points.at(-1)).toMatchObject({ rx: 1, tx: 2 });
+    expect(fillSeries('24h', now, [], true).detail).toBe(false);
     expect(bucketStarts('12m', now).map((d) => d.toISOString().slice(0, 7)).slice(-2)).toEqual(['2026-09', '2026-10']);
   });
   it('ない区切りは 0 で埋め、合計を出す', () => {

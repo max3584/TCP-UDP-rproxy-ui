@@ -5,7 +5,7 @@ import { requireRole } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
 import { NodesConfigError, loadNodes, normalizeIp, targetNodes, usageRowNode } from '@/components/nodes';
 import { getPool, loadOverrides } from '@/components/ruledb';
-import { RANGE_SPECS, USAGE_ERROR_HIDDEN, bucketKey, bucketStarts, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, parseRange, reportCsv } from '@/components/usage';
+import { rangeSpec, USAGE_ERROR_HIDDEN, bucketKey, bucketStarts, fillSeries, groupUsage, labelKeys, parseGroup, parsePeriod, parseRange, reportCsv } from '@/components/usage';
 import type { UsageRow } from '@/components/usage';
 import { usageStatus } from '@/components/usagecollect';
 import { localizedApi } from '@/i18n/server';
@@ -37,7 +37,7 @@ async function nodeListenAddrs(pool: ReturnType<typeof getPool>, target: string,
 }
 
 // 利用量（#101。usage_hourly・usage_daily）。
-// GET /api/forward/usage?range=24h|7d|30d|12m[&protocol=&addr=&port=&target=]：ルールを指定すればそのルール、なければ全体（利用者は自分のルールだけ、
+// GET /api/forward/usage?range=24h|7d|30d|12m[&detail=1][&protocol=&addr=&port=&target=]：ルールを指定すればそのルール、なければ全体（利用者は自分のルールだけ、
 // 管理者はすべて）の棒グラフの値。GET /api/forward/usage?report=1&period=YYYY-MM|YYYY-MM-DD&group=owner|node|rule|label:<キー>[&format=csv]：
 // 所有者・ラベルなどでまとめた表（利用者は自分のルールだけ）。表がない（010 を適用していない）ときは available: false
 async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -70,9 +70,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     }
 
     const range = parseRange(q(req.query.range));
-    const spec = RANGE_SPECS[range];
+    // detail=1：一段細かい区切り（DETAIL_SPECS。24h にはない）
+    const detail = q(req.query.detail) === '1';
+    const spec = rangeSpec(range, detail);
     const now = new Date();
-    const from = bucketKey(spec.bucket === 'month' ? 'day' : spec.bucket, bucketStarts(range, now)[0]);
+    const from = bucketKey(spec.bucket === 'month' ? 'day' : spec.bucket, bucketStarts(range, now, detail)[0]);
     const where: string[] = [`${spec.table === 'usage_hourly' ? 'hour' : 'day'} >= ?`];
     const params: unknown[] = [from];
     const protocol = q(req.query.protocol).toLowerCase();
@@ -114,7 +116,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       `SELECT ${BUCKET_SQL[spec.bucket]} AS \`key\`, SUM(rx_bytes) AS rx, SUM(tx_bytes) AS tx, SUM(connections) AS connections FROM ${spec.table} WHERE ${where.join(' AND ')} GROUP BY \`key\``,
       params,
     ) as { key: string; rx: number; tx: number; connections: number }[];
-    return res.status(200).json({ available: true, ...fillSeries(range, now, rows), status: status });
+    return res.status(200).json({ available: true, ...fillSeries(range, now, rows, detail), status: status });
   } catch (err) {
     if (err instanceof BadRequest) return res.status(400).json({ error: err.message, code: 'invalid' });
     if (err instanceof NodesConfigError) return res.status(500).json({ error: err.message, code: 'nodes_config' });
