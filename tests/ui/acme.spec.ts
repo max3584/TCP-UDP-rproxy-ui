@@ -7,9 +7,10 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { expect, test, type Page } from '@playwright/test';
 
-const ISSUE_PORT = 19441;
-const OFFLINE_PORT = 19442;
-const BACKEND_PORT = 19451;
+// ほかの spec と重ならないポート（前は settings.spec と同じ 19441・19442 で、片方の後始末が失敗すると次の試験も落ちた）
+const ISSUE_PORT = 19541;
+const OFFLINE_PORT = 19542;
+const BACKEND_PORT = 19543;
 const NAME = 'www.acme-e2e.test';
 const OFFLINE_NAME = 'offline.acme-e2e.test';
 
