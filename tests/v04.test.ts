@@ -140,8 +140,8 @@ describe('PATCH と DB と rproxy の形', () => {
 });
 
 describe('フォームの欄', () => {
-  const all = { labels: true, limits: true, bandwidth: true, geoip: true, outlier_detection: true };
-  const none = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false };
+  const all = { labels: true, limits: true, bandwidth: true, geoip: true, outlier_detection: true, proxy_protocol: true };
+  const none = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false };
   const current = normalizeV04(v04, 'udp');
 
   it('値から欄を作り、欄から同じ値に戻す', () => {

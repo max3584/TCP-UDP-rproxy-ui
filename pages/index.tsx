@@ -37,7 +37,7 @@ import { READONLY_NODE_MESSAGE, ruleErrorText } from '@/components/messages';
 import { acmeProblem, worstAcmeState } from '@/components/acme';
 import { NodeVersionCell, VersionNotice, VersionsCard } from '@/components/VersionInfo';
 import { joinList, joinSentences, localeTag, t, translate } from '@/i18n/core';
-import { AcmeBadge, AllowFromBadge, acmeBadgeShown, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, K8sBadge, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, ApiBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
+import { AcmeBadge, AllowFromBadge, ProxyProtocolBadge, acmeBadgeShown, AutoRefreshToggle, CertBadge, ErrorBanner, HaWarning, K8sBadge, RoleBadge, RuleDriftBadge, StateBadge, StaticBadge, ApiBadge, TargetBadge, TlsBadge, errorDetail, postRule, useAutoRefresh, useNodes } from '@/components/ui';
 
 function formatAt(iso: string): string {
   const d = new Date(iso);
@@ -399,11 +399,12 @@ const RulesTable: React.FC<{ rules: ForwardRules[]; now: number; showTarget: boo
                     <Link href={href} className="link" title={listenLabel(r)} onClick={(e) => e.stopPropagation()}>
                       {listenPortLabel(r)}
                     </Link>
-                    {(r.origin === 'static' || r.origin === 'api' || r.allowFrom.length > 0 || acmeBadgeShown(worstAcmeState(r))) && (
+                    {(r.origin === 'static' || r.origin === 'api' || r.allowFrom.length > 0 || r.proxyProtocol !== undefined || acmeBadgeShown(worstAcmeState(r))) && (
                       <div className="mt-0.5 flex flex-wrap gap-1 font-sans">
                         {r.origin === 'static' && <StaticBadge />}
                         <ApiBadge rule={r} />
                         <AllowFromBadge allowFrom={r.allowFrom} />
+                        <ProxyProtocolBadge rule={r} />
                         <CertBadge state={worstCertState(r)} />
                         <AcmeBadge state={worstAcmeState(r)} />
                       </div>

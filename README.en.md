@@ -208,6 +208,23 @@ For example, on `:443` rproxy can terminate cdn and gitlab and route them at L7,
 - In L7 rules, only "Do not terminate" lines can be used (other names are routed by L7 routes). "Disconnect" under "Connections matching no server name" cannot be used either.
 - `allow_from`, CrowdSec and statistics also apply to passthrough connections.
 
+## Accepting PROXY protocol from a front end, and client IP handling per server name
+
+Two fields of rproxy-api v0.4.13 (`../rproxy-api/docs/en/SOURCE-IP.md`). They can be edited only when rproxy says it supports them in the `features` of `GET /capabilities`; with an rproxy that does not, a value that is already set is kept read-only and sent as is (saving does not remove it).
+
+| Field | Where | `features` |
+|---|---|---|
+| Accept PROXY protocol (the rule's `proxy_protocol`) | "Accept PROXY protocol" on the "Advanced" tab | `proxy_protocol_in` |
+| Client IP handling per server name (`tls.routes[].source_ip`) | "Client IP" on each row of "Backends per server name" on the TLS tab | `route_source_ip` |
+
+- **Accept PROXY protocol**: when a load balancer, another rproxy or a Kubernetes Gateway in front of rproxy sends a PROXY protocol (v1 / v2) header, the address in the header is treated as the real client (used for `allow_from`, GeoIP, CrowdSec, limits, logs, `X-Forwarded-For` and the `source_ip` towards the backend). TCP rules only.
+  - In "Front ends whose headers are trusted" (`from`), write the address of the hop right in front (the TCP peer), one CIDR or IP per line (up to 64; it cannot be empty, and `0.0.0.0/0` / `::/0` are not allowed; checked with rproxy's rules before saving). rproxy refuses connections from other peers that start with a header.
+  - Unchecking "Require the header" (`required`, on by default) lets connections from a front end without a header through with the front end's address.
+  - It is shown under "Advanced" on the details page and as the "PROXY in" badge in the list. Unchecking it and saving removes it from rproxy too (`proxy_protocol: {}` in the `PATCH`).
+- **Client IP handling per server name**: only for names whose TLS is not terminated (the names of sni rules, and names marked "Do not terminate" in terminate rules, including those of L7 rules), how the client IP is passed to that name's backend can be chosen from `proxy`, `proxy_v1` and `proxy_v2` (`proxy_v1` cannot be chosen for UDP sni). Empty means the rule's source IP handling. `transparent` is per rule only.
+  - Example: the L7 rule on `:443` stays L7, and only `**.tenant.example.com`, passed through to Kubernetes, gets `proxy_v2`.
+  - Unlike the rule's source IP handling, it can be changed after creation (from the next connection, without cutting connections). It is shown as a "Client IP" badge on the backends per server name on the details page.
+
 ## Routing UDP by server name (DTLS, QUIC)
 
 UDP rules can also choose the target by the server name in the first packet when the TLS tab's mode is set to "sni" (from rproxy v0.3.8). rproxy v0.3.18 or later reports its version, so "sni" is not offered when it is older than v0.3.8 (an older rproxy that does not report its version still gets the choice, with a note that v0.3.7 or earlier refuses it when you save). Nothing is terminated, so no certificate is needed (the target has it). You can start from the profiles "Route HTTP/3 (QUIC) by server name (UDP 443)" and "Route TURN DTLS by server name (UDP 5349)".
@@ -275,10 +292,10 @@ The form is divided into tabs.
 |---|---|
 | Basic | Profile (templates by use case), protocol, listen address, port (the end of a range is optional), target |
 | L7 (HTTP) | Routes, services, middlewares and "When no route matches" (L7 rules; TCP, when rproxy supports L7) |
-| TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), backends per server name and "Connections matching no server name" (Send to the default backend / Disconnect), certificates, TLS options (minimum version and cipher suites; TCP terminate), client certificate verification (mTLS), ALPN, re-encryption to the backend |
+| TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), backends per server name (with the client IP handling for names whose TLS is not terminated) and "Connections matching no server name" (Send to the default backend / Disconnect), certificates, TLS options (minimum version and cipher suites; TCP terminate), client certificate verification (mTLS), ALPN, re-encryption to the backend |
 | Mail (STARTTLS) | STARTTLS for SMTP / IMAP / POP3 (only for TCP with "terminate") |
 | Limits & GeoIP | Labels, L4 limits, bandwidth limits, GeoIP, passive health checks (rproxy-api v0.4; see "v0.4 rule settings" above) |
-| Advanced | Source IP handling (source_ip), UDP idle timeout, allowed sources (allow_from) |
+| Advanced | Source IP handling (source_ip), UDP idle timeout, allowed sources (allow_from), accept PROXY protocol (proxy_protocol; TCP) |
 
 - A profile only fills the form with the recommended settings from `../rproxy-api/docs/PROFILES.md`. Enter the addresses and certificate paths for your environment.
 - The certificate, private key and CA paths are paths on the rproxy-api server. If they cannot be read, you get a `tls_config` error.
@@ -290,7 +307,7 @@ The form is divided into tabs.
 - A port range (e.g. `8000-8001`) forwards each port in turn starting from the target port. The upper limit is rproxy's `max_range_ports` (default 20000). The range and the source IP handling cannot be changed after creation (TLS settings can be changed).
 - WebRTC media cannot connect if DTLS is terminated. Use a passthrough range rule.
 - Allowed sources (allow_from) take one entry per line, a CIDR (`172.16.0.0/16`, `fd00::/8`) or a single IP (up to 64). If empty, everything is allowed.
-  TCP connections from outside the range are dropped before TLS or the PROXY header, and for UDP, datagrams from sources outside the range are discarded. On save they are normalized, e.g. `10.0.0.5` → `10.0.0.5/32`.
+  TCP connections from outside the range are dropped before TLS (in rules that accept PROXY protocol, connections from a front end are judged by the header's client), and for UDP, datagrams from sources outside the range are discarded. On save they are normalized, e.g. `10.0.0.5` → `10.0.0.5/32`.
 - "Connections matching no server name" can be chosen only for sni (TCP / UDP) or TCP terminate with backends per server name. "Disconnect" drops connections with an unmatched name or without SNI (with terminate, they are dropped without completing the handshake).
 
 ## Rules created through the rproxy API
@@ -323,7 +340,7 @@ Rules created by calling the rproxy API directly (CI, scripts, Kubernetes contro
 {"format": "rproxy-ui-export", "version": 1, "exported_at": "...", "rules": [{"protocol": "tcp", "listen_addr": "0.0.0.0", ...}]}
 ```
 
-- The fields of each rule have the same names as in rproxy's API and settings file (`remote_addr`, `tls`, `http`, `targets`, etc.). Fields with default values (`source_ip: proxy`, `udp_idle_secs` for TCP, `tls` for passthrough, etc.) are omitted. Paused rules get `enabled: false`.
+- The fields of each rule have the same names as in rproxy's API and settings file (`remote_addr`, `tls`, `http`, `targets`, `proxy_protocol`, `tls.routes[].source_ip`, etc.). Fields with default values (`source_ip: proxy`, `udp_idle_secs` for TCP, `tls` for passthrough, etc.) are omitted. Paused rules get `enabled: false`.
 - The leading `format` distinguishes the file from an rproxy settings file. rproxy does not know this field, so even if the exported file is placed as `RPROXY_CONFIG`, it is not loaded by mistake but rejected (when moving to a settings file, use the contents of `rules` and remove paused rules and `enabled`).
 - `rproxy-admin` can export only a specific user's rules with `/api/forward/export?owner=<user ID>`.
 

@@ -5,7 +5,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { Agent, fetch as undiciFetch } from 'undici';
 import type { Balance, CertStatus, HealthCheck, HttpSpec, Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, Target, TlsMode, TlsSpec } from './lib';
 import type { InterfacesInfo } from './listen';
-import type { BandwidthSpec, Condition, GeoipSpec, L4OutlierSpec, Labels, LimitsSpec, RulePlan } from './v04';
+import type { BandwidthSpec, Condition, GeoipSpec, L4OutlierSpec, Labels, LimitsSpec, ProxyProtocolSpec, RulePlan } from './v04';
 
 export type { HttpSpec, Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec };
 
@@ -40,6 +40,8 @@ export interface RproxyRule {
   bandwidth?: BandwidthSpec;
   geoip?: GeoipSpec;
   outlier_detection?: L4OutlierSpec;
+  // v0.4.13（#296）。tcp だけ
+  proxy_protocol?: ProxyProtocolSpec;
 }
 
 // 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）。
@@ -104,6 +106,7 @@ export interface RproxyRulePatch {
   bandwidth?: BandwidthSpec | Record<string, never>;
   geoip?: GeoipSpec | Record<string, never>;
   outlier_detection?: L4OutlierSpec | Record<string, never>;
+  proxy_protocol?: ProxyProtocolSpec | Record<string, never>;
 }
 
 // この版の rproxy で動かせる v0.3 の機能（古い rproxy は features を返さない）
@@ -136,6 +139,9 @@ export interface CapabilityFeatures {
   api_lockout?: boolean;
   handoff?: boolean;
   self_update?: boolean;
+  // v0.4.13：PROXY protocol の受け取り（ルールの proxy_protocol、#296）と tls.routes[] ごとの source_ip（#297）
+  proxy_protocol_in?: boolean;
+  route_source_ip?: boolean;
   // 設定ファイルの global.performance で効く項目の名前
   performance?: string[];
 }

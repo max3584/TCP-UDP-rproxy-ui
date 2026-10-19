@@ -23,7 +23,10 @@ import {
   TlsSpec,
   TlsUnmatched,
   TlsUpstream,
+  ROUTE_SOURCE_IPS,
+  RouteSourceIp,
   routeNames,
+  routeRelaysAtL4,
   MAX_EXTRA_LISTEN_ADDRS,
 } from './lib';
 import { checkAllowFrom, parseCidr } from './cidr';
@@ -149,7 +152,7 @@ export function normalizeTls(input: unknown): TlsSpec {
 
   const routes = list(input.routes, 'tls.routes').map((r): TlsRoute => {
     if (!isObject(r)) throw invalid('サーバ名ごとの転送先の形式が不正です。');
-    checkKeys(r, ['server_name', 'server_names', 'remote_addr', 'remote_port', 'passthrough', 'targets', 'balance'], 'tls.routes');
+    checkKeys(r, ['server_name', 'server_names', 'remote_addr', 'remote_port', 'passthrough', 'targets', 'balance', 'source_ip'], 'tls.routes');
     // 名前ごとの複数の宛先（rproxy の #234）：remote_addr / remote_port の代わりに targets と balance
     const targets = r.targets === undefined || r.targets === null ? [] : normalizeTargets(r.targets);
     const hasRemote = (r.remote_addr !== undefined && r.remote_addr !== null && r.remote_addr !== '')
@@ -180,13 +183,15 @@ export function normalizeTls(input: unknown): TlsSpec {
     if (names.server_names !== undefined && names.server_names.length === 0) {
       throw new TlsError('複数のサーバ名（server_names）には 1 つ以上の名前を指定してください。', 'tls_config');
     }
-    // キーの順番は rproxy の応答（…, passthrough, targets, balance）に揃える
+    const sourceIp = normalizeRouteSourceIp(r.source_ip);
+    // キーの順番は rproxy の応答（…, passthrough, targets, balance, source_ip）に揃える
     return {
       ...names,
       ...(targets.length === 0 ? { remote_addr: requiredString(r.remote_addr, 'サーバ名ごとの転送先のアドレス'), remote_port: remotePort as number } : {}),
       ...(r.passthrough === true ? { passthrough: true } : {}),
       ...(targets.length > 0 ? { targets: targets } : {}),
       ...(targets.length > 0 && balance !== DEFAULT_BALANCE ? { balance: balance } : {}),
+      ...(sourceIp !== undefined ? { source_ip: sourceIp } : {}),
     };
   });
   if (routes.length > 0) tls.routes = routes;
@@ -292,6 +297,18 @@ export function normalizeTls(input: unknown): TlsSpec {
   return tls;
 }
 
+// tls.routes[].source_ip（rproxy-api v0.4.13、#297）。省略・null・'' は「ルールと同じ」。transparent はルールの単位だけ（rproxy も unsupported）
+export function normalizeRouteSourceIp(value: unknown): RouteSourceIp | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (value === 'transparent') {
+    throw new TlsError('サーバ名ごとの送信元 IP の渡し方に transparent は選べません（透過のソケットとルーティングはルールの単位で用意するため。ルールの source_ip で選んでください）。', 'unsupported');
+  }
+  if (!ROUTE_SOURCE_IPS.includes(value as RouteSourceIp)) {
+    throw invalid('サーバ名ごとの送信元 IP の渡し方（source_ip）は proxy / proxy_v1 / proxy_v2 から選んでください。');
+  }
+  return value as RouteSourceIp;
+}
+
 export function normalizeStartTls(value: unknown): StartTls | null {
   if (value === undefined || value === null || value === '') return null;
   if (!STARTTLS_PROTOCOLS.includes(value as StartTls)) throw invalid('STARTTLS は smtp / imap / pop3 から選んでください。');
@@ -380,6 +397,15 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
     }
     if (http && !route.passthrough) {
       throw new TlsError('L7（HTTP）のルールでは、サーバ名ごとの転送先は「終端しない（passthrough）」ものだけ使えます（ほかの名前は L7 のルートで振り分けます）。', 'tls_config');
+    }
+    // route ごとの source_ip（rproxy の check_route_source_ip と同じ規則・コード）
+    if (route.source_ip !== undefined) {
+      if (!routeRelaysAtL4(tls.mode, route)) {
+        throw new TlsError(`${names.join(', ')}: 送信元 IP の渡し方は、TLS を終端しないサーバ名（「終端しない」にした名前か、sni のルール）にだけ指定できます（rproxy が終端する名前はルールの source_ip を使います）。`, 'unsupported');
+      }
+      if (protocol === 'udp' && route.source_ip === 'proxy_v1') {
+        throw new TlsError(`${names.join(', ')}: PROXY protocol v1 は TCP でだけ使えます（UDP では proxy_v2 を選んでください）。`, 'unsupported');
+      }
     }
   }
   if (http && tls.unmatched === 'reject') {

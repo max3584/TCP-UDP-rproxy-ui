@@ -78,7 +78,7 @@ import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleT
 import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
 import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
 import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, isShadowing, liveRule, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
-import { V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
+import { V04_FIELD, V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
 import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
 
 const pool = getPool();
@@ -343,7 +343,7 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
     extraListenAddrs: normalizeExtraListenAddrs(body.extraListenAddrs, rule.srcAddr),
     // 画面からの追加では送られない（有効）。インポートの停止中のルールだけ false
     enabled: normalizeEnabled(body.enabled),
-    // v0.4 の labels・limits・bandwidth・geoip・outlierDetection（使えるかは rproxy が features で決め、断れば 400 unsupported）
+    // v0.4 の labels・limits・bandwidth・geoip・outlierDetection・proxyProtocol（使えるかは rproxy が features で決め、断れば 400 unsupported）
     ...normalizeV04(body, protocol as Protocol, http !== null),
   };
 }
@@ -351,18 +351,14 @@ function parseRuleInner(body: any, keyOnly: boolean, forModify: boolean): Forwar
 // body にある v0.4 の項目（なければ変更の前の値を保つ）
 function givenV04(body: any): V04Key[] {
   if (typeof body !== 'object' || body === null) return [];
-  return V04_KEYS.filter((k) => body[k === 'outlier_detection' ? 'outlierDetection' : k] !== undefined);
+  return V04_KEYS.filter((k) => body[V04_FIELD[k]] !== undefined);
 }
-
-const V04_RULE_FIELD: Record<V04Key, keyof V04Settings> = {
-  labels: 'labels', limits: 'limits', bandwidth: 'bandwidth', geoip: 'geoip', outlier_detection: 'outlierDetection',
-};
 
 // 変更の後の v0.4 の項目：body にあるものは body の値（null・{} なら外す）、ないものは今の値
 function mergeV04(current: V04Settings, next: V04Settings, given: V04Key[]): V04Settings {
   const out: V04Settings = { ...v04Of(current) };
   for (const k of given) {
-    const f = V04_RULE_FIELD[k];
+    const f = V04_FIELD[k];
     const v = next[f];
     if (v === undefined) delete out[f];
     else (out as Record<string, unknown>)[f] = v;
@@ -1022,8 +1018,8 @@ function mergeEdit(current: ForwardRule, rule: ForwardRule, given: Given): Forwa
     throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
   }
   // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
-  const { labels: _l, limits: _li, bandwidth: _b, geoip: _g, outlierDetection: _o, ...base } = rule;
-  void _l; void _li; void _b; void _g; void _o;
+  const { labels: _l, limits: _li, bandwidth: _b, geoip: _g, outlierDetection: _o, proxyProtocol: _p, ...base } = rule;
+  void _l; void _li; void _b; void _g; void _o; void _p;
   const updated: ForwardRule = {
     ...base,
     ...(current.target !== undefined ? { target: current.target } : {}),
@@ -1042,6 +1038,9 @@ function mergeEdit(current: ForwardRule, rule: ForwardRule, given: Given): Forwa
   };
   if (updated.http !== null && updated.outlierDetection) {
     throw invalid('L7（HTTP）のルールでは、ルールの受け身のヘルスチェックは使えません（L7 タブのサービスごとに設定します）。');
+  }
+  if (updated.protocol === 'udp' && updated.proxyProtocol) {
+    throw new HttpError(400, 'PROXY protocol の受け取り（proxy_protocol）は TCP のルールでだけ使えます（UDP のヘッダは読みません）。', 'unsupported');
   }
   if (updated.protocol === 'tcp' && updated.limits?.per_source?.packets) {
     throw invalid('データグラムの速さ（packets）は UDP のルールでだけ使えます。');

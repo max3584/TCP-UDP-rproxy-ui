@@ -233,6 +233,12 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                         終端しない（passthrough）
                       </span>
                     )}
+                    {r.source_ip !== undefined && (
+                      <span className="badge ml-2 bg-sky-100 text-sky-900" data-testid="tls-route-source-ip"
+                        title="この名前の転送先へのクライアントの IP の渡し方（ルールの送信元 IP の扱いの代わり）">
+                        送信元 IP: {r.source_ip}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -319,7 +325,9 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
 
 // v0.4 の項目（ラベル・L4 の制限・帯域の上限・GeoIP・受け身のヘルスチェック）。どれもなければ出さない
 const V04Section: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
-  const v = v04Fields(rule);
+  // PROXY protocol の受け取り（proxy_protocol）は「詳細」に出す
+  const { proxy_protocol: _pp, ...v } = v04Fields(rule);
+  void _pp;
   if (Object.keys(v).length === 0) return null;
   const items: [string, React.ReactNode][] = [];
   if (v.labels) {
@@ -846,6 +854,15 @@ const RuleDetailPage: React.FC = () => {
                     </div>
                   )
                   : 'すべて許可'],
+                ...(view.protocol === 'tcp' ? [['PROXY protocol の受け取り', view.proxyProtocol
+                  ? (
+                    <div key="pp" data-testid="proxy-protocol">
+                      <div>{view.proxyProtocol.required ? '前段からの接続はヘッダが必須' : 'ヘッダのない接続は前段のアドレスのまま通す'}</div>
+                      <div className="text-xs text-gray-700">ヘッダを信じる前段:</div>
+                      <ul className="font-mono">{view.proxyProtocol.from.map((c) => <li key={c}>{c}</li>)}</ul>
+                    </div>
+                  )
+                  : '使わない'] as [string, React.ReactNode]] : []),
                 ['CrowdSec（L4）', view.crowdsec ? '判定に入っている接続元を切る' : '使わない'],
               ]} />
             </Section>
