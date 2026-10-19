@@ -175,8 +175,11 @@ With an rproxy that cannot use them, the fields are hidden, and values a rule al
 | HTTP version towards the backends (`http1`, `h2`, `h2c`, `auto`; h2 or h2c for gRPC) | Service | `protocol` in `services` |
 | Backend TLS per service (server name, CA, SAN, client certificate, no verification) | Service | `tls` in `services` |
 | Several destinations and balancing per server name | "Several destinations" of the per-name backends in the TLS tab | `tls_route_targets` |
+| TLS to the backend per server name (`tls.routes[].upstream`; BackendTLSPolicy; rproxy-api v0.4.7) | "TLS to the backend" on each row of the per-name backends in the TLS tab | `tls_route_upstream` |
 
-Before saving, the form checks the same rules as rproxy (a URL or a status code, `h2` with https:// backends and `h2c` with http:// backends, the kinds of per-backend middlewares, the mirror's service, CORS origins, combinations of the service TLS, and so on).
+TLS to the backend per server name can be set only on names rproxy terminates (not marked "Do not terminate") in TCP terminate rules, and those names use it instead of the rule's "Re-encrypt to the backend with TLS" (the fields are not mixed). Choose "Same as the rule" (left out), "Plain text for these names" (`{}`; plain text for these names even when the rule re-encrypts) or "Re-encrypt with settings for these names" (server name to verify, CA, no verification, client certificate with its intermediate CAs and private key; the same fields as the rule's). It is shown on the per-name backends of the details page too. Values set by rproxy-gateway are not lost on save.
+
+Before saving, the form checks the same rules as rproxy (a URL or a status code, `h2` with https:// backends and `h2c` with http:// backends, the kinds of per-backend middlewares, the mirror's service, CORS origins, combinations of the service TLS, which names may have TLS to the backend and how its client certificate, private key and intermediate CAs go together, and so on).
 
 ## Multiple targets
 
@@ -292,7 +295,7 @@ The form is divided into tabs.
 |---|---|
 | Basic | Profile (templates by use case), protocol, listen address, port (the end of a range is optional), target |
 | L7 (HTTP) | Routes, services, middlewares and "When no route matches" (L7 rules; TCP, when rproxy supports L7) |
-| TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), backends per server name (with the client IP handling for names whose TLS is not terminated) and "Connections matching no server name" (Send to the default backend / Disconnect), certificates, TLS options (minimum version and cipher suites; TCP terminate), client certificate verification (mTLS), ALPN, re-encryption to the backend |
+| TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), backends per server name (with the client IP handling for names whose TLS is not terminated, and the TLS to the backend for names rproxy terminates) and "Connections matching no server name" (Send to the default backend / Disconnect), certificates, TLS options (minimum version and cipher suites; TCP terminate), client certificate verification (mTLS), ALPN, re-encryption to the backend |
 | Mail (STARTTLS) | STARTTLS for SMTP / IMAP / POP3 (only for TCP with "terminate") |
 | Limits & GeoIP | Labels, L4 limits, bandwidth limits, GeoIP, passive health checks (rproxy-api v0.4; see "v0.4 rule settings" above) |
 | Advanced | Source IP handling (source_ip), UDP idle timeout, allowed sources (allow_from), accept PROXY protocol (proxy_protocol; TCP) |

@@ -46,6 +46,10 @@ export interface TlsRoute {
   targets?: Target[];
   // targets の振り分け方（既定の round_robin なら省く）
   balance?: Balance;
+  // この名前の転送先への TLS（rproxy-api v0.4.7、features.tls_route_upstream。rproxy-gateway が BackendTLSPolicy から作る）。
+  // tcp の terminate の、終端する（passthrough でない）route だけ。あればルールの upstream の代わりに使う（{} や tls: false なら平文）。
+  // 省けばルールの upstream。{} と省略は意味が違うので、空でも残す
+  upstream?: TlsUpstream;
   // この名前の転送先への送信元 IP の渡し方（rproxy-api v0.4.13、#297）。TLS を終端しない route（terminate の passthrough、sni の route）だけ。
   // 省けばルールの source_ip
   source_ip?: RouteSourceIp;
@@ -54,6 +58,11 @@ export interface TlsRoute {
 // route ごとの source_ip を書ける route か：TLS を終端せずに L4 でつなぐもの（sni のルールの route と、terminate の passthrough の route）
 export function routeRelaysAtL4(mode: TlsMode, route: Pick<TlsRoute, 'passthrough'>): boolean {
   return mode === 'sni' || (mode === 'terminate' && route.passthrough === true);
+}
+
+// route ごとの upstream を書ける route か：tcp の terminate で rproxy が終端する（passthrough でない）もの。L7 のルールの route は常に passthrough
+export function routeTakesUpstream(protocol: Protocol, mode: TlsMode, route: Pick<TlsRoute, 'passthrough'>, l7 = false): boolean {
+  return protocol === 'tcp' && mode === 'terminate' && !l7 && route.passthrough !== true;
 }
 
 // route の宛先の一覧（targets か、remote_addr / remote_port の 1 件）

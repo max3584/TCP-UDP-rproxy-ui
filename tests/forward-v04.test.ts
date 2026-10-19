@@ -257,3 +257,113 @@ describe('proxy_protocol と route ごとの source_ip（/api/forward）', () =>
     expect(update?.[1][3]).toBeNull();
   });
 });
+
+// rproxy-api v0.4.7 の tls.routes[].upstream（BackendTLSPolicy、features.tls_route_upstream）。
+// 以前は normalizeTls が知らない項目として断り、API のルールの表示が生の値に落ち、変更で消えるおそれがあった
+describe('route ごとの upstream（/api/forward）', () => {
+  const upstream = { tls: true, server_name: 'backend.internal', ca_file: '/etc/rproxy/backend-ca.pem' };
+  const terminateTls = {
+    mode: 'terminate',
+    certificates: [{ cert_file: '/c.pem', key_file: '/k.pem' }],
+    routes: [
+      { server_name: 'backend.example.com', remote_addr: '10.0.0.5', remote_port: 8443, upstream: upstream },
+      { server_name: 'plain.example.com', remote_addr: '10.0.0.6', remote_port: 8080, upstream: {} },
+    ],
+    upstream: { tls: true },
+  };
+  const row = (options: unknown) => [{ dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify(options) }];
+  const admin = { user: { ...session.user, id: 'admin-1', roles: ['rproxy-admin'] }, expires: '' };
+  // rproxy の応答（Upstream の項目を null / false でも書く）
+  const liveTls = {
+    ...terminateTls,
+    unmatched: 'default', alpn: [], client_auth: { mode: 'none', ca_file: null },
+    upstream: { tls: true, server_name: null, ca_file: null, insecure_skip_verify: false, cert_file: null, key_file: null },
+    routes: [
+      { ...terminateTls.routes[0], upstream: { ...upstream, insecure_skip_verify: false, cert_file: null, key_file: null } },
+      { ...terminateTls.routes[1], upstream: { tls: false, server_name: null, ca_file: null, insecure_skip_verify: false, cert_file: null, key_file: null } },
+    ],
+  };
+  const live = (over: Record<string, unknown> = {}) => ({
+    protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8888, remote_addr: 'example.com', remote_port: 80, source_ip: 'proxy', udp_idle_secs: 30,
+    tls: liveTls, state: 'running', error: null, resolved: [], connections: 0, ...over,
+  });
+
+  it('add は route の upstream（{} を含む）を rproxy と DB に渡す', async () => {
+    mocks.addRule.mockResolvedValue({});
+    const { status } = await call('add', { ...tcpRule, tls: terminateTls });
+    expect(status).toBe(200);
+    expect(mocks.addRule.mock.calls[0][0].tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+    const options = JSON.parse(String(sqlCalls()[0][1][9]));
+    expect(options.tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+  });
+
+  it('add は rproxy と同じ規則で断る（passthrough・sni・udp の route、cert_file だけ、知らない項目）', async () => {
+    const route = terminateTls.routes[0];
+    const cases: [unknown, string][] = [
+      [{ ...tcpRule, tls: { ...terminateTls, routes: [{ ...route, passthrough: true }] } }, 'tls_config'],
+      [{ ...tcpRule, tls: { mode: 'sni', routes: [route] } }, 'tls_config'],
+      [{ ...tcpRule, protocol: 'udp', tls: { mode: 'sni', routes: [route] } }, 'tls_config'],
+      [{ ...tcpRule, tls: { ...terminateTls, routes: [{ ...route, upstream: { tls: true, cert_file: '/u.pem' } }] } }, 'tls_config'],
+      [{ ...tcpRule, tls: { ...terminateTls, routes: [{ ...route, upstream: { tls: true, chain_file: '/u-chain.pem' } }] } }, 'tls_config'],
+      [{ ...tcpRule, tls: { ...terminateTls, routes: [{ ...route, upstream: { tls: true, alpn: ['h2'] } }] } }, 'invalid'],
+    ];
+    for (const [body, c] of cases) {
+      const { status, body: res } = await call('add', body);
+      expect(status, JSON.stringify(body)).toBe(400);
+      expect(res.code, JSON.stringify(body)).toBe(c);
+    }
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('modify は DB に upstream のある行を読み、本文の tls の route の upstream を PATCH と DB に書く', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: terminateTls, starttls: null, starttls_required: true }));
+    mocks.modifyRule.mockResolvedValue({});
+    const { status } = await call('modify', { ...tcpRule, distAddr: 'example.org', tls: terminateTls });
+    expect(status).toBe(200);
+    expect(mocks.modifyRule.mock.calls[0][1].tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(JSON.parse(String(update?.[1][3])).tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+  });
+
+  it('list と rule は DB の upstream をそのまま返す', async () => {
+    const dbRow = { id: 1, auth_id: 'user-1', protocol: 'tcp', src_addr: '0.0.0.0', src_port: 8888, src_port_end: null, dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify({ tls: terminateTls, starttls: null, starttls_required: true }) };
+    pool.query.mockResolvedValue([dbRow]);
+    mocks.listRules.mockResolvedValue([live()]);
+    mocks.getRule.mockResolvedValue(live({ origin: 'dynamic' }));
+    const list = await call('list', undefined, 'GET');
+    expect(list.status).toBe(200);
+    expect(list.body[0].tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+    const one = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '8888' });
+    expect(one.status).toBe(200);
+    expect(one.body.tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+  });
+
+  it('API のルール：画面の形にしても upstream が残り、api-modify の PATCH と plan に付く', async () => {
+    mocks.getServerSession.mockResolvedValue(admin);
+    pool.query.mockResolvedValue([]);
+    mocks.getRule.mockResolvedValue(live({ origin: 'api' }));
+    const one = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '8888' });
+    expect(one.body.origin).toBe('api');
+    // 生の値（null・false の項目つき）ではなく、正規化した形
+    expect(one.body.tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+
+    mocks.modifyRule.mockResolvedValue({ ...live({ origin: 'api' }), persisted: true });
+    const modified = await call('api-modify', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8888, distAddr: '10.0.0.20', distPort: 8080, tls: one.body.tls });
+    expect(modified.status, JSON.stringify(modified.body)).toBe(200);
+    expect(mocks.modifyRule.mock.calls[0][1].tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+
+    mocks.planModify.mockResolvedValue(plan);
+    const planned = await call('plan', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8888, distAddr: '10.0.0.20', distPort: 8080, tls: one.body.tls, action: 'api-modify' });
+    expect(planned.status).toBe(200);
+    expect(mocks.planModify.mock.calls[0][1].tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+  });
+
+  it('plan（modify）にも付く', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: terminateTls, starttls: null, starttls_required: true }));
+    mocks.getRule.mockRejectedValue(new RproxyError('rule not found', 'not_found', 404));
+    mocks.planModify.mockResolvedValue(plan);
+    const { body } = await call('plan', { ...tcpRule, tls: terminateTls, action: 'modify' });
+    expect(body.results[0].plan).toEqual(plan);
+    expect(mocks.planModify.mock.calls[0][1].tls.routes.map((r: any) => r.upstream)).toEqual([upstream, {}]);
+  });
+});

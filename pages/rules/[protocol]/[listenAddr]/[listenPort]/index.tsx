@@ -239,6 +239,24 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                         送信元 IP: {r.source_ip}
                       </span>
                     )}
+                    {r.upstream !== undefined && (
+                      <div className="font-sans text-xs text-gray-800 mt-1" data-testid="tls-route-upstream"
+                        title="この名前の転送先への TLS（ルールの「転送先への TLS」の代わりに使う）">
+                        {r.upstream.tls ? (
+                          <>
+                            <div>転送先への TLS: 再暗号化する（この名前だけの設定）</div>
+                            <div>検証するサーバ名: <Mono>{r.upstream.server_name ?? '（転送先のホスト名）'}</Mono></div>
+                            <div>CA: {r.upstream.ca_file ? <Mono>{r.upstream.ca_file}</Mono> : '（Mozilla のルート証明書）'}</div>
+                            {r.upstream.insecure_skip_verify && <div className="text-red-700 font-semibold">証明書を検証しない（テスト用）</div>}
+                            {r.upstream.cert_file && <div>クライアント証明書: <Mono>{r.upstream.cert_file}</Mono></div>}
+                            {r.upstream.chain_file && <div>その中間 CA: <Mono>{r.upstream.chain_file}</Mono></div>}
+                            {r.upstream.key_file && <div>その秘密鍵: <Mono>{r.upstream.key_file}</Mono></div>}
+                          </>
+                        ) : (
+                          <div>転送先への TLS: 平文（この名前は再暗号化しない）</div>
+                        )}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

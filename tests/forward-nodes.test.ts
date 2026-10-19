@@ -485,6 +485,32 @@ describe('nodes and groups (#98)', () => {
     expect(mocks.addRule.mock.calls.at(-1)![0]).toMatchObject({ listen_addr: '192.0.2.50' });
   });
 
+  it('copy keeps tls.routes[].upstream (rproxy-api v0.4.7)', async () => {
+    const tls = {
+      mode: 'terminate',
+      routes: [
+        { server_name: 'a.example.com', remote_addr: '10.0.4.1', remote_port: 8443, upstream: { tls: true, server_name: 'a.internal' } },
+        { server_name: 'b.example.com', remote_addr: '10.0.4.2', remote_port: 8080, upstream: {} },
+      ],
+      certificates: [{ cert_file: '/c.pem', key_file: '/c.key' }],
+    };
+    const options = JSON.stringify({ tls: tls, starttls: null, starttls_required: true });
+    pool.query.mockImplementation(async (q: string) => {
+      if (q.startsWith('SELECT target FROM forward_rules') && !q.includes('<>')) return [{ target: 'ha' }];
+      if (q.startsWith('SELECT id, auth_id, target')) return [row(1, 'ha', { options: options })];
+      return [];
+    });
+    lockRows();
+    const added: string[] = [];
+    mocks.addRule.mockImplementation(onNode(added, () => ({})));
+    const copy = await call('copy', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', to: 'c' });
+    expect(copy.status, JSON.stringify(copy.body)).toBe(200);
+    expect(mocks.addRule.mock.calls[0][0].tls).toEqual(tls);
+    const insert = conn.query.mock.calls.find((c) => String(c[0]).startsWith('INSERT INTO forward_rules ('))!;
+    const stored = JSON.parse(String((insert[1] as unknown[]).at(-1)));
+    expect(stored.tls).toEqual(tls);
+  });
+
   it('RPROXY_UI_USER_NODES limits users to those nodes', async () => {
     process.env.RPROXY_UI_USER_NODES = 'c';
     try {
