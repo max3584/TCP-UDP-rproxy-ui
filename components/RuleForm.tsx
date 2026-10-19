@@ -1349,12 +1349,18 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                       <option value="plain">転送先への TLS: この名前は平文（再暗号化しない）</option>
                       <option value="tls">転送先への TLS: この名前だけの設定で再暗号化する</option>
                     </select>
-                    {r.upstream !== null && (r.upstream.tls || upstreamFormUsed(r.upstream)) && (
-                      <>
-                        {!r.upstream.tls && <p className={helpClass}>平文のときは下の欄を使いません（空にしてかまいません）。</p>}
-                        <UpstreamFields idPrefix={`rule-route-${i + 1}-upstream`} value={r.upstream}
-                          onChange={(patch) => updateRoute(i, { upstream: r.upstream === null ? null : { ...r.upstream, ...patch } })} />
-                      </>
+                    {r.upstream !== null && r.upstream.tls && (
+                      <UpstreamFields idPrefix={`rule-route-${i + 1}-upstream`} value={r.upstream}
+                        onChange={(patch) => updateRoute(i, { upstream: r.upstream === null ? null : { ...r.upstream, ...patch } })} />
+                    )}
+                    {r.upstream !== null && !r.upstream.tls && upstreamFormUsed(r.upstream) && (
+                      // 平文では使わない値（rproxy-gateway が書いたものなど）。消さずに送り、「消す」で外せる
+                      <p className="text-xs text-gray-700 mt-1 break-all" data-testid="route-upstream-unused">
+                        平文では使わない値も送ります: <span className="font-mono">{upstreamSummary({ ...r.upstream, tls: false })}</span>
+                        <button type="button" className="ml-2 text-blue-700 underline"
+                          onClick={() => updateRoute(i, { upstream: { ...EMPTY_UPSTREAM_FORM, tls: false } })}
+                          aria-label={`転送先 ${i + 1} への TLS の使わない値を消す`}>消す</button>
+                      </p>
                     )}
                   </div>
                 )}

@@ -132,12 +132,14 @@ test.describe('per-route TLS to the backend', () => {
       await expect(page).toHaveURL(new RegExp(`/rules/tcp/127\\.0\\.0\\.1/${RULE_PORT}$`));
       expect((await storedRule(page)).tls.routes[0].upstream).toEqual({ tls: true, server_name: 'backend.internal', insecure_skip_verify: true });
 
-      // この名前を平文にすると {}（欄は空にする）。rproxy は平文で TLS の転送先につなぐので、返事は来ない
+      // この名前を平文にすると、残った値は注記で出て、消すと {}。rproxy は平文で TLS の転送先につなぐので、返事は来ない
       await page.getByRole('link', { name: '編集' }).click();
       await page.getByRole('tab', { name: 'TLS / DTLS' }).click();
       await page.getByLabel('転送先 1 への TLS', { exact: true }).selectOption('plain');
-      await page.locator('#rule-route-1-upstream-name').fill('');
-      await page.locator('#rule-route-1-upstream-insecure').uncheck();
+      await expect(page.locator('#rule-route-1-upstream-name')).toHaveCount(0);
+      await expect(page.getByTestId('route-upstream-unused')).toContainText('backend.internal');
+      await page.getByLabel('転送先 1 への TLS の使わない値を消す', { exact: true }).click();
+      await expect(page.getByTestId('route-upstream-unused')).toHaveCount(0);
       await page.getByRole('button', { name: '変更を保存' }).click();
       await expect(page).toHaveURL(new RegExp(`/rules/tcp/127\\.0\\.0\\.1/${RULE_PORT}$`));
       await expect(page.getByTestId('tls-route-upstream')).toContainText('平文');
