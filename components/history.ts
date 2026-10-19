@@ -115,6 +115,7 @@ export function ruleChanges(prev: ForwardRule | null, next: ForwardRule | null):
   if (!same(pv.bandwidth, nv.bandwidth)) note('帯域の上限を変更');
   if (!same(pv.geoip, nv.geoip)) note('GeoIP を変更');
   if (!same(pv.outlier_detection, nv.outlier_detection)) note('受け身のヘルスチェックを変更');
+  if (!same(pv.proxy_protocol, nv.proxy_protocol)) note('PROXY protocol の受け取りを変更');
   // 一時停止・再開（#63）
   scalar('状態', ruleState(prev), ruleState(next));
   return out;

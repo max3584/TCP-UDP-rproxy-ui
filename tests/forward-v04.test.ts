@@ -191,3 +191,69 @@ describe('制御 API の一時停止（429 locked_out）', () => {
     expect(body.rproxyError).toContain('認証の失敗が続いた');
   });
 });
+
+// rproxy-api v0.4.13：ルールの proxy_protocol（#296）と tls.routes[].source_ip（#297）。変更・保存で落とさないこと
+describe('proxy_protocol と route ごとの source_ip（/api/forward）', () => {
+  const pp = { from: ['10.2.0.0/16', '172.16.10.19/32'], required: true };
+  const sniTls = {
+    mode: 'sni',
+    routes: [{ server_name: 'k8s.example.com', remote_addr: '10.2.255.131', remote_port: 443, source_ip: 'proxy_v2' }],
+  };
+  const row = (options: unknown) => [{ dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify(options) }];
+
+  it('add は proxy_protocol（正規化した from と required）と route の source_ip を rproxy と DB に渡す', async () => {
+    mocks.addRule.mockResolvedValue({});
+    const { status } = await call('add', { ...tcpRule, tls: sniTls, proxyProtocol: { from: ['10.2.9.9/16', '172.16.10.19'] } });
+    expect(status).toBe(200);
+    const sent = mocks.addRule.mock.calls[0][0];
+    expect(sent.proxy_protocol).toEqual(pp);
+    expect(sent.tls.routes[0].source_ip).toBe('proxy_v2');
+    const options = JSON.parse(String(sqlCalls()[0][1][9]));
+    expect(options.proxy_protocol).toEqual(pp);
+    expect(options.tls.routes[0].source_ip).toBe('proxy_v2');
+  });
+
+  it('add は rproxy と同じ規則で断る（from が空・/0・udp・終端する route の source_ip・transparent・udp の proxy_v1）', async () => {
+    const cases: [unknown, string][] = [
+      [{ ...tcpRule, proxyProtocol: { from: [] } }, 'invalid'],
+      [{ ...tcpRule, proxyProtocol: { from: ['0.0.0.0/0'] } }, 'invalid'],
+      [{ ...tcpRule, proxyProtocol: { from: ['::/0'] } }, 'invalid'],
+      [{ ...tcpRule, proxyProtocol: { from: ['10.0.0.1'], extra: 1 } }, 'invalid'],
+      [{ ...tcpRule, protocol: 'udp', proxyProtocol: { from: ['10.0.0.1'] } }, 'unsupported'],
+      [{ ...tcpRule, tls: { mode: 'terminate', certificates: [{ cert_file: '/c.pem', key_file: '/k.pem' }], routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.1', remote_port: 443, source_ip: 'proxy_v2' }] } }, 'unsupported'],
+      [{ ...tcpRule, tls: { ...sniTls, routes: [{ ...sniTls.routes[0], source_ip: 'transparent' }] } }, 'unsupported'],
+      [{ ...tcpRule, protocol: 'udp', tls: { ...sniTls, routes: [{ ...sniTls.routes[0], source_ip: 'proxy_v1' }] } }, 'unsupported'],
+    ];
+    for (const [body, code] of cases) {
+      const { status, body: res } = await call('add', body);
+      expect(status, JSON.stringify(body)).toBe(400);
+      expect(res.code, JSON.stringify(body)).toBe(code);
+    }
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('modify は本文にない proxy_protocol を DB の値のまま保ち、tls の route の source_ip を PATCH で送る', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: sniTls, starttls: null, starttls_required: true, proxy_protocol: pp }));
+    mocks.modifyRule.mockResolvedValue({});
+    const { status } = await call('modify', { ...tcpRule, distAddr: 'example.org', tls: sniTls });
+    expect(status).toBe(200);
+    const patch = mocks.modifyRule.mock.calls[0][1];
+    // 変わらない v0.4 の項目は丸ごと送り直す（rproxy は置き換え）
+    expect(patch.proxy_protocol).toEqual(pp);
+    expect(patch.tls.routes[0].source_ip).toBe('proxy_v2');
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    const options = JSON.parse(String(update?.[1][3]));
+    expect(options.proxy_protocol).toEqual(pp);
+    expect(options.tls.routes[0].source_ip).toBe('proxy_v2');
+  });
+
+  it('modify の proxyProtocol: null は外す（rproxy へは {}、DB からは消す）', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, proxy_protocol: pp }));
+    mocks.modifyRule.mockResolvedValue({});
+    const { status } = await call('modify', { ...tcpRule, proxyProtocol: null });
+    expect(status).toBe(200);
+    expect(mocks.modifyRule.mock.calls[0][1].proxy_protocol).toEqual({});
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(update?.[1][3]).toBeNull();
+  });
+});

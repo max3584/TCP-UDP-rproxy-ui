@@ -208,6 +208,23 @@ TLS を終端するルール（L7 のルールを含む）の TLS タブ「サ�
 - L7 のルールでは「終端しない」の行だけを使える（ほかの名前は L7 のルートで振り分ける）。「どのサーバ名にも一致しない接続」の「切断する」も使えない。
 - `allow_from`・CrowdSec・統計は、passthrough の接続にも効く。
 
+## 前段の PROXY protocol を受け取る・名前ごとに送信元 IP の渡し方を変える
+
+rproxy-api v0.4.13 の 2 つの項目（`../rproxy-api/docs/SOURCE-IP.md`）。rproxy が `GET /capabilities` の `features` で使えると言うときだけ編集でき、使えない rproxy では、値があれば読み取り専用で残してそのまま送ります（保存しても消えません）。
+
+| 項目 | 画面 | `features` |
+|---|---|---|
+| PROXY protocol の受け取り（ルールの `proxy_protocol`） | 「詳細」タブの「PROXY protocol の受け取り」 | `proxy_protocol_in` |
+| サーバ名ごとの送信元 IP の渡し方（`tls.routes[].source_ip`） | TLS タブの「サーバ名ごとの転送先」の各行の「送信元 IP」 | `route_source_ip` |
+
+- **PROXY protocol の受け取り**：rproxy の前のロードバランサ・別の rproxy・Kubernetes の Gateway などが PROXY protocol（v1 / v2）のヘッダを付けて送ってくるとき、そのヘッダのアドレスを本当のクライアントとして扱います（`allow_from`・GeoIP・CrowdSec・制限・ログ・`X-Forwarded-For`・転送先への `source_ip` に使う）。TCP のルールだけ。
+  - 「ヘッダを信じる前段」（`from`）に、すぐ前の段（TCP の接続元）のアドレスを 1 行に 1 件、CIDR か IP で書きます（最大 64 件。空にはできず、`0.0.0.0/0`・`::/0` は書けません。rproxy と同じ規則で保存の前に確かめます）。ほかの接続元からヘッダで始まる接続は rproxy が断ります。
+  - 「ヘッダを必須にする」（`required`、既定でオン）を外すと、前段からのヘッダのない接続も前段のアドレスのまま通します。
+  - 詳細画面の「詳細」と、一覧の「PROXY 受信」のバッジに出ます。チェックを外して保存すると rproxy からも外します（`PATCH` の `proxy_protocol: {}`）。
+- **サーバ名ごとの送信元 IP の渡し方**：TLS を終端しない名前（sni のルールの名前と、terminate のルールで「終端しない」にした名前。L7 のルールの「終端しない」名前も）にだけ、その名前の転送先への渡し方を `proxy`・`proxy_v1`・`proxy_v2` から選べます（UDP の sni では `proxy_v1` は選べません）。空欄ならルールの送信元 IP の扱い。`transparent` はルールの単位だけです。
+  - 例：`:443` の L7 のルールはそのまま L7 で扱い、Kubernetes へそのまま流す `**.tenant.example.com` だけ `proxy_v2` を付ける。
+  - ルールの送信元 IP の扱いと違い、作成後も変えられます（接続を切らずに次の接続から）。詳細画面のサーバ名ごとの転送先に「送信元 IP」のバッジで出ます。
+
 ## UDP をサーバ名で振り分ける（DTLS・QUIC）
 
 UDP のルールでも、TLS タブのモードを「sni」にすると、最初のパケットのサーバ名で転送先を選べます（rproxy v0.3.8 から）。v0.3.18 以降の rproxy は版を返すので、v0.3.8 より古ければ「sni」を選べません（版を返さない古い rproxy では選べますが、v0.3.7 以前なら保存のときに断られるので、その旨を出します）。終端しないので証明書は要りません（転送先が持ちます）。プロファイル「HTTP/3（QUIC）をサーバ名で振り分ける（UDP 443）」「TURN の DTLS をサーバ名で振り分ける（UDP 5349）」から始められます。
@@ -275,10 +292,10 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 |---|---|
 | 基本 | プロファイル（用途別のひな形）、プロトコル、待ち受けアドレス、ポート（範囲の終わりは任意）、転送先 |
 | L7 (HTTP) | ルート・サービス・ミドルウェア・どのルートにも一致しないとき（L7 のルール。TCP で、rproxy が L7 に対応しているとき） |
-| TLS / DTLS | passthrough / sni / 終端（UDP では DTLS）、サーバ名ごとの転送先と、どのサーバ名にも一致しない接続の扱い（基本の転送先へ送る / 切断する）、証明書、TLS のオプション（最小バージョンと暗号スイート。TCP の終端）、クライアント証明書の検証（mTLS）、ALPN、転送先への再暗号化 |
+| TLS / DTLS | passthrough / sni / 終端（UDP では DTLS）、サーバ名ごとの転送先（TLS を終端しない名前は送信元 IP の渡し方も）と、どのサーバ名にも一致しない接続の扱い（基本の転送先へ送る / 切断する）、証明書、TLS のオプション（最小バージョンと暗号スイート。TCP の終端）、クライアント証明書の検証（mTLS）、ALPN、転送先への再暗号化 |
 | メール (STARTTLS) | SMTP / IMAP / POP3 の STARTTLS（TCP で「終端」のときだけ） |
 | 制限・GeoIP | ラベル、L4 の制限、帯域の上限、GeoIP、受け身のヘルスチェック（rproxy-api v0.4。上の「v0.4 のルールの項目」） |
-| 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、接続を許可する送信元（allow_from） |
+| 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、接続を許可する送信元（allow_from）、PROXY protocol の受け取り（proxy_protocol。TCP） |
 
 - プロファイルは `../rproxy-api/docs/PROFILES.md` の推奨設定をフォームに入れるだけです。アドレスと証明書のパスは環境に合わせて入力してください。
 - 証明書・秘密鍵・CA のパスは rproxy-api のサーバ上のパスです。読めないと `tls_config` のエラーになります。
@@ -290,7 +307,7 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 - ポート範囲（例 `8000-8001`）は各ポートを転送先ポートから順に転送します。上限は rproxy の `max_range_ports`（既定 20000）。範囲と送信元 IP の扱いは作成後に変更できません（TLS の設定は変更できます）。
 - WebRTC のメディアは DTLS を終端すると接続できません。passthrough の範囲ルールにしてください。
 - 接続を許可する送信元（allow_from）は 1 行に 1 件、CIDR（`172.16.0.0/16`、`fd00::/8`）か単一の IP を書きます（最大 64 件）。空欄ならすべて許可します。
-  範囲外からの TCP 接続は TLS や PROXY ヘッダより前に切断し、UDP では範囲外の送信元のデータグラムを捨てます。保存すると `10.0.0.5` → `10.0.0.5/32` のように正規化します。
+  範囲外からの TCP 接続は TLS より前に切断し（PROXY protocol を受け取るルールでは、前段からの接続はヘッダのクライアントで判定）、UDP では範囲外の送信元のデータグラムを捨てます。保存すると `10.0.0.5` → `10.0.0.5/32` のように正規化します。
 - 「どのサーバ名にも一致しない接続」は、sni（TCP / UDP）か TCP の終端で、サーバ名ごとの転送先があるときだけ選べます。「切断する」にすると、一致しない名前や SNI のない接続を切断します（終端ではハンドシェイクを完了せずに切断）。
 
 ## rproxy の API で作ったルール
@@ -323,7 +340,7 @@ rproxy の API を直接呼んで作ったルール（CI・スクリプト・Kub
 {"format": "rproxy-ui-export", "version": 1, "exported_at": "...", "rules": [{"protocol": "tcp", "listen_addr": "0.0.0.0", ...}]}
 ```
 
-- 各ルールの項目は rproxy の API・設定ファイルと同じ名前（`remote_addr`・`tls`・`http`・`targets` など）。既定値の項目（`source_ip: proxy`、TCP の `udp_idle_secs`、passthrough の `tls` など）は省きます。停止中のルールには `enabled: false` が付きます。
+- 各ルールの項目は rproxy の API・設定ファイルと同じ名前（`remote_addr`・`tls`・`http`・`targets`・`proxy_protocol`、`tls.routes[].source_ip` など）。既定値の項目（`source_ip: proxy`、TCP の `udp_idle_secs`、passthrough の `tls` など）は省きます。停止中のルールには `enabled: false` が付きます。
 - 先頭の `format` で、rproxy の設定ファイルと区別します。rproxy はこの項目を知らないので、書き出したファイルを `RPROXY_CONFIG` に置いても誤って読み込まず、断ります（設定ファイルに移すときは `rules` の中身を使い、停止中のルールと `enabled` を除いてください）。
 - `rproxy-admin` は `/api/forward/export?owner=<利用者の ID>` で、特定の利用者のルールだけを書き出せます。
 

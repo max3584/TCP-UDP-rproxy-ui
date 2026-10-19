@@ -47,3 +47,14 @@ export const PROXY_PROTOCOL_HINT =
 export function proxyProtocolHint(sourceIp: SourceIp): TransparentHint | null {
   return sourceIp === 'proxy_v1' || sourceIp === 'proxy_v2' ? { kind: 'selected', message: PROXY_PROTOCOL_HINT } : null;
 }
+
+// PROXY protocol の受け取り（ルールの proxy_protocol、rproxy-api v0.4.13）の説明。上の source_ip は rproxy が転送先へ「送る」話で、こちらは前段から「受け取る」話
+export const PROXY_PROTOCOL_IN_HELP =
+  'rproxy の前にロードバランサ・別の rproxy・Kubernetes の Gateway などがいて、それが PROXY protocol のヘッダを付けて送ってくるときに使います。ヘッダに書かれたアドレスを本当のクライアントとして扱い、allow_from・GeoIP・CrowdSec・制限・ログ・X-Forwarded-For・転送先への source_ip に使います。ヘッダを信じるのは「前段」に書いた接続元からだけで、それ以外からヘッダで始まる接続は断ります（前段の書き漏らしに気づけるように）。TCP のルールだけで使えます。';
+
+export const PROXY_PROTOCOL_REQUIRED_HELP =
+  '前段からの接続がヘッダを付けてこなければ断ります。外すと、ヘッダのない接続は前段のアドレスのまま通します（SMTP などサーバから先に送るプロトコルでは、ヘッダを 5 秒待ってから通します）。前段が必ずヘッダを付けるなら必須のままにしてください。';
+
+// サーバ名ごとの送信元 IP の渡し方（tls.routes[].source_ip、rproxy-api v0.4.13）の説明
+export const ROUTE_SOURCE_IP_HELP =
+  '「送信元 IP」は、その名前の転送先へクライアントの IP をどう渡すかです（ルールと同じなら空のまま）。TLS を終端しない名前（「終端しない」にした名前と sni のルールの名前）にだけ選べ、L7（HTTP）のルールでも「終端しない」名前だけ PROXY protocol を付けられます。transparent はルールの単位でだけ選べます（詳細タブ）。';

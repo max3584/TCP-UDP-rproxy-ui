@@ -24,6 +24,7 @@ export const DRIFT_LABELS: Record<DriftField, string> = {
   bandwidth: '帯域の上限',
   geoip: 'GeoIP',
   outlier_detection: '受け身のヘルスチェック',
+  proxy_protocol: 'PROXY protocol の受け取り',
 };
 
 // 比べるための形：null / undefined / false / 空の配列・オブジェクトを省き、キーを並べ替える

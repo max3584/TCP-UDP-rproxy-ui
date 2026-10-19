@@ -2,7 +2,10 @@
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import RuleForm, { ALLOW_FROM_HELP, CHAIN_HELP, UDP_SNI_NOTES, UDP_SNI_VERSION_NOTE, udpSniSupport } from '@/components/RuleForm';
+import RuleForm, {
+  ALLOW_FROM_HELP, CHAIN_HELP, UDP_SNI_NOTES, UDP_SNI_VERSION_NOTE, buildRouteSpec, routeRow, routeSourceIpChoicesFor, udpSniSupport,
+} from '@/components/RuleForm';
+import type { RouteContext } from '@/components/RuleForm';
 import { explainError, UDP_SNI_OLD_RPROXY } from '@/components/messages';
 import { PROFILES } from '@/components/profiles';
 import { DEFAULT_MAX_RANGE_PORTS, ForwardRule } from '@/components/lib';
@@ -312,5 +315,59 @@ describe('profiles', () => {
     expect(byId['turns-dtls-sni']).toMatchObject({ protocol: 'udp', srcPort: 5349, tlsMode: 'sni' });
     expect(byId['turns-dtls-sni'].description).toContain('名前を読めない');
     expect(byId['submission']).toMatchObject({ srcPort: 587, tlsMode: 'terminate', starttls: 'smtp' });
+  });
+});
+
+// rproxy-api v0.4.13 の tls.routes[].source_ip（#297）と proxy_protocol（#296）。変更の画面で保存して消えないこと
+describe('RuleForm: route ごとの source_ip と proxy_protocol', () => {
+  const sniTls = normalizeTls({
+    mode: 'sni',
+    routes: [
+      { server_name: 'k8s.example.com', remote_addr: '10.2.255.131', remote_port: 443, source_ip: 'proxy_v2' },
+      { server_names: ['a.example.com', 'b.example.com'], remote_addr: '10.0.0.7', remote_port: 443 },
+    ],
+  });
+  const ctx = (over: Partial<RouteContext> = {}): RouteContext => ({ protocol: 'tcp', tlsMode: 'sni', l7: false, routeSourceIpEditable: true, ...over });
+
+  it('行に直して組み立て直すと source_ip が残る（以前は buildTls が落としていた）', () => {
+    for (const editable of [true, false]) {
+      const rebuilt = normalizeTls({ mode: 'sni', routes: sniTls.routes!.map((r) => buildRouteSpec(routeRow(r), ctx({ routeSourceIpEditable: editable }))) });
+      expect(rebuilt).toEqual(sniTls);
+    }
+  });
+
+  it('terminate の passthrough と L7 のルールの route にも付け、終端する route では編集できるときだけ外す', () => {
+    const row = routeRow({ server_name: 'k8s.example.com', remote_addr: '10.2.255.131', remote_port: 443, passthrough: true, source_ip: 'proxy_v1' });
+    expect(buildRouteSpec(row, ctx({ tlsMode: 'terminate' })).source_ip).toBe('proxy_v1');
+    expect(buildRouteSpec({ ...row, passthrough: false }, ctx({ tlsMode: 'terminate', l7: true })).source_ip).toBe('proxy_v1');
+    expect(buildRouteSpec({ ...row, passthrough: false }, ctx({ tlsMode: 'terminate' })).source_ip).toBeUndefined();
+    // rproxy が features.route_source_ip を返さない：読んだ値は消さずに送る（終端する route なら checkTls が断る）
+    const kept = buildRouteSpec({ ...row, passthrough: false }, ctx({ tlsMode: 'terminate', routeSourceIpEditable: false }));
+    expect(kept.source_ip).toBe('proxy_v1');
+    const tls = normalizeTls({ mode: 'terminate', certificates: [{ cert_file: '/c.pem', key_file: '/k.pem' }], routes: [kept] });
+    expect(() => checkTls('tcp', tls, null, 1)).toThrow(/終端しない/);
+  });
+
+  it('udp の sni では proxy_v1 を選べない', () => {
+    expect(routeSourceIpChoicesFor('udp')).toEqual(['proxy', 'proxy_v2']);
+    expect(routeSourceIpChoicesFor('tcp')).toEqual(['proxy', 'proxy_v1', 'proxy_v2']);
+    const row = routeRow({ server_name: 'q.example.com', remote_addr: '10.0.0.1', remote_port: 443, source_ip: 'proxy_v1' });
+    expect(buildRouteSpec(row, ctx({ protocol: 'udp' })).source_ip).toBeUndefined();
+    expect(buildRouteSpec({ ...row, source_ip: 'proxy_v2' }, ctx({ protocol: 'udp' })).source_ip).toBe('proxy_v2');
+  });
+
+  it('rproxy が機能を返さないときは、route の source_ip と proxy_protocol を読み取り専用で出す', () => {
+    const html = render({
+      ...terminateRule, tls: sniTls, distAddr: '10.0.0.5', distPort: 443,
+      proxyProtocol: { from: ['10.2.0.0/16'], required: false },
+    });
+    expect(html).toContain('data-testid="route-source-ip-preserved"');
+    expect(html).toContain('proxy_v2');
+    expect(html).toContain('data-testid="proxy-protocol-preserved"');
+    expect(html).toContain('10.2.0.0/16');
+    expect(html).toContain('ヘッダは任意');
+    // 編集の欄は出さない
+    expect(html).not.toContain('id="rule-proxy-protocol"');
+    expect(html).not.toContain('の送信元 IP の渡し方"');
   });
 });

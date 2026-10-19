@@ -179,6 +179,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 - `usage.spec.ts`：作ったルールに通信を流すと、UI の集計（E2E では `RPROXY_UI_USAGE_SECS=30`）でルールの利用量が増え、詳細画面のグラフ・利用量の画面の表・CSV に出ること（010 の表がなければ飛ばす）
 - `v04.spec.ts`：v0.4 の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームの「制限・GeoIP」でラベルと送信元ごとの同時接続 1 を付けて追加し、詳細画面にラベルが出て、2 本目の接続がすぐ閉じられること。`features.dry_run` のときは「差分を見る」で作成・変更の差分（接続を切らずに変わる、`labels`）が出ること
 - `gateway.spec.ts`：Gateway API 向けの L7・TLS の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームでルートの時間の上限・Host の書き換え・ヘッダを足す・ミラー・418 で答える転送先を付けて追加し、実際に Host が変わりヘッダが足され、写しがミラーの送り先に届き、`/teapot` が 418 を返すこと、詳細画面と編集画面に出ること。TLS の sni のサーバ名ごとの転送先を複数の宛先（フェイルオーバー）にして、ClientHello が 1 番目の宛先へ届き、詳細・編集画面に出ること。375px ではみ出さず、ライト・ダークで白地に白文字がないこと
+- `proxy-protocol.spec.ts`：rproxy-api v0.4.13 の `proxy_protocol` と `tls.routes[].source_ip`（rproxy の `features.proxy_protocol_in`・`route_source_ip` があるときだけ。まだなら飛ばす）。フォームの「詳細」で PROXY protocol の受け取り（`/0` は送る前に断る）と allow_from を付けて追加し、ヘッダのクライアントが allow_from の内なら転送され（ヘッダは転送先に届かない）、外・ヘッダなしなら断られること、変更の画面でそのまま保存しても残り、外すと rproxy からも外れること。TLS の sni のサーバ名ごとの転送先に `proxy_v1` を選んで追加し、変更の画面でそのまま保存しても残り（以前は保存で消えた）、その転送先に ClientHello の前の PROXY v1 のヘッダが届くこと
 - `acme.spec.ts`（`UI_E2E_ACME=1` のときだけ）：ACME（rproxy-api v0.3.21）。CI は rproxy-api に `docs/ACME.md` があれば、apk の pebble（ACME の試験用の CA）を同じコンテナで動かし、`scripts/ci-pebble.sh` が Pebble の HTTPS の証明書（openssl）・`/etc/hosts` の名前・rproxy の設定ファイル（`RPROXY_CONFIG` の `global.acme`）を作る。
   フォームで resolver を選び、ワイルドカード（dns-01 だけ）と `allowed_names` の外の名前を保存の前に断ること、保存したルールに rproxy が Pebble から証明書を取り（http-01、`http01_listen`）、詳細画面が「有効」になって実際に Pebble の証明書を返すこと、編集画面に resolver と名前が入っていること。
   rproxy が許可の外の名前を `400 invalid` で断ること。届かない CA の resolver では、詳細画面に「失敗」と仮の証明書（実際に `rproxy ACME placeholder` を返す）、ダッシュボードの要確認に「ACME 失敗」が出ること（375px でもはみ出さない・白地に白文字がない）
@@ -215,6 +216,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 | L7 のサービス | サービスの `outlier_detection` が保存する形に残り、誤りは `validateHttp` が出す |
 | /api/forward（add・modify・plan） | 追加は v0.4 の項目を rproxy と DB に、形の誤りは 400 で rproxy に送らない、変更は送られた項目だけ置き換え（null で外す）、`plan` は DB を変えずに rproxy の `?dry_run=true` を聞く（rproxy にないときは作るときの差分、断りはノードごとの誤り、削除） |
 | 429 locked_out | rproxy の一時停止は 502 `rproxy_locked_out` と説明（Retry-After の秒）、ダッシュボードにも出す |
+| proxy_protocol と route ごとの source_ip（`tests/proxyprotocol.test.ts`・`tests/forward-v04.test.ts`・`tests/ruleform.test.ts`） | rproxy の `src/net/proxy_in.rs`・`check_route_source_ip` と同じ規則（from は空・`/0` 不可・64 件まで・UDP は unsupported、route の source_ip は TLS を終端しない route だけ・transparent 不可・UDP の proxy_v1 不可）、DB の `options`・rproxy の POST / PATCH（外すときは `{}`）・エクスポート・ずれ・履歴で落とさない、変更の API は本文にない proxy_protocol を保つ、フォームの行から組み立て直しても route の source_ip が残る（rproxy が機能を返さないときも読み取り専用で残して送る） |
 
 ## 単体テスト：制御 API の mTLS（`tests/mtls.test.ts`）と rproxy の機能と設定（`tests/system.test.ts`）
 

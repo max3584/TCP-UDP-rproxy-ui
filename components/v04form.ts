@@ -1,8 +1,8 @@
 // RuleForm の「制限・GeoIP」タブの入力（文字列の欄）と、v0.4 の項目（components/v04.ts）の行き来。React に依存しない（tests/v04.test.ts）
 import type { Protocol } from './lib';
 import { TlsError } from './tlserror';
-import { normalizeBandwidth, normalizeGeoip, normalizeL4Outlier, normalizeLabels, normalizeLimits } from './v04';
-import type { GeoipUnknown, RateSpec, V04Key, V04Settings } from './v04';
+import { normalizeBandwidth, normalizeGeoip, normalizeL4Outlier, normalizeLabels, normalizeLimits, normalizeProxyProtocol } from './v04';
+import type { GeoipUnknown, ProxyProtocolSpec, RateSpec, V04Key, V04Settings } from './v04';
 
 export interface LabelRow {
   key: string;
@@ -180,5 +180,29 @@ export function buildV04(form: V04Form, protocol: Protocol, l7: boolean, editabl
     }));
     if (outlier) out.outlierDetection = outlier;
   } else if (!l7 && current.outlierDetection) out.outlierDetection = current.outlierDetection;
+  // PROXY protocol の受け取りは「詳細」タブ（buildProxyProtocol）。ここでは今の値をそのまま渡す
+  if (current.proxyProtocol) out.proxyProtocol = current.proxyProtocol;
   return out;
+}
+
+// ---- 「詳細」タブの PROXY protocol の受け取り（proxy_protocol、rproxy-api v0.4.13） ----
+
+export interface ProxyProtocolForm {
+  enabled: boolean;
+  // 1 行に 1 件（CIDR か IP アドレス）
+  fromText: string;
+  required: boolean;
+}
+
+export function toProxyProtocolForm(spec: ProxyProtocolSpec | undefined): ProxyProtocolForm {
+  return { enabled: spec !== undefined, fromText: (spec?.from ?? []).join('\n'), required: spec?.required ?? true };
+}
+
+// 欄から proxy_protocol を作る。editable でなければ（rproxy が features.proxy_protocol_in を返さない・UDP）今の値をそのまま残す。
+// 誤りは TlsError（rproxy と同じ規則：from は空にできない・/0 は不可・最大 64 件）
+export function buildProxyProtocol(form: ProxyProtocolForm, protocol: Protocol, editable: boolean, current: ProxyProtocolSpec | undefined): ProxyProtocolSpec | undefined {
+  if (!editable) return current;
+  if (!form.enabled) return undefined;
+  const from = form.fromText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
+  return normalizeProxyProtocol({ from: from, required: form.required }, protocol) ?? undefined;
 }

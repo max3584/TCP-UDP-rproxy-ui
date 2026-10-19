@@ -11,6 +11,8 @@ import {
   ForwardRules,
   MAX_EXTRA_LISTEN_ADDRS,
   Protocol,
+  ROUTE_SOURCE_IPS,
+  RouteSourceIp,
   SourceIp,
   StartTls,
   TCP_ONLY_SOURCE_IPS,
@@ -20,12 +22,15 @@ import {
   TlsSpec,
   TlsUnmatched,
   routeNames,
+  routeRelaysAtL4,
 } from './lib';
 import { CIPHER_SUITES, TLS12_CIPHER_SUITES, TLS13_CIPHER_SUITES, isTls13Suite } from './tls';
 import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
 import { PROFILES } from './profiles';
-import { SOURCE_IP_DOC_URL, proxyProtocolHint, transparentHint } from './sourceip';
+import {
+  PROXY_PROTOCOL_IN_HELP, PROXY_PROTOCOL_REQUIRED_HELP, ROUTE_SOURCE_IP_HELP, SOURCE_IP_DOC_URL, proxyProtocolHint, transparentHint,
+} from './sourceip';
 import { ACME_NOT_CONFIGURED_NOTE, ACME_UNSUPPORTED_NOTE, FILE_OWNER_NOTE } from './messages';
 import { AcmeInfo, splitAcmeDomains } from './acme';
 import AcmeCertificateEditor, { acmeRowProblem } from './AcmeCertificateEditor';
@@ -40,9 +45,10 @@ import { joinList } from '@/i18n/core';
 import { compareVersions, parseVersion } from './version';
 import LimitsEditor from './LimitsEditor';
 import PlanView, { PlanResponse } from './PlanView';
-import { V04_KEYS, v04Of } from './v04';
+import { V04_FEATURE, V04_FIELD, V04_KEYS, v04Of } from './v04';
 import type { V04Key } from './v04';
-import { buildV04, toV04Form } from './v04form';
+import { buildProxyProtocol, buildV04, toProxyProtocolForm, toV04Form } from './v04form';
+import type { ProxyProtocolForm } from './v04form';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -73,6 +79,13 @@ const SOURCE_IP_LABELS: Record<SourceIp, string> = {
   transparent: 'transparent（クライアントの IP のまま接続する）',
 };
 
+// サーバ名ごとの送信元 IP の渡し方（tls.routes[].source_ip）。空はルールと同じ
+const ROUTE_SOURCE_IP_LABELS: Record<RouteSourceIp, string> = {
+  proxy: 'proxy（渡さない）',
+  proxy_v1: 'proxy_v1（PROXY protocol v1）',
+  proxy_v2: 'proxy_v2（PROXY protocol v2）',
+};
+
 const tlsModeLabel = (mode: TlsMode, protocol: Protocol): string => {
   switch (mode) {
     case 'passthrough': return 'passthrough（復号せずにそのまま流す）';
@@ -94,7 +107,7 @@ const domainPattern = /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*$/;
 const isIPv4 = (address: string) => ipv4Pattern.test(address);
 const isIPv6 = (address: string) => address.includes(':') && ipv6Pattern.test(address);
 
-interface RouteRow {
+export interface RouteRow {
   // サーバ名（カンマか空白で区切って複数書ける。1 つなら server_name、複数なら server_names で送る）
   names: string;
   remote_addr: string;
@@ -103,6 +116,9 @@ interface RouteRow {
   // 名前ごとの複数の宛先（rproxy の #234）。空なら remote_addr / remote_port の 1 件
   targets: TargetRow[];
   balance: Balance;
+  // この名前の転送先への送信元 IP の渡し方（rproxy-api v0.4.13）。'' はルールと同じ。
+  // rproxy が features.route_source_ip を返さなくても、読んだ値はそのまま送る（保存で消さない）
+  source_ip: RouteSourceIp | '';
 }
 
 // 証明書の 1 行。ACME の証明書（acme がある）は名前の欄の文字を domainsText に持つ
@@ -112,7 +128,7 @@ function certRow(c: TlsCertificate): CertRow {
   return c.acme !== undefined ? { ...c, domainsText: (c.domains ?? []).join(', ') } : c;
 }
 
-function routeRow(r: TlsRoute): RouteRow {
+export function routeRow(r: TlsRoute): RouteRow {
   return {
     names: routeNames(r).join(', '),
     remote_addr: r.remote_addr ?? '',
@@ -120,6 +136,59 @@ function routeRow(r: TlsRoute): RouteRow {
     passthrough: r.passthrough === true,
     targets: toRows(r.targets ?? []),
     balance: r.balance ?? DEFAULT_BALANCE,
+    source_ip: r.source_ip ?? '',
+  };
+}
+
+// route を組み立てるときの前提（フォームの今の選択）
+export interface RouteContext {
+  protocol: Protocol;
+  tlsMode: TlsMode;
+  l7: boolean;
+  // rproxy が features.route_source_ip を返す（route ごとの source_ip を編集できる）
+  routeSourceIpEditable: boolean;
+}
+
+// その route が TLS を終端せずにつなぐか（L7 のルールの route は常に終端しない）
+export function routeRowAtL4(r: Pick<RouteRow, 'passthrough'>, ctx: Pick<RouteContext, 'tlsMode' | 'l7'>): boolean {
+  return routeRelaysAtL4(ctx.tlsMode, { passthrough: ctx.tlsMode === 'terminate' && (ctx.l7 || r.passthrough) });
+}
+
+// route に選べる送信元 IP の渡し方（proxy_v1 は TCP だけ）
+export function routeSourceIpChoicesFor(protocol: Protocol): RouteSourceIp[] {
+  return ROUTE_SOURCE_IPS.filter((s) => !(protocol === 'udp' && TCP_ONLY_SOURCE_IPS.includes(s)));
+}
+
+// route の source_ip として送る値（'' は送らない）。編集できるときは、TLS を終端しない route で選べる値だけ。
+// 編集できない（rproxy が features.route_source_ip を返さない）ときは、読んだ値を消さずにそのまま送る（rproxy が判断する）
+export function routeSourceIpValue(r: RouteRow, ctx: RouteContext): RouteSourceIp | '' {
+  if (r.source_ip === '') return '';
+  if (!ctx.routeSourceIpEditable) return r.source_ip;
+  return routeRowAtL4(r, ctx) && routeSourceIpChoicesFor(ctx.protocol).includes(r.source_ip) ? r.source_ip : '';
+}
+
+// フォームの 1 行から tls.routes[] の 1 件を作る（normalizeTls・checkTls で確かめる前の形）。
+// 行に持っている項目はすべてここで書き戻す（以前は source_ip を落としていたので、保存すると消えた）
+export function buildRouteSpec(r: RouteRow, ctx: RouteContext): Record<string, unknown> {
+  const names = splitServerNames(r.names);
+  // L7 のルールでは passthrough の転送先だけ使える
+  const passthrough = ctx.tlsMode === 'terminate' && (ctx.l7 || r.passthrough);
+  const sourceIp = routeSourceIpValue(r, ctx);
+  return {
+    ...(names.length > 1 ? { server_names: names } : { server_name: names[0] ?? '' }),
+    ...(r.targets.length > 0
+      ? {
+        targets: r.targets.map((t) => ({
+          addr: t.addr.trim(),
+          port: t.port === '' ? undefined : t.port,
+          ...(t.weight === '' ? {} : { weight: t.weight }),
+          ...(t.backup ? { backup: true } : {}),
+        })),
+        ...(r.balance !== DEFAULT_BALANCE ? { balance: r.balance } : {}),
+      }
+      : { remote_addr: r.remote_addr, remote_port: r.remote_port === '' ? 0 : r.remote_port }),
+    ...(passthrough ? { passthrough: true } : {}),
+    ...(sourceIp !== '' ? { source_ip: sourceIp } : {}),
   };
 }
 
@@ -149,7 +218,9 @@ interface Caps {
     httpOptions: string[];
     // tls.routes[] の targets / balance（features.tls_route_targets）
     tlsRouteTargets: boolean;
-    // v0.4 のルールの項目（labels・limits・bandwidth・geoip・outlier_detection）。返さない rproxy では false
+    // tls.routes[] ごとの source_ip（features.route_source_ip、rproxy-api v0.4.13）
+    routeSourceIp: boolean;
+    // v0.4 のルールの項目（labels・limits・bandwidth・geoip・outlier_detection・proxy_protocol（features.proxy_protocol_in））。返さない rproxy では false
     v04: Record<V04Key, boolean>;
     // 変更前の差分（?dry_run=true）
     dryRun: boolean;
@@ -187,6 +258,7 @@ type FieldErrors = {
   tls: string;
   http: string;
   v04: string;
+  proxyProtocol: string;
 };
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
@@ -196,7 +268,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
   tls: ['tls'],
   mail: [],
   limits: ['v04'],
-  advanced: ['sourceIp', 'udpIdleSecs', 'allowFrom'],
+  advanced: ['sourceIp', 'udpIdleSecs', 'allowFrom', 'proxyProtocol'],
 };
 
 const EMPTY_ERRORS: FieldErrors = {
@@ -214,6 +286,7 @@ const EMPTY_ERRORS: FieldErrors = {
   tls: '',
   http: '',
   v04: '',
+  proxyProtocol: '',
 };
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
@@ -240,7 +313,7 @@ export function udpSniSupport(version: string | null): boolean | null {
 export const UDP_SNI_VERSION_NOTE =
   'UDP の sni には rproxy v0.3.8 以降が必要です。この rproxy は版を返さない（v0.3.18 より前）ので確かめられません。v0.3.7 以前の rproxy では保存するときに断られます。';
 
-const NO_V04: Record<V04Key, boolean> = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false };
+const NO_V04: Record<V04Key, boolean> = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false };
 
 const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
@@ -291,6 +364,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   // v0.4 の項目（「制限・GeoIP」タブ）。編集を始めたときの値は、rproxy が使えない項目をそのまま残すのに使う
   const initialV04 = useMemo(() => v04Of(initialData ?? {}), [initialData]);
   const [v04Form, setV04Form] = useState(() => toV04Form(initialV04));
+  // PROXY protocol の受け取り（「詳細」タブ。rproxy-api v0.4.13 の proxy_protocol）
+  const [ppForm, setPpForm] = useState<ProxyProtocolForm>(() => toProxyProtocolForm(initialV04.proxyProtocol));
   // 変更前の差分（dry_run）の結果
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [planError, setPlanError] = useState('');
@@ -340,7 +415,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             services: Array.isArray(data.features.services) ? data.features.services : null,
             httpOptions: Array.isArray(data.features.http_options) ? data.features.http_options : [],
             tlsRouteTargets: data.features.tls_route_targets === true,
-            v04: Object.fromEntries(V04_KEYS.map((k) => [k, data.features[k] === true])) as Record<V04Key, boolean>,
+            routeSourceIp: data.features.route_source_ip === true,
+            v04: Object.fromEntries(V04_KEYS.map((k) => [k, data.features[V04_FEATURE[k]] === true])) as Record<V04Key, boolean>,
             dryRun: data.features.dry_run === true,
           } : null,
         });
@@ -483,6 +559,12 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const tlsOptionsEditable = protocol === 'tcp' && tlsMode === 'terminate' && caps.features?.tlsOptions === true;
   // サーバ名ごとの複数の宛先（rproxy の #234）は features.tls_route_targets のときだけ編集できる（使っていれば読み取り専用で残す）
   const routeTargetsEditable = caps.features?.tlsRouteTargets === true;
+  // サーバ名ごとの送信元 IP の渡し方は features.route_source_ip のときだけ編集できる（使っていれば読み取り専用で残して送る）
+  const routeSourceIpEditable = caps.features?.routeSourceIp === true;
+  const routeCtx: RouteContext = { protocol: protocol, tlsMode: tlsMode, l7: l7, routeSourceIpEditable: routeSourceIpEditable };
+  const routeSourceIpChoices = routeSourceIpChoicesFor(protocol);
+  // PROXY protocol の受け取りは tcp で、rproxy が features.proxy_protocol_in を返すときだけ編集できる（使っていれば読み取り専用で残して送る）
+  const ppEditable = protocol === 'tcp' && caps.features?.v04.proxy_protocol === true;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
   const showUnmatched = ((protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate')) || (protocol === 'udp' && tlsMode === 'sni'))
@@ -556,26 +638,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const buildTls = (): unknown => {
     const spec: Record<string, unknown> = { mode: tlsMode };
     if (tlsMode === 'sni' || tlsMode === 'terminate') {
-      spec.routes = routes.map((r) => {
-        const names = splitServerNames(r.names);
-        // L7 のルールでは passthrough の転送先だけ使える
-        const passthrough = tlsMode === 'terminate' && (l7 || r.passthrough);
-        return {
-          ...(names.length > 1 ? { server_names: names } : { server_name: names[0] ?? '' }),
-          ...(r.targets.length > 0
-            ? {
-              targets: r.targets.map((t) => ({
-                addr: t.addr.trim(),
-                port: t.port === '' ? undefined : t.port,
-                ...(t.weight === '' ? {} : { weight: t.weight }),
-                ...(t.backup ? { backup: true } : {}),
-              })),
-              ...(r.balance !== DEFAULT_BALANCE ? { balance: r.balance } : {}),
-            }
-            : { remote_addr: r.remote_addr, remote_port: r.remote_port === '' ? 0 : r.remote_port }),
-          ...(passthrough ? { passthrough: true } : {}),
-        };
-      });
+      spec.routes = routes.map((r) => buildRouteSpec(r, routeCtx));
       if (showUnmatched) spec.unmatched = unmatched;
     }
     if (tlsMode === 'terminate') {
@@ -638,6 +701,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       tls: '',
       http: '',
       v04: '',
+      proxyProtocol: '',
     };
 
     if (l7) {
@@ -682,11 +746,19 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
 
     // v0.4 の項目：rproxy が使える項目だけを欄から作り、使えない項目は編集を始めたときの値を残す
     const v04Editable = caps.features?.v04 ?? NO_V04;
-    let v04 = initialV04;
+    let v04 = { ...initialV04 };
     try {
       v04 = buildV04(v04Form, protocol, l7, v04Editable, initialV04);
     } catch (err) {
       newErrors.v04 = err instanceof Error ? err.message : String(err);
+    }
+    // PROXY protocol の受け取り（「詳細」タブ）：編集できなければ編集を始めたときの値を残す
+    try {
+      const pp = buildProxyProtocol(ppForm, protocol, ppEditable, initialV04.proxyProtocol);
+      if (pp) v04 = { ...v04, proxyProtocol: pp };
+      else delete v04.proxyProtocol;
+    } catch (err) {
+      newErrors.proxyProtocol = err instanceof Error ? err.message : String(err);
     }
 
     if (Object.values(newErrors).some((e) => e !== '')) {
@@ -720,9 +792,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       ...v04,
     };
     // 編集できる v0.4 の項目で空にしたものは null で送る（変更の API は送られていない項目を今のまま保つので、外すことを伝える）
+    const editableNow: Record<V04Key, boolean> = { ...v04Editable, proxy_protocol: ppEditable };
     const clears = Object.fromEntries(V04_KEYS
-      .filter((k) => v04Editable[k] && !(k === 'outlier_detection' ? rule.outlierDetection : rule[k]))
-      .map((k) => [k === 'outlier_detection' ? 'outlierDetection' : k, null]));
+      .filter((k) => editableNow[k] && !rule[V04_FIELD[k]])
+      .map((k) => [V04_FIELD[k], null]));
     return { ...rule, ...clears } as ForwardRule;
   };
 
@@ -1181,6 +1254,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               複数に一致するときは、完全一致 → <span className="font-mono">*.</span> → <span className="font-mono">**.</span>（長い方）→ 上の行の順に選びます。
               {tlsMode === 'terminate' && '「終端しない」にした名前は、rproxy で TLS を終端せずに ClientHello ごと転送先へ流します（証明書は転送先のもの）。'}
             </p>
+            {routeSourceIpEditable && <p className={helpClass} id="rule-tls-routes-source-ip-help">{ROUTE_SOURCE_IP_HELP}</p>}
             {routes.map((r, i) => (
               <div key={i} className="mb-2" data-testid="tls-route-row">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-1">
@@ -1208,9 +1282,25 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                     終端しない
                   </label>
                 )}
+                {routeSourceIpEditable && routeRowAtL4(r, routeCtx) && (
+                  <select value={routeSourceIpChoices.includes(r.source_ip as RouteSourceIp) ? r.source_ip : ''}
+                    onChange={(e) => updateRoute(i, { source_ip: e.target.value as RouteSourceIp | '' })}
+                    className="border border-gray-300 rounded-sm px-2 py-1 sm:w-auto max-lg:min-h-11 bg-white text-gray-900"
+                    aria-label={`転送先 ${i + 1} の送信元 IP の渡し方`} aria-describedby="rule-tls-routes-source-ip-help">
+                    <option value="">{`送信元 IP: ルールと同じ（${sourceIp}）`}</option>
+                    {routeSourceIpChoices.map((s) => <option key={s} value={s}>{ROUTE_SOURCE_IP_LABELS[s]}</option>)}
+                  </select>
+                )}
                 <button type="button" onClick={() => setRoutes(routes.filter((_, j) => j !== i))} className={`${removeButtonClass} whitespace-nowrap`}
                   aria-label={`転送先 ${i + 1} を削除`}>削除</button>
                 </div>
+                {!routeSourceIpEditable && r.source_ip !== '' && (
+                  <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-1 break-all" data-testid="route-source-ip-preserved">
+                    送信元 IP の渡し方: <span className="font-mono">{r.source_ip}</span>（この rproxy では使えないので編集できません。そのまま残して送ります）
+                    <button type="button" className="ml-2 text-blue-700 underline" onClick={() => updateRoute(i, { source_ip: '' })}
+                      aria-label={`転送先 ${i + 1} の送信元 IP の渡し方を外す`}>外す</button>
+                  </p>
+                )}
                 {r.targets.length > 0 && (
                   <RouteTargetsEditor index={i} rows={r.targets} balance={r.balance} editable={routeTargetsEditable}
                     onChange={(rows, balance) => updateRoute(i, { targets: rows, balance: balance })}
@@ -1218,7 +1308,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 )}
               </div>
             ))}
-            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7, targets: [], balance: DEFAULT_BALANCE }])} className={smallButtonClass}>
+            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7, targets: [], balance: DEFAULT_BALANCE, source_ip: '' }])} className={smallButtonClass}>
               ＋ 転送先を追加
             </button>
           </fieldset>
@@ -1550,6 +1640,52 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           </p>
           {errors.allowFrom && <p className={errorClass}>{errors.allowFrom}</p>}
         </div>
+        {ppEditable ? (
+          <fieldset className="mb-4" data-testid="proxy-protocol">
+            <legend className={labelClass}>PROXY protocol の受け取り（proxy_protocol）:</legend>
+            <label htmlFor="rule-proxy-protocol" className="flex items-center gap-2 text-sm text-gray-900">
+              <input id="rule-proxy-protocol" type="checkbox" checked={ppForm.enabled} aria-describedby="rule-proxy-protocol-help"
+                onChange={(e) => setPpForm({ ...ppForm, enabled: e.target.checked })} />
+              前段が付ける PROXY protocol（v1 / v2）のヘッダを読む
+            </label>
+            <p id="rule-proxy-protocol-help" className={helpClass}>{PROXY_PROTOCOL_IN_HELP}</p>
+            {ppForm.enabled && (
+              <div className="mt-2 space-y-2 border-l-2 border-gray-300 pl-3">
+                <div>
+                  <label htmlFor="rule-proxy-protocol-from" className="block text-xs font-medium text-gray-800">ヘッダを信じる前段（from。1 行に 1 件）</label>
+                  <textarea
+                    id="rule-proxy-protocol-from"
+                    value={ppForm.fromText}
+                    onChange={(e) => setPpForm({ ...ppForm, fromText: e.target.value })}
+                    className={`${inputClass} font-mono`}
+                    rows={3}
+                    placeholder={'CIDR か IP アドレス\n例: 10.2.0.0/16\n例: 172.16.10.19'}
+                    aria-describedby="rule-proxy-protocol-from-help"
+                    aria-invalid={errors.proxyProtocol !== '' || undefined}
+                    spellCheck={false}
+                  />
+                  <p id="rule-proxy-protocol-from-help" className={helpClass}>
+                    {`すぐ前の段（TCP の接続元）のアドレスです。空にはできず、0.0.0.0/0・::/0（だれでも）は書けません（最大 ${MAX_ALLOW_FROM} 件）。`}
+                  </p>
+                </div>
+                <label htmlFor="rule-proxy-protocol-required" className="flex items-center gap-2 text-sm text-gray-900">
+                  <input id="rule-proxy-protocol-required" type="checkbox" checked={ppForm.required} aria-describedby="rule-proxy-protocol-required-help"
+                    onChange={(e) => setPpForm({ ...ppForm, required: e.target.checked })} />
+                  前段からの接続にヘッダを必須にする（required）
+                </label>
+                <p id="rule-proxy-protocol-required-help" className={helpClass}>{PROXY_PROTOCOL_REQUIRED_HELP}</p>
+              </div>
+            )}
+            {errors.proxyProtocol && <p className={errorClass}>{errors.proxyProtocol}</p>}
+          </fieldset>
+        ) : initialV04.proxyProtocol && (
+          <p className="mb-4 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 break-all" data-testid="proxy-protocol-preserved">
+            {`PROXY protocol の受け取り（${initialV04.proxyProtocol.required ? 'ヘッダは必須' : 'ヘッダは任意'}）: `}
+            <span className="font-mono">{initialV04.proxyProtocol.from.join(', ')}</span>
+            <br />
+            この rproxy では使えないので編集できません。そのまま残して送ります。
+          </p>
+        )}
         <div className="mb-4">
           <label htmlFor="rule-crowdsec" className="flex items-center gap-2 text-sm text-gray-900">
             <input id="rule-crowdsec" type="checkbox" checked={crowdsec} onChange={(e) => setCrowdsec(e.target.checked)} />

@@ -5,6 +5,7 @@
 
 import type { Protocol } from './lib';
 import { TlsError } from './tlserror';
+import { MAX_ALLOW_FROM, parseCidr } from './cidr';
 
 export type Labels = Record<string, string>;
 
@@ -73,6 +74,15 @@ export interface HttpOutlierSpec {
   max_ejected_percent?: number;
 }
 
+// 前段（ロードバランサ・別の rproxy・Kubernetes の Gateway など）が付ける PROXY protocol v1 / v2 のヘッダを読む
+// （rproxy-api v0.4.13、#296、features.proxy_protocol_in）。tcp のルールだけ。
+// from はヘッダを信じる接続元（CIDR に正規化。空にできず、/0 は不可）、required は from からの接続がヘッダなしなら断るか。
+// rproxy の応答と比べられるように、required は省かずに書く（rproxy の一覧も常に出す）
+export interface ProxyProtocolSpec {
+  from: string[];
+  required: boolean;
+}
+
 // ルールの v0.4 の項目（ForwardRule に同じ名前で付く。ないものは省く）
 export interface V04Settings {
   labels?: Labels;
@@ -80,14 +90,24 @@ export interface V04Settings {
   bandwidth?: BandwidthSpec;
   geoip?: GeoipSpec;
   outlierDetection?: L4OutlierSpec;
+  // v0.4.13
+  proxyProtocol?: ProxyProtocolSpec;
 }
 
 // rproxy・DB の options での名前（snake_case）と ForwardRule での名前
-export const V04_KEYS = ['labels', 'limits', 'bandwidth', 'geoip', 'outlier_detection'] as const;
+export const V04_KEYS = ['labels', 'limits', 'bandwidth', 'geoip', 'outlier_detection', 'proxy_protocol'] as const;
 export type V04Key = typeof V04_KEYS[number];
 
-// GET /capabilities の features の名前（labels・limits・bandwidth・geoip・outlier_detection と同じ）
-export type V04Feature = V04Key;
+// ForwardRule（API の本文）での名前
+export const V04_FIELD: Record<V04Key, keyof V04Settings> = {
+  labels: 'labels', limits: 'limits', bandwidth: 'bandwidth', geoip: 'geoip', outlier_detection: 'outlierDetection', proxy_protocol: 'proxyProtocol',
+};
+
+// GET /capabilities の features の名前（proxy_protocol だけ proxy_protocol_in。ほかは同じ名前）
+export type V04Feature = 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol_in';
+export const V04_FEATURE: Record<V04Key, V04Feature> = {
+  labels: 'labels', limits: 'limits', bandwidth: 'bandwidth', geoip: 'geoip', outlier_detection: 'outlier_detection', proxy_protocol: 'proxy_protocol_in',
+};
 
 // Gateway API の形の状態（ルールの conditions。features.conditions）
 export interface Condition {
@@ -435,6 +455,41 @@ export function normalizeHttpOutlier(value: unknown, where = 'outlier_detection'
   return Object.keys(out).length > 0 ? out : null;
 }
 
+// ---- PROXY protocol を受け取る（proxy_protocol、v0.4.13） ----
+
+// rproxy の src/net/proxy_in.rs の validate と同じ規則：省略・null・{} はなし、tcp だけ（udp は unsupported）、
+// from は空にできず最大 64 件、CIDR か単一の IP（正規化する）、/0（0.0.0.0/0・::/0）は invalid、required は既定 true
+export function normalizeProxyProtocol(value: unknown, protocol?: Protocol): ProxyProtocolSpec | null {
+  if (value === undefined || value === null) return null;
+  if (!isObject(value)) throw invalid('PROXY protocol の受け取り（proxy_protocol）の形式が不正です。');
+  if (Object.keys(value).length === 0) return null;
+  checkKeys(value, ['from', 'required'], 'proxy_protocol');
+  if (protocol === 'udp') {
+    throw new TlsError('PROXY protocol の受け取り（proxy_protocol）は TCP のルールでだけ使えます（UDP のヘッダは読みません）。', 'unsupported');
+  }
+  if (value.from !== undefined && value.from !== null && !Array.isArray(value.from)) {
+    throw invalid('ヘッダを信じる前段（proxy_protocol.from）は配列で指定してください。');
+  }
+  const list = (value.from ?? []) as unknown[];
+  if (list.length === 0) {
+    throw invalid('ヘッダを信じる前段（proxy_protocol.from）を 1 件以上指定してください（だれのヘッダでも信じる設定は作れません）。');
+  }
+  if (list.length > MAX_ALLOW_FROM) throw invalid(`ヘッダを信じる前段（proxy_protocol.from）は ${MAX_ALLOW_FROM} 件までです。`);
+  const from = list.map((item) => {
+    if (typeof item !== 'string') throw invalid('ヘッダを信じる前段（proxy_protocol.from）は文字列（CIDR か IP アドレス）で指定してください。');
+    const r = parseCidr(item);
+    if (!r.ok) throw invalid(`ヘッダを信じる前段（proxy_protocol.from）: ${r.error}`);
+    if (r.value.endsWith('/0')) {
+      throw invalid(`ヘッダを信じる前段（proxy_protocol.from）に ${item.trim()} は書けません（だれのヘッダでも信じることになります）。前段のアドレスを書いてください。`);
+    }
+    return r.value;
+  });
+  if (value.required !== undefined && value.required !== null && typeof value.required !== 'boolean') {
+    throw invalid('proxy_protocol.required は true か false で指定してください。');
+  }
+  return { from: from, required: value.required !== false };
+}
+
 // ---- まとめて ----
 
 // API の本文・DB の options・rproxy の応答（snake_case のキー）から v0.4 の項目を読む。
@@ -454,6 +509,8 @@ export function normalizeV04(source: Record<string, unknown>, protocol?: Protoco
     if (http) throw invalid('L7（HTTP）のルールでは、ルールの受け身のヘルスチェックは使えません（L7 タブのサービスごとに設定します）。');
     out.outlierDetection = outlier;
   }
+  const pp = normalizeProxyProtocol(source.proxy_protocol ?? source.proxyProtocol, protocol);
+  if (pp) out.proxyProtocol = pp;
   return out;
 }
 
@@ -465,6 +522,7 @@ export function v04Of(rule: V04Settings): V04Settings {
   if (rule.bandwidth) out.bandwidth = rule.bandwidth;
   if (rule.geoip) out.geoip = rule.geoip;
   if (rule.outlierDetection) out.outlierDetection = rule.outlierDetection;
+  if (rule.proxyProtocol) out.proxyProtocol = rule.proxyProtocol;
   return out;
 }
 
@@ -475,6 +533,7 @@ export interface V04Wire {
   bandwidth?: BandwidthSpec;
   geoip?: GeoipSpec;
   outlier_detection?: L4OutlierSpec;
+  proxy_protocol?: ProxyProtocolSpec;
 }
 
 // PATCH の形（{} は外す）
@@ -489,6 +548,7 @@ export function v04Fields(rule: V04Settings): V04Wire {
     ...(v.bandwidth !== undefined ? { bandwidth: v.bandwidth } : {}),
     ...(v.geoip !== undefined ? { geoip: v.geoip } : {}),
     ...(v.outlierDetection !== undefined ? { outlier_detection: v.outlierDetection } : {}),
+    ...(v.proxyProtocol !== undefined ? { proxy_protocol: v.proxyProtocol } : {}),
   };
 }
 
@@ -505,7 +565,7 @@ export function v04PatchFields(after: V04Settings, before?: V04Settings): V04Pat
 
 // 使っている v0.4 の項目（features の名前）
 export function usedV04Features(rule: V04Settings): V04Feature[] {
-  return Object.keys(v04Fields(rule)) as V04Feature[];
+  return (Object.keys(v04Fields(rule)) as V04Key[]).map((k) => V04_FEATURE[k]);
 }
 
 // 画面の名前
@@ -515,6 +575,7 @@ export const V04_LABELS: Record<V04Key, string> = {
   bandwidth: '帯域の上限',
   geoip: 'GeoIP',
   outlier_detection: '受け身のヘルスチェック',
+  proxy_protocol: 'PROXY protocol の受け取り',
 };
 
 // ---- 画面の表示 ----

@@ -16,6 +16,9 @@ export type SourceIp = 'proxy' | 'proxy_v1' | 'proxy_v2' | 'transparent';
 export const SOURCE_IPS: SourceIp[] = ['proxy', 'proxy_v1', 'proxy_v2', 'transparent'];
 // proxy_v1（テキスト）は TCP でのみ使える。proxy_v2 は UDP でも使える（データグラムごとにヘッダが付く）
 export const TCP_ONLY_SOURCE_IPS: SourceIp[] = ['proxy_v1'];
+// tls.routes[] ごとの source_ip（rproxy-api v0.4.13、#297、features.route_source_ip）。transparent はルールの単位だけ
+export type RouteSourceIp = 'proxy' | 'proxy_v1' | 'proxy_v2';
+export const ROUTE_SOURCE_IPS: RouteSourceIp[] = ['proxy', 'proxy_v1', 'proxy_v2'];
 export const DEFAULT_UDP_IDLE_SECS = 30;
 export const DEFAULT_MAX_RANGE_PORTS = 20000;
 
@@ -43,6 +46,14 @@ export interface TlsRoute {
   targets?: Target[];
   // targets の振り分け方（既定の round_robin なら省く）
   balance?: Balance;
+  // この名前の転送先への送信元 IP の渡し方（rproxy-api v0.4.13、#297）。TLS を終端しない route（terminate の passthrough、sni の route）だけ。
+  // 省けばルールの source_ip
+  source_ip?: RouteSourceIp;
+}
+
+// route ごとの source_ip を書ける route か：TLS を終端せずに L4 でつなぐもの（sni のルールの route と、terminate の passthrough の route）
+export function routeRelaysAtL4(mode: TlsMode, route: Pick<TlsRoute, 'passthrough'>): boolean {
+  return mode === 'sni' || (mode === 'terminate' && route.passthrough === true);
 }
 
 // route の宛先の一覧（targets か、remote_addr / remote_port の 1 件）
@@ -322,7 +333,7 @@ export interface NodeLiveState {
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
 export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled'
-  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection';
+  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol';
 
 export type NodeRole = 'active' | 'standby';
 

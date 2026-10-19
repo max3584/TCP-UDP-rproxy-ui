@@ -159,6 +159,14 @@ export const AllowFromBadge: React.FC<{ allowFrom: string[] }> = ({ allowFrom })
   )
 );
 
+// 前段の PROXY protocol のヘッダを読むルール（proxy_protocol、rproxy-api v0.4.13）
+export const ProxyProtocolBadge: React.FC<{ rule: { proxyProtocol?: { from: string[] } } }> = ({ rule }) => (
+  !rule.proxyProtocol ? null : (
+    <span className="badge bg-violet-100 text-violet-900" data-testid="proxy-protocol-badge"
+      title={`前段の PROXY protocol のヘッダを読む: ${rule.proxyProtocol.from.join(', ')}`}>PROXY 受信</span>
+  )
+);
+
 export const ErrorBanner: React.FC<{ message: string; onClose?: () => void }> = ({ message, onClose }) => (
   <div role="alert" className="bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded-sm mb-4 flex justify-between items-start">
     <span className="break-all">{message}</span>

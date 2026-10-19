@@ -120,6 +120,8 @@ const FIELD_MAP: Record<string, string> = {
   bandwidth: 'bandwidth',
   geoip: 'geoip',
   outlier_detection: 'outlierDetection',
+  // v0.4.13（PROXY protocol の受け取り）
+  proxy_protocol: 'proxyProtocol',
   // UI での一時停止（エクスポートした停止中のルール）。rproxy の設定ファイルにはない項目
   enabled: 'enabled',
   // ノードごとの上書き（UI のエクスポートだけ）
