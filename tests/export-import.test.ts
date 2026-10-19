@@ -182,6 +182,19 @@ const RULES: ForwardRule[] = [
       ],
     },
   }),
+  // tls.routes[] の upstream（rproxy-api v0.4.7、BackendTLSPolicy）。{} はその名前だけ平文
+  rule({
+    srcPort: 10443,
+    tls: {
+      mode: 'terminate',
+      routes: [
+        { server_name: 'a.example.com', remote_addr: '10.0.4.1', remote_port: 8443, upstream: { tls: true, server_name: 'a.internal', ca_file: '/etc/rproxy/a-ca.pem' } },
+        { server_name: 'b.example.com', remote_addr: '10.0.4.2', remote_port: 8080, upstream: {} },
+      ],
+      certificates: [{ cert_file: '/c.pem', key_file: '/c.key' }],
+      upstream: { tls: true },
+    },
+  }),
 ];
 
 beforeEach(() => {
@@ -417,6 +430,20 @@ describe('/api/forward/history and /api/forward/revert', () => {
       expect.objectContaining({ remote_addr: 'one.example', allow_from: [] }),
     );
     expect(mocks.addRule).not.toHaveBeenCalled();
+
+    // a version with tls.routes[].upstream keeps it when reverted (rproxy-api v0.4.7)
+    mocks.modifyRule.mockClear();
+    const withUpstream = RULES.find((r) => r.srcPort === 10443)!;
+    const v1u = rule({ ...withUpstream, srcPort: 8000 });
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM forward_rules_log l')) return [logRow(9, v1u, 'UPDATE')];
+      if (sql.startsWith('SELECT auth_id FROM forward_rules')) return [{ auth_id: 'user-1' }];
+      if (sql.startsWith('SELECT auth_id, protocol')) return [row(v2)];
+      return [];
+    });
+    const revertedUpstream = await call('revert', { id: 9 });
+    expect(revertedUpstream.body.result).toBe('modified');
+    expect(mocks.modifyRule.mock.calls[0][1].tls).toEqual(withUpstream.tls);
 
     // a version with a different source_ip is re-created (delete + add)
     const v3 = rule({ srcPort: 8000, distAddr: 'three.example', sourceIp: 'proxy_v2' });

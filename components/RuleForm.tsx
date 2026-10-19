@@ -23,7 +23,11 @@ import {
   TlsUnmatched,
   routeNames,
   routeRelaysAtL4,
+  routeTakesUpstream,
 } from './lib';
+import UpstreamFields, {
+  CHAIN_HELP, EMPTY_UPSTREAM_FORM, ROUTE_UPSTREAM_HELP, UpstreamForm, toUpstreamForm, upstreamFormUsed, upstreamSpec, upstreamSummary,
+} from './UpstreamFields';
 import { CIPHER_SUITES, TLS12_CIPHER_SUITES, TLS13_CIPHER_SUITES, isTls13Suite } from './tls';
 import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
 import { MAX_ALLOW_FROM, checkAllowFrom, splitAllowFromText } from './cidr';
@@ -62,8 +66,8 @@ export interface RuleFormProps {
   onPlan?: (data: ForwardRule) => Promise<PlanResponse>;
 }
 
-// 3 階層以上の PKI でも使えるように、中間 CA の欄は常に表示する
-export const CHAIN_HELP = '中間 CA（サーバ証明書を発行した CA からルートへ向かう順。ルートは不要）';
+// 中間 CA の欄の説明（転送先への TLS の欄と同じもの）
+export { CHAIN_HELP };
 
 export const ALLOW_FROM_HELP = '空欄ならすべて許可。範囲外からの接続は TLS より前に切断します';
 
@@ -119,6 +123,24 @@ export interface RouteRow {
   // この名前の転送先への送信元 IP の渡し方（rproxy-api v0.4.13）。'' はルールと同じ。
   // rproxy が features.route_source_ip を返さなくても、読んだ値はそのまま送る（保存で消さない）
   source_ip: RouteSourceIp | '';
+  // この名前の転送先への TLS（rproxy-api v0.4.7、tls.routes[].upstream）。null はルールの upstream を使う。
+  // tls: false は平文（ルールの upstream を使わない）。rproxy が features.tls_route_upstream を返さなくても、読んだ値はそのまま送る
+  upstream: RouteUpstreamRow | null;
+}
+
+export type RouteUpstreamRow = UpstreamForm & { tls: boolean };
+
+// route の転送先への TLS の選び方（ルールと同じ / 平文 / TLS で再暗号化）
+export type RouteUpstreamChoice = 'inherit' | 'plain' | 'tls';
+
+export function routeUpstreamChoice(u: RouteUpstreamRow | null): RouteUpstreamChoice {
+  return u === null ? 'inherit' : u.tls ? 'tls' : 'plain';
+}
+
+// 選び方を変えた後の行の値（平文にしても欄の値は残す。ルールと同じにすると外す）
+export function withRouteUpstreamChoice(u: RouteUpstreamRow | null, choice: RouteUpstreamChoice): RouteUpstreamRow | null {
+  if (choice === 'inherit') return null;
+  return { ...(u ?? EMPTY_UPSTREAM_FORM), tls: choice === 'tls' };
 }
 
 // 証明書の 1 行。ACME の証明書（acme がある）は名前の欄の文字を domainsText に持つ
@@ -137,6 +159,7 @@ export function routeRow(r: TlsRoute): RouteRow {
     targets: toRows(r.targets ?? []),
     balance: r.balance ?? DEFAULT_BALANCE,
     source_ip: r.source_ip ?? '',
+    upstream: r.upstream === undefined ? null : { ...toUpstreamForm(r.upstream), tls: r.upstream.tls === true },
   };
 }
 
@@ -147,6 +170,22 @@ export interface RouteContext {
   l7: boolean;
   // rproxy が features.route_source_ip を返す（route ごとの source_ip を編集できる）
   routeSourceIpEditable: boolean;
+  // rproxy が features.tls_route_upstream を返す（route ごとの upstream を編集できる）
+  routeUpstreamEditable: boolean;
+}
+
+// その route に転送先への TLS を書けるか（tcp の terminate の、rproxy が終端する route）
+export function routeRowTakesUpstream(r: Pick<RouteRow, 'passthrough'>, ctx: Pick<RouteContext, 'protocol' | 'tlsMode' | 'l7'>): boolean {
+  return routeTakesUpstream(ctx.protocol, ctx.tlsMode, { passthrough: ctx.tlsMode === 'terminate' && r.passthrough }, ctx.l7);
+}
+
+// route の upstream として送る値（undefined は送らない）。編集できるときは、書ける route だけ。
+// 編集できない（rproxy が features.tls_route_upstream を返さない）ときは、読んだ値を消さずにそのまま送る（rproxy が判断する）
+export function routeUpstreamValue(r: RouteRow, ctx: RouteContext): Record<string, unknown> | undefined {
+  if (r.upstream === null) return undefined;
+  if (ctx.routeUpstreamEditable && !routeRowTakesUpstream(r, ctx)) return undefined;
+  const { tls, ...fields } = r.upstream;
+  return upstreamSpec(tls, fields);
 }
 
 // その route が TLS を終端せずにつなぐか（L7 のルールの route は常に終端しない）
@@ -174,6 +213,7 @@ export function buildRouteSpec(r: RouteRow, ctx: RouteContext): Record<string, u
   // L7 のルールでは passthrough の転送先だけ使える
   const passthrough = ctx.tlsMode === 'terminate' && (ctx.l7 || r.passthrough);
   const sourceIp = routeSourceIpValue(r, ctx);
+  const upstream = routeUpstreamValue(r, ctx);
   return {
     ...(names.length > 1 ? { server_names: names } : { server_name: names[0] ?? '' }),
     ...(r.targets.length > 0
@@ -188,6 +228,7 @@ export function buildRouteSpec(r: RouteRow, ctx: RouteContext): Record<string, u
       }
       : { remote_addr: r.remote_addr, remote_port: r.remote_port === '' ? 0 : r.remote_port }),
     ...(passthrough ? { passthrough: true } : {}),
+    ...(upstream !== undefined ? { upstream: upstream } : {}),
     ...(sourceIp !== '' ? { source_ip: sourceIp } : {}),
   };
 }
@@ -220,6 +261,8 @@ interface Caps {
     tlsRouteTargets: boolean;
     // tls.routes[] ごとの source_ip（features.route_source_ip、rproxy-api v0.4.13）
     routeSourceIp: boolean;
+    // tls.routes[] ごとの upstream（features.tls_route_upstream、rproxy-api v0.4.7）
+    routeUpstream: boolean;
     // v0.4 のルールの項目（labels・limits・bandwidth・geoip・outlier_detection・proxy_protocol（features.proxy_protocol_in））。返さない rproxy では false
     v04: Record<V04Key, boolean>;
     // 変更前の差分（?dry_run=true）
@@ -346,12 +389,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [clientAuthChain, setClientAuthChain] = useState(tls.client_auth?.chain_file ?? '');
   const [alpnText, setAlpnText] = useState((tls.alpn ?? []).join(', '));
   const [upstreamTls, setUpstreamTls] = useState(tls.upstream?.tls ?? false);
-  const [upstreamServerName, setUpstreamServerName] = useState(tls.upstream?.server_name ?? '');
-  const [upstreamCa, setUpstreamCa] = useState(tls.upstream?.ca_file ?? '');
-  const [upstreamInsecure, setUpstreamInsecure] = useState(tls.upstream?.insecure_skip_verify ?? false);
-  const [upstreamCert, setUpstreamCert] = useState(tls.upstream?.cert_file ?? '');
-  const [upstreamChain, setUpstreamChain] = useState(tls.upstream?.chain_file ?? '');
-  const [upstreamKey, setUpstreamKey] = useState(tls.upstream?.key_file ?? '');
+  const [upstreamForm, setUpstreamForm] = useState<UpstreamForm>(() => toUpstreamForm(tls.upstream));
   const [unmatched, setUnmatched] = useState<TlsUnmatched>(tls.unmatched ?? 'default');
   // TLS のオプション（v0.3。features.tls_options）。rproxy が対応していなければ編集させず、終端のままならそのまま送る
   const tlsOptions = tls.options;
@@ -416,6 +454,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             httpOptions: Array.isArray(data.features.http_options) ? data.features.http_options : [],
             tlsRouteTargets: data.features.tls_route_targets === true,
             routeSourceIp: data.features.route_source_ip === true,
+            routeUpstream: data.features.tls_route_upstream === true,
             v04: Object.fromEntries(V04_KEYS.map((k) => [k, data.features[V04_FEATURE[k]] === true])) as Record<V04Key, boolean>,
             dryRun: data.features.dry_run === true,
           } : null,
@@ -561,7 +600,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const routeTargetsEditable = caps.features?.tlsRouteTargets === true;
   // サーバ名ごとの送信元 IP の渡し方は features.route_source_ip のときだけ編集できる（使っていれば読み取り専用で残して送る）
   const routeSourceIpEditable = caps.features?.routeSourceIp === true;
-  const routeCtx: RouteContext = { protocol: protocol, tlsMode: tlsMode, l7: l7, routeSourceIpEditable: routeSourceIpEditable };
+  // サーバ名ごとの転送先への TLS は features.tls_route_upstream のときだけ編集できる（使っていれば読み取り専用で残して送る）
+  const routeUpstreamEditable = caps.features?.routeUpstream === true;
+  const routeCtx: RouteContext = {
+    protocol: protocol, tlsMode: tlsMode, l7: l7, routeSourceIpEditable: routeSourceIpEditable, routeUpstreamEditable: routeUpstreamEditable,
+  };
   const routeSourceIpChoices = routeSourceIpChoicesFor(protocol);
   // PROXY protocol の受け取りは tcp で、rproxy が features.proxy_protocol_in を返すときだけ編集できる（使っていれば読み取り専用で残して送る）
   const ppEditable = protocol === 'tcp' && caps.features?.v04.proxy_protocol === true;
@@ -662,15 +705,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         spec.alpn = alpnText.split(',').map((a) => a.trim()).filter((a) => a !== '');
       }
       if (upstreamTls) {
-        spec.upstream = {
-          tls: true,
-          server_name: upstreamServerName,
-          ca_file: upstreamCa,
-          insecure_skip_verify: upstreamInsecure,
-          cert_file: upstreamCert,
-          chain_file: upstreamChain,
-          key_file: upstreamKey,
-        };
+        spec.upstream = upstreamSpec(true, upstreamForm);
       }
     }
     return spec;
@@ -1255,6 +1290,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               {tlsMode === 'terminate' && '「終端しない」にした名前は、rproxy で TLS を終端せずに ClientHello ごと転送先へ流します（証明書は転送先のもの）。'}
             </p>
             {routeSourceIpEditable && <p className={helpClass} id="rule-tls-routes-source-ip-help">{ROUTE_SOURCE_IP_HELP}</p>}
+            {routeUpstreamEditable && protocol === 'tcp' && tlsMode === 'terminate' && !l7 && (
+              <p className={helpClass} id="rule-tls-routes-upstream-help">{ROUTE_UPSTREAM_HELP}</p>
+            )}
             {routes.map((r, i) => (
               <div key={i} className="mb-2" data-testid="tls-route-row">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-1">
@@ -1301,6 +1339,32 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                       aria-label={`転送先 ${i + 1} の送信元 IP の渡し方を外す`}>外す</button>
                   </p>
                 )}
+                {routeUpstreamEditable && routeRowTakesUpstream(r, routeCtx) && (
+                  <div className="mt-1" data-testid="route-upstream">
+                    <select value={routeUpstreamChoice(r.upstream)}
+                      onChange={(e) => updateRoute(i, { upstream: withRouteUpstreamChoice(r.upstream, e.target.value as RouteUpstreamChoice) })}
+                      className="border border-gray-300 rounded-sm px-2 py-1 w-full sm:w-auto max-w-full max-lg:min-h-11 bg-white text-gray-900"
+                      aria-label={`転送先 ${i + 1} への TLS`} aria-describedby="rule-tls-routes-upstream-help">
+                      <option value="inherit">{`転送先への TLS: ルールと同じ（${upstreamTls ? '再暗号化する' : '平文'}）`}</option>
+                      <option value="plain">転送先への TLS: この名前は平文（再暗号化しない）</option>
+                      <option value="tls">転送先への TLS: この名前だけの設定で再暗号化する</option>
+                    </select>
+                    {r.upstream !== null && (r.upstream.tls || upstreamFormUsed(r.upstream)) && (
+                      <>
+                        {!r.upstream.tls && <p className={helpClass}>平文のときは下の欄を使いません（空にしてかまいません）。</p>}
+                        <UpstreamFields idPrefix={`rule-route-${i + 1}-upstream`} value={r.upstream}
+                          onChange={(patch) => updateRoute(i, { upstream: r.upstream === null ? null : { ...r.upstream, ...patch } })} />
+                      </>
+                    )}
+                  </div>
+                )}
+                {!routeUpstreamEditable && r.upstream !== null && (
+                  <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-1 break-all" data-testid="route-upstream-preserved">
+                    転送先への TLS: <span className="font-mono">{upstreamSummary(r.upstream)}</span>（この rproxy では使えないので編集できません。そのまま残して送ります）
+                    <button type="button" className="ml-2 text-blue-700 underline" onClick={() => updateRoute(i, { upstream: null })}
+                      aria-label={`転送先 ${i + 1} への TLS を外す`}>外す</button>
+                  </p>
+                )}
                 {r.targets.length > 0 && (
                   <RouteTargetsEditor index={i} rows={r.targets} balance={r.balance} editable={routeTargetsEditable}
                     onChange={(rows, balance) => updateRoute(i, { targets: rows, balance: balance })}
@@ -1308,7 +1372,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 )}
               </div>
             ))}
-            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7, targets: [], balance: DEFAULT_BALANCE, source_ip: '' }])} className={smallButtonClass}>
+            <button type="button" onClick={() => setRoutes([...routes, { names: '', remote_addr: '', remote_port: '', passthrough: l7, targets: [], balance: DEFAULT_BALANCE, source_ip: '', upstream: null }])} className={smallButtonClass}>
               ＋ 転送先を追加
             </button>
           </fieldset>
@@ -1476,38 +1540,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 {protocol === 'udp' ? '転送先へ DTLS で再暗号化する' : '転送先へ TLS で再暗号化する'}
               </label>
               {upstreamTls && (
-                <div className="mt-2 space-y-2 border-l-2 border-gray-300 pl-3">
-                  <div>
-                    <label htmlFor="rule-upstream-name" className="block text-xs font-medium text-gray-800">検証するサーバ名</label>
-                    <input id="rule-upstream-name" type="text" value={upstreamServerName} onChange={(e) => setUpstreamServerName(e.target.value.trim())}
-                      className={inputClass} placeholder="空欄なら転送先のホスト名" />
-                  </div>
-                  <div>
-                    <label htmlFor="rule-upstream-ca" className="block text-xs font-medium text-gray-800">CA ファイル</label>
-                    <input id="rule-upstream-ca" type="text" value={upstreamCa} onChange={(e) => setUpstreamCa(e.target.value.trim())}
-                      className={inputClass} placeholder="空欄なら Mozilla のルート証明書" />
-                  </div>
-                  <label className="inline-flex items-center text-sm text-gray-800">
-                    <input type="checkbox" checked={upstreamInsecure} onChange={(e) => setUpstreamInsecure(e.target.checked)} className="mr-2" />
-                    転送先の証明書を検証しない（テスト用）
-                  </label>
-                  <div>
-                    <label htmlFor="rule-upstream-cert" className="block text-xs font-medium text-gray-800">転送先へのクライアント証明書（任意）</label>
-                    <input id="rule-upstream-cert" type="text" value={upstreamCert} onChange={(e) => setUpstreamCert(e.target.value.trim())}
-                      className={inputClass} placeholder="例: /etc/rproxy/upstream-client.pem" />
-                  </div>
-                  <div>
-                    <label htmlFor="rule-upstream-chain" className="block text-xs font-medium text-gray-800">その中間 CA（任意）</label>
-                    <input id="rule-upstream-chain" type="text" value={upstreamChain} onChange={(e) => setUpstreamChain(e.target.value.trim())}
-                      className={inputClass} placeholder="例: /etc/rproxy/upstream-intermediates.pem" aria-describedby="rule-upstream-chain-help" />
-                    <p id="rule-upstream-chain-help" className={helpClass}>{CHAIN_HELP}。クライアント証明書を指定したときだけ使えます。</p>
-                  </div>
-                  <div>
-                    <label htmlFor="rule-upstream-key" className="block text-xs font-medium text-gray-800">その秘密鍵</label>
-                    <input id="rule-upstream-key" type="text" value={upstreamKey} onChange={(e) => setUpstreamKey(e.target.value.trim())}
-                      className={inputClass} placeholder="例: /etc/rproxy/upstream-client.key" />
-                  </div>
-                </div>
+                <UpstreamFields idPrefix="rule-upstream" value={upstreamForm} onChange={(patch) => setUpstreamForm({ ...upstreamForm, ...patch })} />
+              )}
+              {routes.some((r) => r.upstream !== null) && (
+                <p className={helpClass}>サーバ名ごとの転送先に「転送先への TLS」を指定した名前では、ここの設定の代わりにそれを使います。</p>
               )}
             </div>
             <p className={helpClass} data-testid="file-owner-note">{FILE_OWNER_NOTE}</p>

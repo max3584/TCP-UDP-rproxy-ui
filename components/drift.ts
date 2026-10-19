@@ -69,7 +69,9 @@ export function ruleDrift(stored: ForwardRule, live: RproxyRuleStatus): DriftFie
   if (stored.sourceIp !== actual.sourceIp) out.push('source_ip');
   if (stored.protocol === 'udp' && stored.udpIdleSecs !== actual.udpIdleSecs) out.push('udp_idle_secs');
   if ((stored.srcPortEnd ?? null) !== (actual.srcPortEnd ?? null)) out.push('port_range');
-  if (!same(stored.tls, actual.tls)) out.push('tls');
+  // route の upstream の {}（その名前は平文）と省略（ルールの upstream）は canon では同じになるので、あるかないかも比べる
+  const routeUpstreams = (r: ForwardRule) => (r.tls.routes ?? []).map((x) => x.upstream !== undefined);
+  if (!same(stored.tls, actual.tls) || JSON.stringify(routeUpstreams(stored)) !== JSON.stringify(routeUpstreams(actual))) out.push('tls');
   if ((stored.starttls ?? null) !== (actual.starttls ?? null)
     || (stored.starttls !== null && stored.starttlsRequired !== actual.starttlsRequired)) out.push('starttls');
   if (!same(sorted(stored.allowFrom), sorted(actual.allowFrom))) out.push('allow_from');

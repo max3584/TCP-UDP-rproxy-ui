@@ -327,7 +327,7 @@ describe('RuleForm: route ごとの source_ip と proxy_protocol', () => {
       { server_names: ['a.example.com', 'b.example.com'], remote_addr: '10.0.0.7', remote_port: 443 },
     ],
   });
-  const ctx = (over: Partial<RouteContext> = {}): RouteContext => ({ protocol: 'tcp', tlsMode: 'sni', l7: false, routeSourceIpEditable: true, ...over });
+  const ctx = (over: Partial<RouteContext> = {}): RouteContext => ({ protocol: 'tcp', tlsMode: 'sni', l7: false, routeSourceIpEditable: true, routeUpstreamEditable: true, ...over });
 
   it('行に直して組み立て直すと source_ip が残る（以前は buildTls が落としていた）', () => {
     for (const editable of [true, false]) {

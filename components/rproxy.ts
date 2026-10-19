@@ -123,6 +123,8 @@ export interface CapabilityFeatures {
   http_options?: string[];
   // tls.routes[] の targets / balance（#234）
   tls_route_targets?: boolean;
+  // tls.routes[] ごとの upstream（v0.4.7、BackendTLSPolicy）
+  tls_route_upstream?: boolean;
   // v0.4（docs/DESIGN-v0.4.md 13.2）。古い rproxy は返さない
   rulesets?: boolean;
   labels?: boolean;

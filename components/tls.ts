@@ -27,6 +27,7 @@ import {
   RouteSourceIp,
   routeNames,
   routeRelaysAtL4,
+  routeTakesUpstream,
   MAX_EXTRA_LISTEN_ADDRS,
 } from './lib';
 import { checkAllowFrom, parseCidr } from './cidr';
@@ -152,7 +153,7 @@ export function normalizeTls(input: unknown): TlsSpec {
 
   const routes = list(input.routes, 'tls.routes').map((r): TlsRoute => {
     if (!isObject(r)) throw invalid('サーバ名ごとの転送先の形式が不正です。');
-    checkKeys(r, ['server_name', 'server_names', 'remote_addr', 'remote_port', 'passthrough', 'targets', 'balance', 'source_ip'], 'tls.routes');
+    checkKeys(r, ['server_name', 'server_names', 'remote_addr', 'remote_port', 'passthrough', 'targets', 'balance', 'upstream', 'source_ip'], 'tls.routes');
     // 名前ごとの複数の宛先（rproxy の #234）：remote_addr / remote_port の代わりに targets と balance
     const targets = r.targets === undefined || r.targets === null ? [] : normalizeTargets(r.targets);
     const hasRemote = (r.remote_addr !== undefined && r.remote_addr !== null && r.remote_addr !== '')
@@ -183,14 +184,17 @@ export function normalizeTls(input: unknown): TlsSpec {
     if (names.server_names !== undefined && names.server_names.length === 0) {
       throw new TlsError('複数のサーバ名（server_names）には 1 つ以上の名前を指定してください。', 'tls_config');
     }
+    // この名前の転送先への TLS（rproxy-api v0.4.7、BackendTLSPolicy）。{}（平文）と省略（ルールの upstream）は意味が違うので、空でも残す
+    const upstream = r.upstream === undefined || r.upstream === null ? undefined : normalizeUpstream(r.upstream, 'tls.routes.upstream');
     const sourceIp = normalizeRouteSourceIp(r.source_ip);
-    // キーの順番は rproxy の応答（…, passthrough, targets, balance, source_ip）に揃える
+    // キーの順番は rproxy の応答（…, passthrough, targets, balance, upstream, source_ip）に揃える
     return {
       ...names,
       ...(targets.length === 0 ? { remote_addr: requiredString(r.remote_addr, 'サーバ名ごとの転送先のアドレス'), remote_port: remotePort as number } : {}),
       ...(r.passthrough === true ? { passthrough: true } : {}),
       ...(targets.length > 0 ? { targets: targets } : {}),
       ...(targets.length > 0 && balance !== DEFAULT_BALANCE ? { balance: balance } : {}),
+      ...(upstream !== undefined ? { upstream: upstream } : {}),
       ...(sourceIp !== undefined ? { source_ip: sourceIp } : {}),
     };
   });
@@ -251,22 +255,7 @@ export function normalizeTls(input: unknown): TlsSpec {
   if (alpn.length > 0) tls.alpn = alpn;
 
   if (input.upstream !== undefined && input.upstream !== null) {
-    if (!isObject(input.upstream)) throw invalid('転送先の TLS の設定の形式が不正です。');
-    const u = input.upstream;
-    checkKeys(u, ['tls', 'server_name', 'ca_file', 'insecure_skip_verify', 'cert_file', 'chain_file', 'key_file'], 'tls.upstream');
-    const upstream: TlsUpstream = {};
-    if (optionalBool(u.tls, 'upstream.tls')) upstream.tls = true;
-    const serverName = optionalString(u.server_name, '転送先のサーバ名');
-    if (serverName !== undefined) upstream.server_name = serverName;
-    const ca = optionalString(u.ca_file, '転送先の CA ファイル');
-    if (ca !== undefined) upstream.ca_file = ca;
-    if (optionalBool(u.insecure_skip_verify, 'upstream.insecure_skip_verify')) upstream.insecure_skip_verify = true;
-    const cert = optionalString(u.cert_file, '転送先へのクライアント証明書');
-    if (cert !== undefined) upstream.cert_file = cert;
-    const upstreamChain = optionalString(u.chain_file, '転送先へのクライアント証明書の中間 CA');
-    if (upstreamChain !== undefined) upstream.chain_file = upstreamChain;
-    const key = optionalString(u.key_file, '転送先へのクライアント証明書の秘密鍵');
-    if (key !== undefined) upstream.key_file = key;
+    const upstream = normalizeUpstream(input.upstream, 'tls.upstream');
     if (Object.keys(upstream).length > 0) tls.upstream = upstream;
   }
 
@@ -295,6 +284,28 @@ export function normalizeTls(input: unknown): TlsSpec {
   }
 
   return tls;
+}
+
+// 転送先への TLS（ルールの tls.upstream と tls.routes[].upstream で同じ形。rproxy の Upstream）。
+// 既定値（false・空欄）の項目は省く。キーの順番は rproxy の応答（tls, server_name, ca_file, insecure_skip_verify, cert_file, chain_file, key_file）に揃える
+export function normalizeUpstream(value: unknown, where: string): TlsUpstream {
+  if (!isObject(value)) throw invalid('転送先の TLS の設定の形式が不正です。');
+  const u = value;
+  checkKeys(u, ['tls', 'server_name', 'ca_file', 'insecure_skip_verify', 'cert_file', 'chain_file', 'key_file'], where);
+  const upstream: TlsUpstream = {};
+  if (optionalBool(u.tls, 'upstream.tls')) upstream.tls = true;
+  const serverName = optionalString(u.server_name, '転送先のサーバ名');
+  if (serverName !== undefined) upstream.server_name = serverName;
+  const ca = optionalString(u.ca_file, '転送先の CA ファイル');
+  if (ca !== undefined) upstream.ca_file = ca;
+  if (optionalBool(u.insecure_skip_verify, 'upstream.insecure_skip_verify')) upstream.insecure_skip_verify = true;
+  const cert = optionalString(u.cert_file, '転送先へのクライアント証明書');
+  if (cert !== undefined) upstream.cert_file = cert;
+  const chain = optionalString(u.chain_file, '転送先へのクライアント証明書の中間 CA');
+  if (chain !== undefined) upstream.chain_file = chain;
+  const key = optionalString(u.key_file, '転送先へのクライアント証明書の秘密鍵');
+  if (key !== undefined) upstream.key_file = key;
+  return upstream;
 }
 
 // tls.routes[].source_ip（rproxy-api v0.4.13、#297）。省略・null・'' は「ルールと同じ」。transparent はルールの単位だけ（rproxy も unsupported）
@@ -405,6 +416,18 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
       }
       if (protocol === 'udp' && route.source_ip === 'proxy_v1') {
         throw new TlsError(`${names.join(', ')}: PROXY protocol v1 は TCP でだけ使えます（UDP では proxy_v2 を選んでください）。`, 'unsupported');
+      }
+    }
+    // route ごとの upstream（rproxy の validate の tls.routes[].upstream と同じ規則。どれも tls_config）
+    if (route.upstream !== undefined) {
+      if (!routeTakesUpstream(protocol, tls.mode, route)) {
+        throw new TlsError(`${names.join(', ')}: 転送先への TLS は、TCP の終端（terminate）のルールで rproxy が終端するサーバ名（「終端しない」にしていない名前）にだけ指定できます。`, 'tls_config');
+      }
+      if ((route.upstream.cert_file === undefined) !== (route.upstream.key_file === undefined)) {
+        throw new TlsError(`${names.join(', ')}: 転送先へのクライアント証明書と秘密鍵は両方とも指定してください。`, 'tls_config');
+      }
+      if (route.upstream.chain_file !== undefined && route.upstream.cert_file === undefined) {
+        throw new TlsError(`${names.join(', ')}: 転送先へのクライアント証明書の中間 CA は、クライアント証明書と一緒に指定してください。`, 'tls_config');
       }
     }
   }

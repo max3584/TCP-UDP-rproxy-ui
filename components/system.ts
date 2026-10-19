@@ -11,6 +11,7 @@ export const V04_FEATURES: { key: keyof CapabilityFeatures; label: string }[] = 
   { key: 'geoip', label: 'GeoIP' },
   { key: 'outlier_detection', label: '受け身のヘルスチェック' },
   { key: 'proxy_protocol_in', label: 'PROXY protocol の受け取り' },
+  { key: 'tls_route_upstream', label: 'サーバ名ごとの転送先への TLS' },
   { key: 'route_source_ip', label: 'サーバ名ごとの送信元 IP の渡し方' },
   { key: 'dry_run', label: '変更前の差分（dry run）' },
   { key: 'persistence', label: 'API で作ったルールの保存' },
