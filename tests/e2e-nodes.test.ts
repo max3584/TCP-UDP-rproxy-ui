@@ -392,8 +392,8 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect(notified.json.results).toEqual([{ target: 'ha', key: `tcp|127.0.0.1|${HA_PORT}`, result: 'added' }]);
     expect(await liveOn('n1', HA_PORT)).toMatchObject({ listen_addr: '127.0.0.1' });
 
-    // act/stb の画面の元（admin だけ）は e2e のセッションが admin でないので 403
-    expect((await call('ha', undefined, 'GET')).status).toBe(403);
+    // act/stb の画面の元（admin だけ）。e2e のセッションは admin（#155 から。利用者は 127.0.0.1 の転送先を使えない）
+    expect((await call('ha', undefined, 'GET')).status).toBe(200);
     expect((await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: HA_PORT, target: 'ha' })).status).toBe(200);
   });
 });

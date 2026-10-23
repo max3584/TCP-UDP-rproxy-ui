@@ -2,7 +2,9 @@
 // 利用者には見えないこと。rproxy の版を問わない（v0.4 より前の rproxy では origin が dynamic のメモリだけのルール）
 import { expect, test, type BrowserContext } from '@playwright/test';
 import { encode } from 'next-auth/jwt';
+import fs from 'node:fs';
 import { NEXTAUTH_SECRET, baseURL } from '../../playwright.config';
+import { USER_STATE } from './global-setup';
 
 const PORT = Number(process.env.UI_E2E_API_RULE_PORT ?? 19471);
 const API = (process.env.RPROXY_API_URL ?? 'http://127.0.0.1:8080').replace(/\/+$/, '');
@@ -29,7 +31,10 @@ test.describe('rules created through the rproxy API', () => {
     await fetch(rulePath, { method: 'DELETE', headers }).catch(() => undefined);
   });
 
-  test('users do not see them', async ({ page }) => {
+  test('users do not see them', async ({ page, context }) => {
+    // 既定のセッションは管理者なので、利用者のセッション（global-setup の user.json）にする
+    await context.clearCookies();
+    await context.addCookies(JSON.parse(fs.readFileSync(USER_STATE, 'utf8')).cookies);
     const res = await page.request.get(`/api/forward/rule?protocol=tcp&addr=127.0.0.1&port=${PORT}`);
     expect(res.status()).toBe(404);
   });
