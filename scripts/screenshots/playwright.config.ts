@@ -51,6 +51,8 @@ export default defineConfig({
       RPROXY_API_URL: 'http://127.0.0.1:9',
       DB_HOST: '127.0.0.1',
       DB_PORT: '9',
+      // 画像のセッションは rproxy-user（#155 から、利用者のロールを決めなければ admin でない人は使えない）
+      RPROXY_UI_USER_ROLE: 'rproxy-user',
     },
   },
 });

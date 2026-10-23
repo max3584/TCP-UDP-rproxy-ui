@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 const run = process.env.RUN_E2E === '1';
 
 vi.mock('next-auth', () => ({
-  getServerSession: async () => ({ user: { id: 'e2e-user', name: 'e2e', email: 'e2e@example.com', image: '', role: '' }, expires: '' }),
+  getServerSession: async () => ({ user: { id: 'e2e-user', name: 'e2e', email: 'e2e@example.com', image: '', role: 'rproxy-admin', roles: ['rproxy-admin'] }, expires: '' }),
 }));
 vi.mock('@/pages/api/auth/[...nextauth]', () => ({ authOptions: {} }));
 

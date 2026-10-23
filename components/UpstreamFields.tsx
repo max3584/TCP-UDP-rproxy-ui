@@ -58,16 +58,18 @@ export function upstreamSummary(u: TlsUpstream): string {
   return parts.join(', ');
 }
 
-const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
+const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900 read-only:bg-gray-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
 const fieldLabelClass = 'block text-xs font-medium text-gray-800';
 const helpClass = 'mt-1 text-xs text-gray-600';
 
-// idPrefix はルールでは rule-upstream、route では rule-route-<n>-upstream（欄の id とラベルの htmlFor）
+// idPrefix はルールでは rule-upstream、route では rule-route-<n>-upstream（欄の id とラベルの htmlFor）。
+// filesLocked：ファイルの欄（CA・クライアント証明書・中間 CA・秘密鍵）を読み取り専用にする（管理者でない人。#155。前からある値はそのまま送る）
 const UpstreamFields: React.FC<{
   idPrefix: string;
   value: UpstreamForm;
   onChange: (patch: Partial<UpstreamForm>) => void;
-}> = ({ idPrefix, value, onChange }) => (
+  filesLocked?: boolean;
+}> = ({ idPrefix, value, onChange, filesLocked = false }) => (
   <div className="mt-2 space-y-2 border-l-2 border-gray-300 pl-3" data-testid={`${idPrefix}-fields`}>
     <div>
       <label htmlFor={`${idPrefix}-name`} className={fieldLabelClass}>検証するサーバ名</label>
@@ -76,7 +78,7 @@ const UpstreamFields: React.FC<{
     </div>
     <div>
       <label htmlFor={`${idPrefix}-ca`} className={fieldLabelClass}>CA ファイル</label>
-      <input id={`${idPrefix}-ca`} type="text" value={value.ca_file} onChange={(e) => onChange({ ca_file: e.target.value.trim() })}
+      <input id={`${idPrefix}-ca`} type="text" readOnly={filesLocked} value={value.ca_file} onChange={(e) => onChange({ ca_file: e.target.value.trim() })}
         className={inputClass} placeholder="空欄なら Mozilla のルート証明書" />
     </div>
     <label htmlFor={`${idPrefix}-insecure`} className="inline-flex items-center text-sm text-gray-800">
@@ -86,18 +88,18 @@ const UpstreamFields: React.FC<{
     </label>
     <div>
       <label htmlFor={`${idPrefix}-cert`} className={fieldLabelClass}>転送先へのクライアント証明書（任意）</label>
-      <input id={`${idPrefix}-cert`} type="text" value={value.cert_file} onChange={(e) => onChange({ cert_file: e.target.value.trim() })}
+      <input id={`${idPrefix}-cert`} type="text" readOnly={filesLocked} value={value.cert_file} onChange={(e) => onChange({ cert_file: e.target.value.trim() })}
         className={inputClass} placeholder="例: /etc/rproxy/upstream-client.pem" />
     </div>
     <div>
       <label htmlFor={`${idPrefix}-chain`} className={fieldLabelClass}>その中間 CA（任意）</label>
-      <input id={`${idPrefix}-chain`} type="text" value={value.chain_file} onChange={(e) => onChange({ chain_file: e.target.value.trim() })}
+      <input id={`${idPrefix}-chain`} type="text" readOnly={filesLocked} value={value.chain_file} onChange={(e) => onChange({ chain_file: e.target.value.trim() })}
         className={inputClass} placeholder="例: /etc/rproxy/upstream-intermediates.pem" aria-describedby={`${idPrefix}-chain-help`} />
       <p id={`${idPrefix}-chain-help`} className={helpClass}>{CHAIN_HELP}。クライアント証明書を指定したときだけ使えます。</p>
     </div>
     <div>
       <label htmlFor={`${idPrefix}-key`} className={fieldLabelClass}>その秘密鍵</label>
-      <input id={`${idPrefix}-key`} type="text" value={value.key_file} onChange={(e) => onChange({ key_file: e.target.value.trim() })}
+      <input id={`${idPrefix}-key`} type="text" readOnly={filesLocked} value={value.key_file} onChange={(e) => onChange({ key_file: e.target.value.trim() })}
         className={inputClass} placeholder="例: /etc/rproxy/upstream-client.key" />
     </div>
   </div>

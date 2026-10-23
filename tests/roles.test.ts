@@ -13,8 +13,9 @@ describe('roles', () => {
   });
 
   it('decides admin, user or none', () => {
-    // by default anyone who signs in is a user, as up to v0.3.1
-    expect(accessOf([], roleConfig({}))).toBe('user');
+    // #155: without a user role nobody is a plain user (only admins); up to v0.4.8 everyone who signed in was a user
+    expect(accessOf([], roleConfig({}))).toBe('none');
+    expect(accessOf(['rproxy-user'], roleConfig({}))).toBe('none');
     expect(accessOf(['rproxy-admin'], roleConfig({}))).toBe('admin');
     const cfg = roleConfig({ RPROXY_UI_USER_ROLE: 'rproxy-user' });
     expect(accessOf(['rproxy-admin'], cfg)).toBe('admin');
@@ -23,7 +24,20 @@ describe('roles', () => {
     expect(accessOf([], cfg)).toBe('none');
     const custom = roleConfig({ RPROXY_UI_ADMIN_ROLE: 'ops', RPROXY_UI_USER_ROLE: 'dev' });
     expect([accessOf(['ops'], custom), accessOf(['dev'], custom), accessOf(['rproxy-user'], custom)]).toEqual(['admin', 'user', 'none']);
-    expect(accessOf([], roleConfig({ RPROXY_UI_USER_ROLE: '' }))).toBe('user');
+    expect(accessOf([], roleConfig({ RPROXY_UI_USER_ROLE: '' }))).toBe('none');
+    expect(accessOf(['rproxy-admin'], roleConfig({ RPROXY_UI_USER_ROLE: ' ' }))).toBe('admin');
+  });
+
+  it('reads the destinations (RPROXY_UI_USER_TARGETS) and certificate names (RPROXY_UI_USER_CERTS) users may use', () => {
+    expect(roleConfig({}).userTargets).toBeNull();
+    expect(roleConfig({}).userCerts).toBeNull();
+    const cfg = roleConfig({ RPROXY_UI_USER_TARGETS: ' 10.0.0.0/8, 192.0.2.7 ,Backend.Example.com,*.svc.example.', RPROXY_UI_USER_CERTS: 'tenant-, shared.' });
+    expect(cfg.userTargets).toEqual({ cidrs: ['10.0.0.0/8', '192.0.2.7/32'], names: ['backend.example.com', '*.svc.example'] });
+    expect(cfg.userCerts).toEqual(['tenant-', 'shared.']);
+    for (const bad of ['10.0.0.0/33', 'a b', 'http://x', '*.', '1.2.3']) {
+      expect(() => roleConfig({ RPROXY_UI_USER_TARGETS: bad }), bad).toThrow(RoleConfigError);
+    }
+    expect(() => roleConfig({ RPROXY_UI_USER_CERTS: 'Bad' })).toThrow(RoleConfigError);
   });
 
   it('limits user ports when RPROXY_UI_USER_PORTS is set', () => {

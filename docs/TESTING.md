@@ -169,7 +169,9 @@ CI のジョブは Alpine のコンテナ（`node:24-alpine`）で動く。Maria
 
 ## 画面操作の E2E（`tests/ui`、Playwright）
 
-CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
+CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。既定のセッションは管理者（`rproxy-admin`）で、利用者のセッションは `tests/ui/.auth/user.json`（`security.spec.ts`・`user-limits.spec.ts`。CI は `RPROXY_UI_USER_ROLE=rproxy-user`）。
+
+- `user-limits.spec.ts`（#155）：利用者のセッションで、API がループバック・メタデータ・`localhost` の転送先と証明書のファイルのパスを 403 で断り何も作らないこと、フォームが転送先とファイルの注意を出し、ファイルの証明書を足させず、登録済みの証明書を足させ、転送先への TLS のファイルの欄を読み取り専用にすること
 
 - `rules.spec.ts`：TCP と L7（HTTP）のルールを画面から追加・変更・削除し、実際に転送されること。サインインしていなければフォームを出さないこと
 - `settings.spec.ts`：TLS のオプション（最小バージョン 1.3 で TLS 1.3 のスイートがないと送る前に断る・保存すると TLS 1.2 のクライアントを断る・編集画面に今の値）、basic_auth の realm・user_header・keep_authorization（401 の `WWW-Authenticate`、転送先に届く利用者の名前）、UDP の sni が版の注意なしで選べること。自己署名の証明書は openssl で作る（CI では apk の openssl）
@@ -246,6 +248,19 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。
 | 表と CSV | 所有者・ラベル・ルールでまとめる、ラベルのキー、CSV（式として読まれない）、期間と設定（環境変数） |
 | collectNode | 時間・日の表に足す値、所有者と印、基準の更新、消えたルールの基準を捨てる |
 | /api/forward/usage | 利用者は自分のルールだけ、ルールの指定、表がなければ `available: false`、集計表と CSV、期間の誤り |
+
+## 単体テスト：利用者の制限（`tests/userlimits.test.ts`・`tests/forward-userlimits.test.ts`・`tests/certs-route.test.ts`、#155）
+
+| テスト | 確かめること |
+|---|---|
+| fileRefs・destRefs | ルールの `*_file`（証明書・クライアント認証・upstream・route の upstream・サービスの tls・basic_auth・oidc）と転送先（remote・targets・tls.routes・サービスの url・ルートの to・forward_auth・oidc の issuer。ポート範囲のルールは範囲）を取り出す。並べ替え・サービスの名前の変更では前からある値のまま、変えた値・別の項目に移した値・ポートを変えた転送先は新しいもの |
+| checkDestinations | 許可リストなしでループバック・リンクローカル（メタデータ）・未指定・マルチキャスト・ブロードキャストを断る（名前の解決先・IPv4-mapped も）。許可リストの CIDR と名前、範囲の中だけの CIDR で特別な範囲を使えること（0.0.0.0/0 では使えない）、制御 API・DB のアドレスとポートはいつも断ること、守る相手の集め方 |
+| redactFiles | 固定ルールの `*_file`・証明書の期限のファイル・誤りの文のパスを `<hidden>` にする（元は変えない） |
+| API（add・modify・plan） | 利用者はファイルのパスで 403 `file_not_allowed`、許可の外の登録済みの証明書で 403 `cert_not_allowed`、断る転送先で 403 `target_not_allowed`（rproxy にも DB にも何もしない）。管理者は通る。自分のルールの変更では前からあるファイルのパス・転送先はそのまま通り、変えた値だけを断る。`GET /interfaces` の予約済みのアドレスを断る |
+| ダッシュボード・詳細 | 利用者には固定ルールのパスを伏せ、管理者には出す |
+| /api/forward/certs | 名前・名前の一覧・期限だけ、利用者には `RPROXY_UI_USER_CERTS` の名前だけ、403・404 は `available: false` |
+
+テストの名前解決は `tests/setup.ts` が決める（`localhost` は 127.0.0.1、`*.invalid` は解決できない、ほかは 192.0.2.10）。利用者のロールは `vitest.config.mts` の `RPROXY_UI_USER_ROLE=rproxy-user`。
 
 ## まだテストしていないこと
 

@@ -142,6 +142,8 @@ jobs:
       RPROXY_API_URL: http://127.0.0.1:8080
       RPROXY_API_TOKEN: e2e-token
       E2E_BACKEND_PORT: 19001
+      # 画面の試験の利用者のセッション（tests/ui/.auth/user.json）。#155 から、空なら admin でない人は使えない
+      RPROXY_UI_USER_ROLE: rproxy-user
     steps:
       # build-base・rustup は rproxy-api のビルド、chromium は Playwright（Alpine の musl 向けのブラウザは Playwright が配らない）、openssl は TLS を終端するテストの自己署名の証明書、
       # pebble は ACME の試験用の CA（tests/ui/acme.spec.ts。scripts/ci-pebble.sh）

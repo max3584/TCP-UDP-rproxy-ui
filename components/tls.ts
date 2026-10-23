@@ -141,6 +141,9 @@ function list(value: unknown, where: string): unknown[] {
   return value;
 }
 
+// rproxy の証明書の API の名前（docs/API.md「証明書の API」）
+export const CERT_NAME_PATTERN = /^[a-z0-9]([a-z0-9._-]{0,61}[a-z0-9])?$/;
+
 // 入力の形を確かめて、既定値の項目を省いた形に揃える。組み合わせは checkTls で確かめる
 export function normalizeTls(input: unknown): TlsSpec {
   if (input === undefined || input === null) return { ...DEFAULT_TLS };
@@ -202,7 +205,16 @@ export function normalizeTls(input: unknown): TlsSpec {
 
   const certificates = list(input.certificates, 'tls.certificates').map((c): TlsCertificate => {
     if (!isObject(c)) throw invalid('証明書の指定の形式が不正です。');
-    checkKeys(c, ['cert_file', 'chain_file', 'key_file', 'acme', 'domains'], 'tls.certificates');
+    checkKeys(c, ['cert', 'cert_file', 'chain_file', 'key_file', 'acme', 'domains'], 'tls.certificates');
+    // rproxy の証明書の API に登録した証明書の名前（rproxy-api v0.4.2、features.cert_store）。ファイル・ACME とは一緒に書けない
+    const certName = optionalString(c.cert, '証明書の名前');
+    if (certName !== undefined) {
+      const others = [c.cert_file, c.chain_file, c.key_file, c.acme].some((f) => optionalString(f, '証明書のファイル') !== undefined)
+        || list(c.domains, 'tls.certificates.domains').length > 0;
+      if (others) throw new TlsError('登録済みの証明書（cert）には、ファイル・ACME を一緒に指定できません。', 'tls_config');
+      if (!CERT_NAME_PATTERN.test(certName)) throw invalid(`証明書の名前 ${certName} は英小文字・数字と . _ - で書いてください（rproxy の証明書の API の名前）。`);
+      return { cert: certName };
+    }
     // ACME（v0.3）：ファイルの代わりに resolver の名前と名前の一覧。ファイルとは一緒に書けない（rproxy と同じく tls_config）
     const acme = optionalString(c.acme, 'ACME の resolver');
     if (acme !== undefined) {

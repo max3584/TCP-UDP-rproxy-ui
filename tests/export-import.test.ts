@@ -265,6 +265,8 @@ describe('/api/forward/export and /api/forward/import', () => {
   });
 
   it('exported rules imported again give the same rules (DB options and what rproxy receives)', async () => {
+    // ファイルのパスのあるルールを含むので管理者（同じ id）で読み込む（利用者はファイルのパスを書けない。#155）
+    mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, roles: ['rproxy-admin'], role: 'rproxy-admin' } });
     pool.query.mockResolvedValueOnce(RULES.map((r) => row(r)));
     const exported = (await call('export', undefined, 'GET', {})).text ?? '';
 
@@ -432,6 +434,7 @@ describe('/api/forward/history and /api/forward/revert', () => {
     expect(mocks.addRule).not.toHaveBeenCalled();
 
     // a version with tls.routes[].upstream keeps it when reverted (rproxy-api v0.4.7)
+    // 今のルールにないファイルのパスに戻すのは管理者だけ（#155）。利用者は 403 file_not_allowed
     mocks.modifyRule.mockClear();
     const withUpstream = RULES.find((r) => r.srcPort === 10443)!;
     const v1u = rule({ ...withUpstream, srcPort: 8000 });
@@ -441,9 +444,14 @@ describe('/api/forward/history and /api/forward/revert', () => {
       if (sql.startsWith('SELECT auth_id, protocol')) return [row(v2)];
       return [];
     });
+    const refusedUpstream = await call('revert', { id: 9 });
+    expect([refusedUpstream.status, refusedUpstream.body.code]).toEqual([403, 'file_not_allowed']);
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, roles: ['rproxy-admin'], role: 'rproxy-admin' } });
     const revertedUpstream = await call('revert', { id: 9 });
     expect(revertedUpstream.body.result).toBe('modified');
     expect(mocks.modifyRule.mock.calls[0][1].tls).toEqual(withUpstream.tls);
+    mocks.getServerSession.mockResolvedValue(session);
 
     // a version with a different source_ip is re-created (delete + add)
     const v3 = rule({ srcPort: 8000, distAddr: 'three.example', sourceIp: 'proxy_v2' });

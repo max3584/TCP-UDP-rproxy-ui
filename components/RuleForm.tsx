@@ -36,6 +36,7 @@ import {
   PROXY_PROTOCOL_IN_HELP, PROXY_PROTOCOL_REQUIRED_HELP, ROUTE_SOURCE_IP_HELP, SOURCE_IP_DOC_URL, proxyProtocolHint, transparentHint,
 } from './sourceip';
 import { ACME_NOT_CONFIGURED_NOTE, ACME_UNSUPPORTED_NOTE, FILE_OWNER_NOTE } from './messages';
+import { USER_FILES_NOTE, USER_TARGETS_NOTE } from './userlimits';
 import { AcmeInfo, splitAcmeDomains } from './acme';
 import AcmeCertificateEditor, { acmeRowProblem } from './AcmeCertificateEditor';
 import HttpEditor from './HttpEditor';
@@ -64,6 +65,16 @@ export interface RuleFormProps {
   submitting?: boolean;
   // 保存する前に rproxy で何が変わるかを聞く（rproxy v0.4 の ?dry_run=true。features.dry_run のときだけボタンを出す）
   onPlan?: (data: ForwardRule) => Promise<PlanResponse>;
+  // 管理者でない人（#155）：ファイルのパスの欄を読み取り専用にし（前からある値はそのまま送る）、転送先の制限を知らせる。
+  // 確かめるのは API（画面は案内だけ）
+  restricted?: boolean;
+}
+
+// rproxy の証明書の API に登録した証明書（/api/forward/certs。鍵は含まない）
+interface StoredCert {
+  name: string;
+  sans: string[];
+  not_after: string | null;
 }
 
 // 中間 CA の欄の説明（転送先への TLS の欄と同じもの）
@@ -267,6 +278,8 @@ interface Caps {
     v04: Record<V04Key, boolean>;
     // 変更前の差分（?dry_run=true）
     dryRun: boolean;
+    // 登録済みの証明書（tls.certificates[].cert。features.cert_store、rproxy-api v0.4.2）
+    certStore: boolean;
   } | null;
 }
 
@@ -334,7 +347,7 @@ const EMPTY_ERRORS: FieldErrors = {
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
 
-const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
+const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full read-only:bg-gray-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
 const smallButtonClass = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded-sm text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 const removeButtonClass = 'text-red-700 hover:text-red-900 text-sm px-1 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 
@@ -358,7 +371,7 @@ export const UDP_SNI_VERSION_NOTE =
 
 const NO_V04: Record<V04Key, boolean> = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false };
 
-const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan }) => {
+const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan, restricted = false }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
   const [profileId, setProfileId] = useState('');
   const [protocol, setProtocol] = useState<Protocol>(initialData?.protocol || 'tcp');
@@ -457,6 +470,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             routeUpstream: data.features.tls_route_upstream === true,
             v04: Object.fromEntries(V04_KEYS.map((k) => [k, data.features[V04_FEATURE[k]] === true])) as Record<V04Key, boolean>,
             dryRun: data.features.dry_run === true,
+            certStore: data.features.cert_store === true,
           } : null,
         });
       } catch (err) {
@@ -485,6 +499,26 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     };
     getAcme();
   }, [acmeFeature, probeQuery]);
+  // 登録済みの証明書の一覧（rproxy が features.cert_store を返すときだけ聞く。名前・名前の一覧・期限だけ）
+  const certStoreFeature = caps.features?.certStore === true;
+  const [storedCerts, setStoredCerts] = useState<StoredCert[] | null>(null);
+  const [storedCertsError, setStoredCertsError] = useState('');
+  useEffect(() => {
+    if (!certStoreFeature) return;
+    const getCerts = async () => {
+      try {
+        const res = await fetch(`/api/forward/certs${probeQuery}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setStoredCerts(Array.isArray(data.certs) ? data.certs : []);
+        setStoredCertsError(data.available === false ? '登録済みの証明書の一覧を rproxy から読めません（UI のトークンに certs:read がない・古い rproxy）。名前を直接入力してください。' : '');
+      } catch (err) {
+        setStoredCertsError(`登録済みの証明書の一覧を取得できませんでした（名前を直接入力してください）: ${err instanceof Error ? err.message : err}`);
+      }
+    };
+    getCerts();
+  }, [certStoreFeature, probeQuery]);
+
   // ACME の証明書を編集できる：tcp で、rproxy が ACME に対応し、設定ファイルに global.acme がある
   // （一覧を取れなかったときも、rproxy が保存するときに確かめるので編集はさせる）
   const acmeEditable = protocol === 'tcp' && acmeFeature && (acmeInfo?.configured === true || (acmeInfo === null && acmeInfoError !== ''));
@@ -686,9 +720,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     }
     if (tlsMode === 'terminate') {
       // ACME の証明書は、編集できないとき（古い rproxy・global.acme がない）はそのまま送る
-      spec.certificates = certificates.map((c) => (c.acme !== undefined
-        ? { acme: c.acme, domains: acmeEditable ? splitAcmeDomains(c.domainsText ?? '') : c.domains ?? [] }
-        : { cert_file: c.cert_file ?? '', chain_file: c.chain_file ?? '', key_file: c.key_file ?? '' }));
+      spec.certificates = certificates.map((c) => (c.cert !== undefined
+        ? { cert: c.cert }
+        : c.acme !== undefined
+          ? { acme: c.acme, domains: acmeEditable ? splitAcmeDomains(c.domainsText ?? '') : c.domains ?? [] }
+          : { cert_file: c.cert_file ?? '', chain_file: c.chain_file ?? '', key_file: c.key_file ?? '' }));
       if (tlsOptionsEditable) {
         spec.options = {
           ...(minVersion !== '' ? { min_version: minVersion } : {}),
@@ -769,6 +805,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           if (c.acme === undefined) return;
           const problem = acmeRowProblem(acmeInfoForCheck, { acme: c.acme, domainsText: c.domainsText ?? '' });
           if (problem) throw new Error(`証明書 ${i + 1}（ACME）: ${problem}`);
+        });
+      }
+      if (tlsMode === 'terminate') {
+        certificates.forEach((c, i) => {
+          if (c.cert !== undefined && c.cert.trim() === '') throw new Error(`証明書 ${i + 1}: 登録済みの証明書を選んでください。`);
         });
       }
       tlsSpec = normalizeTls(buildTls());
@@ -949,6 +990,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       </div>
 
       <div {...panelProps('basic')}>
+        {restricted && <p className="mb-3 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-sm px-2 py-1" data-testid="user-targets-note">{USER_TARGETS_NOTE}</p>}
         {manyNodes && nodesInfo && (
           <div className="mb-4">
             <label htmlFor="rule-target" className={labelClass}>ノード／グループ:</label>
@@ -1244,6 +1286,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               httpOptions={caps.features?.httpOptions ?? null}
               serviceOptions={caps.features?.services ?? null}
               http3={caps.features?.http3 === true || httpRules.http3 === true}
+              filesLocked={restricted}
             />
             {errors.http && (
               <ul className="mt-2 text-red-700 text-xs list-disc pl-5" role="alert">
@@ -1350,7 +1393,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                       <option value="tls">転送先への TLS: この名前だけの設定で再暗号化する</option>
                     </select>
                     {r.upstream !== null && r.upstream.tls && (
-                      <UpstreamFields idPrefix={`rule-route-${i + 1}-upstream`} value={r.upstream}
+                      <UpstreamFields idPrefix={`rule-route-${i + 1}-upstream`} value={r.upstream} filesLocked={restricted}
                         onChange={(patch) => updateRoute(i, { upstream: r.upstream === null ? null : { ...r.upstream, ...patch } })} />
                     )}
                     {r.upstream !== null && !r.upstream.tls && upstreamFormUsed(r.upstream) && (
@@ -1403,7 +1446,31 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           <>
             <fieldset className="mb-4">
               <legend className={labelClass}>証明書（PEM。複数あれば SNI で選び、一致しなければ先頭を使う）:</legend>
-              {certificates.map((c, i) => (c.acme !== undefined && acmeEditable ? (
+              {certificates.map((c, i) => (c.cert !== undefined ? (
+                <div key={i} className="border border-gray-300 rounded-sm p-3 mb-2 bg-gray-50 text-gray-900" data-testid="certificate-row">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-semibold text-gray-800">証明書 {i + 1}（登録済み）</span>
+                    <button type="button" onClick={() => setCertificates(certificates.filter((_, j) => j !== i))} className={removeButtonClass}
+                      aria-label={`証明書 ${i + 1} を削除`}>削除</button>
+                  </div>
+                  <label htmlFor={`rule-cert-${i}-name`} className="block text-xs font-medium text-gray-800">登録済みの証明書の名前</label>
+                  {storedCerts !== null && storedCerts.length > 0 ? (
+                    <select id={`rule-cert-${i}-name`} value={c.cert} onChange={(e) => updateCertificate(i, { cert: e.target.value })} className={inputClass}>
+                      <option value="">選んでください</option>
+                      {c.cert !== '' && !storedCerts.some((sc) => sc.name === c.cert) && <option value={c.cert}>{c.cert}</option>}
+                      {storedCerts.map((sc) => (
+                        <option key={sc.name} value={sc.name}>{sc.sans.length > 0 ? `${sc.name}（${sc.sans.join(', ')}）` : sc.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input id={`rule-cert-${i}-name`} type="text" value={c.cert} onChange={(e) => updateCertificate(i, { cert: e.target.value.trim() })}
+                      className={inputClass} placeholder="例: example-com" />
+                  )}
+                  {!certStoreFeature && (
+                    <p className="mt-1 text-xs text-amber-900" data-testid="cert-store-note">この rproxy は登録済みの証明書（features.cert_store）に対応していないため、保存すると断られます。</p>
+                  )}
+                </div>
+              ) : c.acme !== undefined && acmeEditable ? (
                 <AcmeCertificateEditor key={i} index={i} info={acmeInfoForCheck}
                   row={{ acme: c.acme, domainsText: c.domainsText ?? '' }}
                   onChange={(patch) => updateCertificate(i, patch)}
@@ -1433,21 +1500,28 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                       aria-label={`証明書 ${i + 1} を削除`}>削除</button>
                   </div>
                   <label htmlFor={`rule-cert-${i}-cert`} className="block text-xs font-medium text-gray-800">サーバ証明書</label>
-                  <input id={`rule-cert-${i}-cert`} type="text" value={c.cert_file ?? ''} onChange={(e) => updateCertificate(i, { cert_file: e.target.value.trim() })}
+                  <input id={`rule-cert-${i}-cert`} type="text" readOnly={restricted} value={c.cert_file ?? ''} onChange={(e) => updateCertificate(i, { cert_file: e.target.value.trim() })}
                     className={`${inputClass} mb-2`} placeholder="例: /etc/rproxy/certs/example.pem" />
                   <label htmlFor={`rule-cert-${i}-chain`} className="block text-xs font-medium text-gray-800">中間 CA（任意）</label>
-                  <input id={`rule-cert-${i}-chain`} type="text" value={c.chain_file ?? ''} onChange={(e) => updateCertificate(i, { chain_file: e.target.value.trim() })}
+                  <input id={`rule-cert-${i}-chain`} type="text" readOnly={restricted} value={c.chain_file ?? ''} onChange={(e) => updateCertificate(i, { chain_file: e.target.value.trim() })}
                     className={inputClass} placeholder="例: /etc/rproxy/certs/intermediates.pem" aria-describedby={`rule-cert-${i}-chain-help`} />
                   <p id={`rule-cert-${i}-chain-help`} className={`${helpClass} mb-2`}>{CHAIN_HELP}</p>
                   <label htmlFor={`rule-cert-${i}-key`} className="block text-xs font-medium text-gray-800">秘密鍵</label>
-                  <input id={`rule-cert-${i}-key`} type="text" value={c.key_file ?? ''} onChange={(e) => updateCertificate(i, { key_file: e.target.value.trim() })}
+                  <input id={`rule-cert-${i}-key`} type="text" readOnly={restricted} value={c.key_file ?? ''} onChange={(e) => updateCertificate(i, { key_file: e.target.value.trim() })}
                     className={inputClass} placeholder="例: /etc/rproxy/certs/example.key" />
                 </div>
               )))}
               <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={() => setCertificates([...certificates, { cert_file: '', chain_file: '', key_file: '' }])} className={smallButtonClass}>
-                  ＋ 証明書を追加
-                </button>
+                {!restricted && (
+                  <button type="button" onClick={() => setCertificates([...certificates, { cert_file: '', chain_file: '', key_file: '' }])} className={smallButtonClass}>
+                    ＋ 証明書を追加
+                  </button>
+                )}
+                {(certStoreFeature || restricted) && (
+                  <button type="button" onClick={() => setCertificates([...certificates, { cert: storedCerts?.length === 1 ? storedCerts[0].name : '' }])} className={smallButtonClass}>
+                    ＋ 登録済みの証明書を追加
+                  </button>
+                )}
                 {acmeEditable && (
                   <button type="button" onClick={() => setCertificates([...certificates, { acme: acmeInfo?.resolvers.length === 1 ? acmeInfo.resolvers[0].name : '', domains: [], domainsText: '' }])}
                     className={smallButtonClass}>
@@ -1456,6 +1530,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 )}
               </div>
               {acmeEditable && acmeInfoError && <p className="mt-1 text-xs text-amber-900">{acmeInfoError}</p>}
+              {certStoreFeature && storedCertsError && <p className="mt-1 text-xs text-amber-900">{storedCertsError}</p>}
               {protocol === 'tcp' && acmeFeature && acmeInfo?.configured === false && (
                 <p className={helpClass} data-testid="acme-not-configured">{ACME_NOT_CONFIGURED_NOTE}</p>
               )}
@@ -1517,12 +1592,12 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 <div className="mt-2 space-y-2">
                   <div>
                     <label htmlFor="rule-client-auth-ca" className="block text-xs font-medium text-gray-800">CA ファイル（ルート CA。信頼の起点）</label>
-                    <input id="rule-client-auth-ca" type="text" value={clientAuthCa} onChange={(e) => setClientAuthCa(e.target.value.trim())}
+                    <input id="rule-client-auth-ca" type="text" readOnly={restricted} value={clientAuthCa} onChange={(e) => setClientAuthCa(e.target.value.trim())}
                       className={inputClass} placeholder="例: /etc/rproxy/clients-root.pem" />
                   </div>
                   <div>
                     <label htmlFor="rule-client-auth-chain" className="block text-xs font-medium text-gray-800">中間 CA（任意）</label>
-                    <input id="rule-client-auth-chain" type="text" value={clientAuthChain} onChange={(e) => setClientAuthChain(e.target.value.trim())}
+                    <input id="rule-client-auth-chain" type="text" readOnly={restricted} value={clientAuthChain} onChange={(e) => setClientAuthChain(e.target.value.trim())}
                       className={inputClass} placeholder="例: /etc/rproxy/clients-intermediates.pem" aria-describedby="rule-client-auth-chain-help" />
                     <p id="rule-client-auth-chain-help" className={helpClass}>
                       クライアント証明書を発行した中間 CA。中間 CA を送ってこないクライアントのために検証の経路を補います（信頼の起点にはしません）。
@@ -1546,13 +1621,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 {protocol === 'udp' ? '転送先へ DTLS で再暗号化する' : '転送先へ TLS で再暗号化する'}
               </label>
               {upstreamTls && (
-                <UpstreamFields idPrefix="rule-upstream" value={upstreamForm} onChange={(patch) => setUpstreamForm({ ...upstreamForm, ...patch })} />
+                <UpstreamFields idPrefix="rule-upstream" value={upstreamForm} onChange={(patch) => setUpstreamForm({ ...upstreamForm, ...patch })} filesLocked={restricted} />
               )}
               {routes.some((r) => r.upstream !== null) && (
                 <p className={helpClass}>サーバ名ごとの転送先に「転送先への TLS」を指定した名前では、ここの設定の代わりにそれを使います。</p>
               )}
             </div>
             <p className={helpClass} data-testid="file-owner-note">{FILE_OWNER_NOTE}</p>
+            {restricted && <p className="mt-1 text-xs text-amber-900" data-testid="user-files-note">{USER_FILES_NOTE}</p>}
           </>
         )}
         {errors.tls && <p className={errorClass} role="alert">{errors.tls}</p>}

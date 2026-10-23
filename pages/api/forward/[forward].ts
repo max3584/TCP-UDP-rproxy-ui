@@ -80,6 +80,9 @@ import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
 import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, isShadowing, liveRule, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
 import { V04_FIELD, V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
 import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
+import { addedRefs, certAllowed, certNames, destKey, destRefs, fileKey, fileRefs, redactFiles } from '@/components/userlimits';
+import { checkDestinations, protectedAddrs, refusalText, resolveHost } from '@/components/usertargets';
+import type { InterfacesInfo } from '@/components/listen';
 
 const pool = getPool();
 
@@ -224,6 +227,64 @@ function invalid(message: string): HttpError {
 
 function fromTlsError(err: unknown): unknown {
   return err instanceof TlsError ? new HttpError(400, err.message, err.code) : err;
+}
+
+// ---- 利用者（admin でない人）の制限（#155。components/userlimits.ts・usertargets.ts） ----
+
+// 前の内容（変更・置き換えでは今のルール）。ここにある値は、変えなければそのまま残せる
+interface Before {
+  rule: ForwardRule;
+  overrides?: Overrides;
+}
+
+// ルールと、ノードごとの上書きを重ねた内容（転送先は上書きでも変わる）
+function ruleVariants(rule: ForwardRule, overrides: Overrides | undefined): ForwardRule[] {
+  return [rule, ...Object.values(overrides ?? {}).map((ov) => effectiveRule(rule, ov))];
+}
+
+// 守る相手（rproxy の制御 API・UI・DB）。置き場所のノードの GET /interfaces の予約済みのアドレスも使う（取れなければそのノードは飛ばす）
+async function protectedFor(actor: Actor, place: Place, logger: AppLogger) {
+  const interfaces: InterfacesInfo[] = [];
+  for (const node of place.nodes) {
+    try {
+      const info = await withNode(node, () => getInterfaces());
+      if (info && typeof info === 'object') interfaces.push(info);
+    } catch (err) {
+      logger.warn(`rproxy（${node.name}）のインターフェースを取得できません（制御 API のアドレスは設定の URL だけで確かめます）: ${err}`);
+    }
+  }
+  const apiUrls = [process.env.RPROXY_API_URL ?? '', ...actor.cfg.nodes.map((n) => n.url)].filter((u) => /^https?:\/\//.test(u));
+  return protectedAddrs({ env: process.env, apiUrls: apiUrls, interfaces: interfaces });
+}
+
+// 利用者のルールを確かめる（admin は何もしない）：
+// - サーバのファイルを指す項目は、前の内容にない値を断る（403 file_not_allowed）
+// - 登録済みの証明書の名前は、前の内容になく RPROXY_UI_USER_CERTS の外なら断る（403 cert_not_allowed）
+// - 転送先は、前の内容にないものを許可リストと断る宛先で確かめる（403 target_not_allowed）
+async function checkUserRule(actor: Actor, place: Place, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null, logger: AppLogger): Promise<void> {
+  if (actor.access === 'admin') return;
+  const files = addedRefs(fileRefs(rule), fileRefs(before?.rule), fileKey);
+  if (files.length > 0) {
+    const where = [...new Set(files.map((f) => f.where))].join(', ');
+    throw new HttpError(403, `ファイルのパス（${where}）は管理者だけが指定できます。証明書は登録済みの証明書の名前（tls.certificates[].cert）から選んでください。`, 'file_not_allowed');
+  }
+  const oldCerts = new Set(certNames(before?.rule));
+  const certs = certNames(rule).filter((n) => !oldCerts.has(n) && !certAllowed(n, actor.roles.userCerts));
+  if (certs.length > 0) {
+    throw new HttpError(403, `登録済みの証明書 ${certs.join(', ')} は管理者だけが使えます（RPROXY_UI_USER_CERTS）。`, 'cert_not_allowed');
+  }
+  const old = before ? ruleVariants(before.rule, before.overrides).flatMap(destRefs) : [];
+  const dests = addedRefs(ruleVariants(rule, overrides).flatMap(destRefs), old, destKey);
+  if (dests.length === 0) return;
+  const refused = await checkDestinations(dests, actor.roles.userTargets, { resolve: resolveHost, protectedAddrs: await protectedFor(actor, place, logger) });
+  if (refused.length > 0) {
+    throw new HttpError(403, `利用者はこの転送先を使えません: ${refusalText(refused)}`, 'target_not_allowed');
+  }
+}
+
+// 利用者に見せるほかの人のルール（固定ルール）は、ファイルのパスを伏せる
+function forViewer<T extends ForwardRules>(actor: Actor, rule: T): T {
+  return actor.access === 'admin' || rule.origin === 'dynamic' ? rule : redactFiles(rule);
 }
 
 // 入力を検証して正規化する。delete ではキー（protocol, srcAddr, srcPort）だけを使う。
@@ -727,7 +788,7 @@ async function listForwardingRules(actor: Actor, logger: AppLogger, withStatic: 
   return {
     reachable: live !== null,
     rproxyError: rproxyError,
-    rules: withStatic ? mergeExternalRules(rules, statuses, { api: admin, stored: stored, live: live !== null }) : rules,
+    rules: withStatic ? mergeExternalRules(rules, statuses, { api: admin, stored: stored, live: live !== null }).map((r) => forViewer(actor, r)) : rules,
     ...(admin ? { admin: true } : {}),
   };
 }
@@ -788,7 +849,7 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
       });
       next -= rows.length;
       for (const r of rows) {
-        external.push({ ...r, target: l.node.name, nodes: [{ node: l.node.name, state: r.state, error: r.error, connections: r.connections, stats: r.stats, startedAt: r.startedAt, resolved: r.resolved }] });
+        external.push(forViewer(actor, { ...r, target: l.node.name, nodes: [{ node: l.node.name, state: r.state, error: r.error, connections: r.connections, stats: r.stats, startedAt: r.startedAt, resolved: r.resolved }] }));
       }
     }
     out = [...rules, ...external];
@@ -847,7 +908,7 @@ async function getForwardingRule(actor: Actor, query: NextApiRequest['query'], l
       }
       throw err;
     }
-    if (status.origin === 'static') return ruleFromStatus(status, -1);
+    if (status.origin === 'static') return forViewer(actor, ruleFromStatus(status, -1));
     // API のルール（UI の DB にない。rproxy v0.4）は管理者だけ
     if (actor.access === 'admin') return apiRuleFromStatus(status, -1);
     throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
@@ -893,7 +954,7 @@ async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | str
     for (const node of place.nodes) {
       try {
         const status = await withNode(node, () => getRule(key));
-        if (status.origin === 'static') return withNodeState(ruleFromStatus(status, -1), node.name);
+        if (status.origin === 'static') return forViewer(actor, withNodeState(ruleFromStatus(status, -1), node.name));
         if (admin) return withNodeState(apiRuleFromStatus(status, -1), node.name);
       } catch (err) {
         if (!isNotFound(err)) unreachable = err;
@@ -942,9 +1003,11 @@ async function checkOverlap(actor: Actor, place: Place, rule: ForwardRule): Prom
 
 // owner：ルールの所有者（既定は操作した利用者。admin が巻き戻し・置き換えで作り直すときは元の所有者）
 // overrides：ノードごとの上書き（インポート・コピー・移動。置き場所のノードのものだけ）
-async function addForwardingRule(actor: Actor, place: Place, rule: ForwardRule, logger: AppLogger, owner: string = actor.id, overrides: Overrides = {}): Promise<NodeResult[]> {
+// before：前の内容（置き換え・戻すときの今のルール）。ここにあるファイルのパス・転送先は利用者でもそのまま使える
+async function addForwardingRule(actor: Actor, place: Place, rule: ForwardRule, logger: AppLogger, owner: string = actor.id, overrides: Overrides = {}, before: Before | null = null): Promise<NodeResult[]> {
   checkPorts(actor, rule);
   checkNodes(actor, place);
+  await checkUserRule(actor, place, rule, overrides, before, logger);
   await checkOverlap(actor, place, rule);
   const authId = actor.id;
   return withTransaction(logger, async (conn) => {
@@ -1064,6 +1127,7 @@ async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule,
     const { overrides: ovs } = await lockedExtras(conn, place, rule);
     checkPorts(actor, current);
     const updated = mergeEdit(current, rule, given);
+    await checkUserRule(actor, place, updated, ovs, { rule: current, overrides: ovs }, logger);
     const where = keyWhere(place, updated);
     await conn.query(
       `UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ?, options = ? WHERE ${owner.sql}${where.sql}`,
@@ -1165,6 +1229,7 @@ async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ a
     const place = placeForAdd(actor.cfg, body?.target);
     checkPorts(actor, rule);
     checkNodes(actor, place);
+    await checkUserRule(actor, place, rule, {}, null, logger);
     return { action: action, results: await ask(place, () => planAdd(toRproxyRule(rule))) };
   }
   if (action === 'api-modify') {
@@ -1201,6 +1266,7 @@ async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ a
     range: hasRangeEnd(body), allowFrom: hasAllowFrom(body), http: hasHttp(body), crowdsec: hasCrowdsec(body),
     targets: hasTargets(body), extraListenAddrs: hasExtraListenAddrs(body), v04: givenV04(body),
   });
+  await checkUserRule(actor, place, updated, ovs, { rule: current, overrides: ovs }, logger);
   return { action: action, results: await ask(place, async (node) => {
     const before = effectiveRule(current, ovs[node.name]);
     const after = effectiveRule(updated, ovs[node.name]);
@@ -1387,10 +1453,10 @@ async function replaceForwardingRule(actor: Actor, place: Place, rule: ForwardRu
   if (!isPaused(current)) await ensureNotShadowedOnNodes(place, current, currentOverrides);
   await deleteForwardingRule(actor, place, rule, logger);
   try {
-    await addForwardingRule(actor, place, rule, logger, ownerId, nextOverrides);
+    await addForwardingRule(actor, place, rule, logger, ownerId, nextOverrides, { rule: current, overrides: currentOverrides });
   } catch (err) {
     // 作れなかったら元のルールを戻す
-    await addForwardingRule(actor, place, current, logger, ownerId, currentOverrides)
+    await addForwardingRule(actor, place, current, logger, ownerId, currentOverrides, { rule: current, overrides: currentOverrides })
       .catch((e) => logger.error(`置き換えに失敗し、元のルールも戻せませんでした（DB と rproxy から消えています）: ${e}`));
     throw err;
   }
@@ -1500,6 +1566,18 @@ async function inspectImport(actor: Actor, place: Place, text: unknown, logger: 
     }
     return { index: index, key: key, status: 'exists', rule: rule, ...(overrides ? { overrides: overrides } : {}) };
   });
+  // 利用者の新しいルールは、ファイルのパス・転送先を確かめの段階でも断る（#155。置き換えは実行のときに今のルールと比べる）
+  if (actor.access !== 'admin') {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.status !== 'new' || !item.rule) continue;
+      try {
+        await checkUserRule(actor, place, item.rule, item.overrides, null, logger);
+      } catch (err) {
+        items[i] = { index: item.index, key: item.key, status: 'error', message: errorText(err) };
+      }
+    }
+  }
   return { items: items, ignoredGlobal: doc.ignoredGlobal };
 }
 
@@ -1733,6 +1811,7 @@ async function changeOverride(actor: Actor, place: Place, key: ForwardRule, node
     const old = ovs[node.name] ?? null;
     const next = change(current, old);
     if (sameOverrides(old ? { n: old } : {}, next ? { n: next } : {})) return DB_ONLY;
+    await checkUserRule(actor, place, current, next ? { [node.name]: next } : {}, { rule: current, overrides: old ? { [node.name]: old } : {} }, logger);
     if (next === null) {
       await conn.query('DELETE FROM forward_rule_overrides WHERE rule_id = ? AND node = ?', [id, node.name]);
     } else {
@@ -1922,7 +2001,7 @@ async function copyRule(actor: Actor, body: any, logger: AppLogger): Promise<{ r
     try {
       await addForwardingRule(actor, to, placed, logger, ownerId, keep);
     } catch (err) {
-      await addForwardingRule(actor, from, rule, logger, ownerId, allOvs)
+      await addForwardingRule(actor, from, rule, logger, ownerId, allOvs, { rule: rule, overrides: allOvs })
         .catch((e) => logger.error(`移動に失敗し、元のルールも戻せませんでした: ${e}`));
       throw err;
     }
