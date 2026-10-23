@@ -118,6 +118,9 @@ RPROXY_API_TOKEN="[token]"
 # RPROXY_UI_USAGE_DAILY_DAYS=400
 # 複数の rproxy（README の「複数の rproxy（ノードとグループ）」）。指定すると RPROXY_API_URL / RPROXY_API_TOKEN は使わない
 # RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
+# セッション（README の「セキュリティ」）：サインインからの長さ（秒。既定 8 時間）と、Keycloak でロールを確かめ直す間隔（秒。0 で止める）
+# RPROXY_UI_SESSION_MAX_AGE=28800
+# RPROXY_UI_ROLE_REFRESH_SECS=300
 ```
 
 `RPROXY_API_URL` は `http://` / `https://` の URL か、`unix:/run/rproxy/api.sock`（rproxy-api の `RPROXY_API_SOCKET` の Unix ソケット。HTTP の Host は `localhost`）。
@@ -142,9 +145,41 @@ Keycloak のロールで、だれが何をできるかを決める（API route �
 - ロールの名前は `RPROXY_UI_ADMIN_ROLE`（既定 `rproxy-admin`）と `RPROXY_UI_USER_ROLE`（既定は空）で決める。`RPROXY_UI_USER_ROLE` が空（既定）なら、サインインできる人はだれでも `rproxy-user` と同じ扱い（ロールを使わない運用）。`RPROXY_UI_USER_ROLE=rproxy-user` にすると、そのロールのない利用者は使えなくなる。
 - `RPROXY_UI_USER_PORTS=1024-65535` のように書くと、`rproxy-user` が使える待ち受けポートを制限できる（範囲の外は 403 `port_not_allowed`。`rproxy-admin` は制限されない）。既定は制限なし。
 - 複数の rproxy では `RPROXY_UI_USER_NODES=node1,node2` で `rproxy-user` が触れるノードを絞れる（下の「複数の rproxy（ノードとグループ）」）。
-- ロールはサインインしたときに読むので、Keycloak でロールを変えたら利用者にサインインし直してもらう。
+- ロールはサインインしたときに読み、そのあとも `RPROXY_UI_ROLE_REFRESH_SECS`（既定 300 秒）ごとに Keycloak に聞き直す（下の「セキュリティ」）。Keycloak でロールを外すと、遅くともその間隔のあとで反映される。
 - 状態を変える API（`POST /api/forward/*`）は、ほかのサイトからの要求（`Sec-Fetch-Site` が same-origin でない、`Origin`（なければ `Referer`）の host が要求の `Host`・`X-Forwarded-Host`・`NEXTAUTH_URL` のどれとも違う）を 403 `csrf` で断る（SameSite=Lax の cookie に加えた CSRF の対策）。前に置くリバースプロキシは `Host` か `X-Forwarded-Host` を渡すか、`NEXTAUTH_URL` を利用者が開く URL にしておく。
 - 履歴（`forward_rules_log`）の `auth_id` は操作した利用者（管理者がほかの人のルールを変えたら管理者）。
+
+## セキュリティ
+
+### レスポンスのヘッダ
+
+UI はすべての応答（画面・API・静的なファイル）に次のヘッダを付ける（`proxy.ts`・`components/securityheaders.ts`）。`X-Powered-By` は出さない。
+
+| ヘッダ | 値 |
+|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self' 'nonce-<要求ごと>' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' <KEYCLOAK_ISSUER の origin>; frame-ancestors 'none'` |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Cross-Origin-Resource-Policy` | `same-origin` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`（`NEXTAUTH_URL` が `https://` のときだけ） |
+
+- スクリプトは要求ごとの nonce の付いたものだけが動く（Next.js 16 の本番の HTML には inline の `<script>` があるため `'self'` だけにはできない）。`style-src` の `'unsafe-inline'` は画面の `style` 属性のため。
+- `form-action` の Keycloak の origin は `KEYCLOAK_ISSUER` から作る（サインインのフォームが Keycloak へ移るため）。
+- `next dev`（開発）では `script-src` に `'unsafe-eval'`、`connect-src` に `ws:`・`wss:` を足す。
+- 前に置く rproxy は L4（TCP と TLS の終端）なので HTTP のヘッダを足せない。UI が自分で付けるので、前段でヘッダを足す設定は要らない（HTTP のリバースプロキシを置くなら、同じヘッダを重ねて付けないこと）。
+
+### セッション
+
+- サインインの長さは `RPROXY_UI_SESSION_MAX_AGE`（秒。既定 28800 = 8 時間）。サインインした時刻から数え、使い続けても延びない。過ぎたらサインインし直す。
+- `RPROXY_UI_ROLE_REFRESH_SECS`（秒。既定 300、`0` で止める）ごとに、サインインのときに受け取った refresh token で Keycloak のトークンのエンドポイントに聞き直し、ロールを新しいアクセストークンのものに置き換える。
+  - Keycloak が断ったら（利用者を無効にした・SSO のセッションが終わった・管理コンソールでセッションを消した）、UI のセッションもその場で無効になる（画面はサインインへ、API は 401）。
+  - Keycloak に届かない・5xx のときは今のロールのまま使い、1 分おきに聞き直す。最後に確かめてから間隔の 3 回分（既定 15 分）を過ぎたらセッションを無効にする。
+  - Keycloak の「SSO Session Idle」（既定 30 分）より長く何もしないと refresh token が切れ、次に開いたときにサインインし直しになる。
+- サインアウトでは Keycloak の end_session（`/protocol/openid-connect/logout`）にも refresh token を送り、Keycloak の SSO のセッションも終わらせる。
+- この版より前のセッション（サインインの時刻を持たないもの）は使えず、更新のあとは一度サインインし直す。
 
 ## L7（HTTP）のルール
 

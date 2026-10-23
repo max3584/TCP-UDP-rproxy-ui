@@ -14,7 +14,7 @@ const PHONE = { width: 375, height: 760 };
 
 async function signIn(context: BrowserContext, lang: string): Promise<void> {
   const token = await encode({
-    token: { sub: 'demo-user', name: 'demo', email: 'demo@example.com', roles: ['rproxy-user'] },
+    token: { sub: 'demo-user', name: 'demo', email: 'demo@example.com', roles: ['rproxy-user'], authTime: Math.floor(Date.now() / 1000) },
     secret: NEXTAUTH_SECRET,
     maxAge: 60 * 60,
   });

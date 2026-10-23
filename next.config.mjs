@@ -6,6 +6,8 @@ const { version } = JSON.parse(readFileSync(new URL('./package.json', import.met
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // X-Powered-By: Next.js を出さない（セキュリティのヘッダは proxy.ts で付ける）
+  poweredByHeader: false,
   // .next/standalone に実行に必要なものだけを集める（Debian パッケージは node server.js で動かす。packaging/）
   output: 'standalone',
   // next/image は使っていない。最適化を切って、CPU ごとのネイティブなライブラリ（sharp）をパッケージに入れない

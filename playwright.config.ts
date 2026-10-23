@@ -5,6 +5,9 @@ import { defineConfig, devices } from '@playwright/test';
 const port = Number(process.env.UI_E2E_PORT ?? 3100);
 export const baseURL = `http://127.0.0.1:${port}`;
 export const NEXTAUTH_SECRET = 'ui-e2e-secret-not-for-production';
+// サインインの E2E（tests/ui/csp.spec.ts）が動かす偽の Keycloak（OIDC の discovery と認可のエンドポイントだけ）
+export const FAKE_ISSUER_PORT = Number(process.env.UI_E2E_ISSUER_PORT ?? 3198);
+export const FAKE_ISSUER = `http://127.0.0.1:${FAKE_ISSUER_PORT}/realms/e2e`;
 
 export default defineConfig({
   testDir: 'tests/ui',
@@ -43,7 +46,9 @@ export default defineConfig({
       NEXTAUTH_SECRET,
       KEYCLOAK_CLIENT_ID: 'rproxy-ui',
       KEYCLOAK_CLIENT_SECRET: 'unused',
-      KEYCLOAK_ISSUER: 'http://keycloak.invalid/realms/e2e',
+      KEYCLOAK_ISSUER: FAKE_ISSUER,
+      // セッションのクッキーは Keycloak を通さずに作るので、ロールを Keycloak に聞き直さない（components/session.ts）
+      RPROXY_UI_ROLE_REFRESH_SECS: '0',
       // 利用量の集計（#101）を早く回す（tests/ui/usage.spec.ts。30 秒が最短）
       RPROXY_UI_USAGE_SECS: process.env.RPROXY_UI_USAGE_SECS ?? '30',
     },

@@ -10,7 +10,7 @@ const headers = { 'Content-Type': 'application/json', ...(process.env.RPROXY_API
 const rulePath = `${API}/rules/tcp/127.0.0.1/${PORT}`;
 
 async function asAdmin(context: BrowserContext): Promise<void> {
-  const token = await encode({ token: { sub: 'ui-e2e-admin', name: 'Admin', email: 'admin@example.invalid', roles: ['rproxy-admin'] }, secret: NEXTAUTH_SECRET, maxAge: 3600 });
+  const token = await encode({ token: { sub: 'ui-e2e-admin', name: 'Admin', email: 'admin@example.invalid', roles: ['rproxy-admin'], authTime: Math.floor(Date.now() / 1000) }, secret: NEXTAUTH_SECRET, maxAge: 3600 });
   await context.clearCookies();
   await context.addCookies([{ name: 'next-auth.session-token', value: token, domain: new URL(baseURL).hostname, path: '/', httpOnly: true, sameSite: 'Lax' }]);
 }

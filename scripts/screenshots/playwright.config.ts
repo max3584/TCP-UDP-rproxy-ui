@@ -45,6 +45,8 @@ export default defineConfig({
       KEYCLOAK_CLIENT_ID: 'rproxy-ui',
       KEYCLOAK_CLIENT_SECRET: 'unused',
       KEYCLOAK_ISSUER: 'http://keycloak.invalid/realms/screenshots',
+      // セッションのクッキーは Keycloak を通さずに作るので、ロールを Keycloak に聞き直さない
+      RPROXY_UI_ROLE_REFRESH_SECS: '0',
       // 実際の rproxy・DB には届かないようにする（API はすべてブラウザの中で差し替える）
       RPROXY_API_URL: 'http://127.0.0.1:9',
       DB_HOST: '127.0.0.1',

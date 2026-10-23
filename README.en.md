@@ -118,6 +118,9 @@ RPROXY_API_TOKEN="[token]"
 # RPROXY_UI_USAGE_DAILY_DAYS=400
 # several rproxy instances (see "Several rproxy instances (nodes and groups)"). When set, RPROXY_API_URL / RPROXY_API_TOKEN are not used
 # RPROXY_UI_NODES="/etc/rproxy-ui/nodes.yaml"
+# sessions (see "Security"): length from sign-in (seconds, default 8 hours) and how often roles are checked again with Keycloak (seconds, 0 turns it off)
+# RPROXY_UI_SESSION_MAX_AGE=28800
+# RPROXY_UI_ROLE_REFRESH_SECS=300
 ```
 
 `RPROXY_API_URL` is an `http://` / `https://` URL, or `unix:/run/rproxy/api.sock` (the Unix socket of rproxy-api's `RPROXY_API_SOCKET`; the HTTP Host is `localhost`).
@@ -142,9 +145,41 @@ Keycloak roles decide who can do what (the API routes check on every request).
 - The role names are set by `RPROXY_UI_ADMIN_ROLE` (default `rproxy-admin`) and `RPROXY_UI_USER_ROLE` (empty by default). If `RPROXY_UI_USER_ROLE` is empty (the default), anyone who can sign in is treated the same as `rproxy-user` (operation without roles). With `RPROXY_UI_USER_ROLE=rproxy-user`, users without that role can no longer use it.
 - Writing e.g. `RPROXY_UI_USER_PORTS=1024-65535` restricts the listen ports `rproxy-user` can use (outside the range: 403 `port_not_allowed`; `rproxy-admin` is not restricted). There is no restriction by default.
 - With several rproxy instances, `RPROXY_UI_USER_NODES=node1,node2` limits the nodes `rproxy-user` can change (see "Several rproxy instances (nodes and groups)" below).
-- Roles are read at sign-in, so after changing a role in Keycloak, have the user sign in again.
+- Roles are read at sign-in and checked again with Keycloak every `RPROXY_UI_ROLE_REFRESH_SECS` (default 300 seconds; see "Security" below). A role removed in Keycloak takes effect after that interval at the latest.
 - State-changing APIs (`POST /api/forward/*`) refuse requests from other sites with 403 `csrf` (when `Sec-Fetch-Site` is not same-origin, or the host of `Origin` (else `Referer`) matches none of the request's `Host`, `X-Forwarded-Host` and `NEXTAUTH_URL`), as CSRF protection on top of the SameSite=Lax cookie. A reverse proxy in front should pass `Host` or `X-Forwarded-Host`, or set `NEXTAUTH_URL` to the URL users open.
 - The `auth_id` in the history (`forward_rules_log`) is the user who performed the operation (the administrator, if an administrator changed someone else's rule).
+
+## Security
+
+### Response headers
+
+The UI adds these headers to every response (pages, API and static files; `proxy.ts`, `components/securityheaders.ts`). It sends no `X-Powered-By`.
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self' 'nonce-<per request>' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' <origin of KEYCLOAK_ISSUER>; frame-ancestors 'none'` |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Cross-Origin-Resource-Policy` | `same-origin` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` (only when `NEXTAUTH_URL` is `https://`) |
+
+- Only scripts carrying the per-request nonce run (the production HTML of Next.js 16 has inline `<script>`s, so `'self'` alone is not possible). `'unsafe-inline'` in `style-src` is for `style` attributes in the screens.
+- The Keycloak origin in `form-action` comes from `KEYCLOAK_ISSUER` (the sign-in form moves on to Keycloak).
+- Under `next dev` (development), `'unsafe-eval'` is added to `script-src` and `ws:`/`wss:` to `connect-src`.
+- rproxy in front works at L4 (TCP and TLS termination) and cannot add HTTP headers. The UI adds them itself, so nothing needs to add headers in front (if you put an HTTP reverse proxy in front, do not add the same headers twice).
+
+### Sessions
+
+- A sign-in lasts `RPROXY_UI_SESSION_MAX_AGE` (seconds, default 28800 = 8 hours), counted from the time of sign-in; using the UI does not extend it. After that, users sign in again.
+- Every `RPROXY_UI_ROLE_REFRESH_SECS` (seconds, default 300, `0` turns it off) the UI asks Keycloak's token endpoint again with the refresh token received at sign-in and replaces the roles with those of the new access token.
+  - When Keycloak refuses (the user was disabled, the SSO session ended, the session was removed in the admin console), the UI session becomes invalid at once (the screens go to sign-in, the API answers 401).
+  - When Keycloak is unreachable or answers 5xx, the current roles stay and the UI asks again every minute. Three intervals (15 minutes by default) after the last successful check, the session becomes invalid.
+  - Idle for longer than Keycloak's "SSO Session Idle" (30 minutes by default), the refresh token expires and users sign in again the next time they open the UI.
+- Signing out also sends the refresh token to Keycloak's end_session endpoint (`/protocol/openid-connect/logout`), ending the Keycloak SSO session too.
+- Sessions from before this version (without the time of sign-in) are not accepted; sign in once again after the update.
 
 ## L7 (HTTP) rules
 
