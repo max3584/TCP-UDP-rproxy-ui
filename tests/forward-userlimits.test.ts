@@ -228,3 +228,41 @@ describe('import (#155)', () => {
     expect(byAdmin.body.items.map((i: { status: string }) => i.status)).toEqual(['new', 'new', 'new']);
   });
 });
+
+describe('review fixes (#155)', () => {
+  const l7 = (url: string, extra: Record<string, unknown> = {}) => ({ routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's' }], services: { s: { servers: [{ url: url }] } }, ...extra });
+
+  it.each(['http://169.254.169.254:65536/', 'http://127.0.0.1:8a/', 'http://[fe80::1%25eth0]/'])('a service URL %s is refused for everyone (400 invalid)', async (url) => {
+    const res = await call('add', { ...tcpRule, distAddr: '', distPort: 0, http: l7(url) });
+    expect([res.status, res.body.code]).toEqual([400, 'invalid']);
+    mocks.getServerSession.mockResolvedValue(admin);
+    expect((await call('add', { ...tcpRule, distAddr: '', distPort: 0, http: l7(url) })).status).toBe(400);
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable URL already stored on a user’s rule is refused on modify (403 target_not_allowed), not kept', async () => {
+    storedRule({ dist_addr: '', dist_port: 0, options: { tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, http: l7('http://169.254.169.254:65536/') } });
+    const res = await call('modify', { ...tcpRule, distAddr: '', distPort: 0, allowFrom: ['10.0.0.0/8'] });
+    expect([res.status, res.body.code], JSON.stringify(res.body)).toEqual([403, 'target_not_allowed']);
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+  });
+
+  it('a user keeps an unchanged oidc middleware but may not change it (403 middleware_not_allowed)', async () => {
+    const oidc = { issuer: 'https://idp.example.com/realms/x', client_id: 'c', client_secret_file: '/s/c', cookie_secret_file: '/s/k' };
+    const http = (o: Record<string, unknown>) => ({ routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's', middlewares: ['o'] }], services: { s: { servers: [{ url: 'http://192.0.2.9' }] } }, middlewares: { o: { oidc: o } } });
+    storedRule({ dist_addr: '', dist_port: 0, options: { tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, http: http(oidc) } });
+    expect((await call('modify', { ...tcpRule, distAddr: '', distPort: 0, http: http(oidc) })).status).toBe(200);
+    const changed = await call('modify', { ...tcpRule, distAddr: '', distPort: 0, http: http({ ...oidc, client_id: 'other' }) });
+    expect([changed.status, changed.body.code]).toEqual([403, 'middleware_not_allowed']);
+  });
+
+  it('the L4 health check port and RPROXY_UI_PROTECTED_TARGETS are checked', async () => {
+    vi.stubEnv('RPROXY_UI_PROTECTED_TARGETS', '192.0.2.1:3306');
+    const body = { ...tcpRule, distAddr: '', distPort: 0, targets: [{ addr: '192.0.2.1', port: 80 }], healthCheck: { port: 3306 } };
+    const res = await call('add', body);
+    expect([res.status, res.body.code]).toEqual([403, 'target_not_allowed']);
+    expect(res.body.error).toContain('RPROXY_UI_PROTECTED_TARGETS');
+    expect((await call('add', { ...body, healthCheck: { port: 8080 } })).status).toBe(200);
+  });
+
+});

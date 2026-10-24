@@ -80,7 +80,8 @@ import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
 import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, isShadowing, liveRule, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
 import { V04_FIELD, V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
 import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
-import { addedRefs, certAllowed, certNames, destKey, destRefs, fileKey, fileRefs, redactFiles } from '@/components/userlimits';
+import { addedRefs, certAllowed, certNames, destKey, fileKey, fileRefs, locatedDests, oidcConfigs, redactFiles } from '@/components/userlimits';
+import type { DestRef } from '@/components/userlimits';
 import { checkDestinations, protectedAddrs, refusalText, resolveHost } from '@/components/usertargets';
 import type { InterfacesInfo } from '@/components/listen';
 
@@ -237,11 +238,6 @@ interface Before {
   overrides?: Overrides;
 }
 
-// ルールと、ノードごとの上書きを重ねた内容（転送先は上書きでも変わる）
-function ruleVariants(rule: ForwardRule, overrides: Overrides | undefined): ForwardRule[] {
-  return [rule, ...Object.values(overrides ?? {}).map((ov) => effectiveRule(rule, ov))];
-}
-
 // 守る相手（rproxy の制御 API・UI・DB）。置き場所のノードの GET /interfaces の予約済みのアドレスも使う（取れなければそのノードは飛ばす）
 async function protectedFor(actor: Actor, place: Place, logger: AppLogger) {
   const interfaces: InterfacesInfo[] = [];
@@ -257,12 +253,12 @@ async function protectedFor(actor: Actor, place: Place, logger: AppLogger) {
   return protectedAddrs({ env: process.env, apiUrls: apiUrls, interfaces: interfaces });
 }
 
-// 利用者のルールを確かめる（admin は何もしない）：
+// 利用者のルールのうち、その場で決まるものを確かめる（admin は何もしない）。確かめる転送先（前の内容にないものと、読めない URL）を返す：
 // - サーバのファイルを指す項目は、前の内容にない値を断る（403 file_not_allowed）
 // - 登録済みの証明書の名前は、前の内容になく RPROXY_UI_USER_CERTS の外なら断る（403 cert_not_allowed）
-// - 転送先は、前の内容にないものを許可リストと断る宛先で確かめる（403 target_not_allowed）
-async function checkUserRule(actor: Actor, place: Place, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null, logger: AppLogger): Promise<void> {
-  if (actor.access === 'admin') return;
+// - oidc のミドルウェアは、前の内容と同じ設定でなければ断る（403 middleware_not_allowed。discovery の先を確かめられないため）
+function userRuleSync(actor: Actor, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null): DestRef[] {
+  if (actor.access === 'admin') return [];
   const files = addedRefs(fileRefs(rule), fileRefs(before?.rule), fileKey);
   if (files.length > 0) {
     const where = [...new Set(files.map((f) => f.where))].join(', ');
@@ -273,13 +269,28 @@ async function checkUserRule(actor: Actor, place: Place, rule: ForwardRule, over
   if (certs.length > 0) {
     throw new HttpError(403, `登録済みの証明書 ${certs.join(', ')} は管理者だけが使えます（RPROXY_UI_USER_CERTS）。`, 'cert_not_allowed');
   }
-  const old = before ? ruleVariants(before.rule, before.overrides).flatMap(destRefs) : [];
-  const dests = addedRefs(ruleVariants(rule, overrides).flatMap(destRefs), old, destKey);
-  if (dests.length === 0) return;
-  const refused = await checkDestinations(dests, actor.roles.userTargets, { resolve: resolveHost, protectedAddrs: await protectedFor(actor, place, logger) });
+  const oldOidc = new Set(oidcConfigs(before?.rule));
+  if (oidcConfigs(rule).some((c) => !oldOidc.has(c))) {
+    throw new HttpError(403, 'OIDC のミドルウェアは管理者だけが足したり変えたりできます（rproxy がつなぐ先を UI が確かめられないため）。', 'middleware_not_allowed');
+  }
+  const next = locatedDests(rule, overrides);
+  const old = before ? locatedDests(before.rule, before.overrides) : [];
+  // 読めない URL は前からあっても確かめる（断る）
+  return [...addedRefs(next.filter((d) => !d.invalid), old, destKey), ...next.filter((d) => d.invalid)];
+}
+
+// 転送先を確かめる（403 target_not_allowed）
+async function checkUserDests(actor: Actor, place: Place, dests: DestRef[], logger: AppLogger): Promise<void> {
+  if (actor.access === 'admin' || dests.length === 0) return;
+  const refused = await checkDestinations(dests, actor.roles.userTargets, { resolve: resolveHost, protectedAddrs: await protectedFor(actor, place, logger), protectedCidrs: actor.roles.protectedTargets });
   if (refused.length > 0) {
     throw new HttpError(403, `利用者はこの転送先を使えません: ${refusalText(refused)}`, 'target_not_allowed');
   }
+}
+
+// 利用者のルールを確かめる（admin は何もしない）
+async function checkUserRule(actor: Actor, place: Place, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null, logger: AppLogger): Promise<void> {
+  await checkUserDests(actor, place, userRuleSync(actor, rule, overrides, before), logger);
 }
 
 // 利用者に見せるほかの人のルール（固定ルール）は、ファイルのパスを伏せる
@@ -1127,6 +1138,7 @@ async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule,
     const { overrides: ovs } = await lockedExtras(conn, place, rule);
     checkPorts(actor, current);
     const updated = mergeEdit(current, rule, given);
+    // 転送先の名前解決と GET /interfaces は行ロックを持ったまま行う（利用者の 1 件のルールだけ。ロックの外でやり直す形は見送った）
     await checkUserRule(actor, place, updated, ovs, { rule: current, overrides: ovs }, logger);
     const where = keyWhere(place, updated);
     await conn.query(

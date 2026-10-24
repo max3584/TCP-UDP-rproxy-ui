@@ -33,7 +33,8 @@ roles:
   userPorts: ""    # RPROXY_UI_USER_PORTS, e.g. 1024-65535
   userNodes: ""    # RPROXY_UI_USER_NODES, e.g. node1,node2
   userTargets: ""  # RPROXY_UI_USER_TARGETS, e.g. 10.0.0.0/8,backend.example.com (destinations users may use)
-  userCerts: ""    # RPROXY_UI_USER_CERTS, e.g. tenant- (stored certificate name prefixes users may use)
+  userCerts: ""    # RPROXY_UI_USER_CERTS, e.g. tenant- (stored certificate name prefixes users may use; shared by all users, end with a separator)
+  protectedTargets: ""  # RPROXY_UI_PROTECTED_TARGETS, e.g. 10.96.0.0/12,10.244.0.0/16 (always refused to users; Pod IPs change, so use CIDRs)
 
 # the database (MariaDB). External by default; mariadb.enabled bundles one
 db:

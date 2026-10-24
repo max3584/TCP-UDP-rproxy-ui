@@ -1,9 +1,9 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
 import { RproxyError, listCerts, withNode } from '@/components/rproxy';
-import { loadNodes, probeNode } from '@/components/nodes';
+import { NodesConfigError, loadNodes, probeNode, targetNodes, visibleNodes } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
-import { accessOf, roleConfig } from '@/components/roles';
+import { accessOf, nodesAllowed, roleConfig } from '@/components/roles';
 import { certAllowed } from '@/components/userlimits';
 import { localizedApi } from '@/i18n/server';
 
@@ -37,8 +37,24 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     const roles = roleConfig();
     const admin = accessOf(session.user.roles ?? [], roles) === 'admin';
-    // ノードを設定していれば ?target= のノード（グループなら先頭のノード）に聞く
-    const node = probeNode(loadNodes(), typeof req.query.target === 'string' ? req.query.target : undefined);
+    // ノードを設定していれば ?target= のノード（グループなら先頭のノード）に聞く。利用者は RPROXY_UI_USER_NODES のノードだけ
+    // （見るだけの Kubernetes の rproxy も外す）
+    const cfg = visibleNodes(loadNodes(), admin);
+    const target = typeof req.query.target === 'string' && req.query.target !== '' ? req.query.target : undefined;
+    let node;
+    try {
+      node = probeNode(cfg, target);
+    } catch (err) {
+      if (err instanceof NodesConfigError) return res.status(400).json({ error: err.message, code: 'unknown_target' });
+      throw err;
+    }
+    if (!admin && cfg.configured) {
+      const name = target ?? cfg.defaultTarget ?? cfg.nodes[0]?.name ?? '';
+      const members = (targetNodes(cfg, name) ?? []).map((n) => n.name);
+      if (!nodesAllowed('user', roles, members)) {
+        return res.status(403).json({ error: `ノード ${members.join(', ')} は管理者だけが触れます。`, code: 'node_not_allowed' });
+      }
+    }
     const raw = node ? await withNode(node, () => listCerts()) : await listCerts();
     const info: CertsInfo = { available: true, certs: certsFromRproxy(raw, admin ? null : roles.userCerts) };
     return res.status(200).json(info);

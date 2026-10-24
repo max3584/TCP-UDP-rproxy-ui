@@ -1,8 +1,9 @@
-// 利用者（admin でない人）の転送先の確認（#155。tests/usertargets.test.ts）。サーバ側（API route）だけで使う。
+// 利用者（admin でない人）の転送先の確認（#155。tests/userlimits.test.ts）。サーバ側（API route）だけで使う。
 // - RPROXY_UI_USER_TARGETS（CIDR とホスト名）があれば、その中だけ。ホスト名は名前が一致するか、解決したアドレスがすべて CIDR の中
 // - 次の宛先は既定で断る：ループバック・リンクローカル（169.254.169.254 などのメタデータを含む）・未指定・マルチキャスト・ブロードキャスト。
 //   許可リストにその範囲の中だけの CIDR（例 127.0.0.1/32）を書けば使える（0.0.0.0/0 のような広い範囲では使えない）
-// - rproxy の制御 API・この UI・データベースのアドレスとポートは、許可リストに書いても断る
+// - rproxy の制御 API・この UI・データベース（DB_HOST の解決先）のアドレスとポートと、RPROXY_UI_PROTECTED_TARGETS は、許可リストに書いても断る
+// - URL を読めない宛先（ポートが数字でない・65535 より大きい・ゾーン ID など）は断る
 // - ホスト名は UI のホストで解決し、解決したアドレスもすべて確かめる（解決できなければ断る）。
 //   rproxy が後で解決し直したときに名前の向き先が変わる（DNS rebinding）ことまでは防げないので、名前は管理者が持つものを許可リストに書く
 
@@ -12,7 +13,7 @@ import os from 'node:os';
 import { parseCidr } from './cidr';
 import type { DestRef } from './userlimits';
 import { urlHostPort } from './userlimits';
-import type { UserTargets } from './roles';
+import type { ProtectedTarget, UserTargets } from './roles';
 import type { InterfacesInfo } from './listen';
 
 // 守る相手の 1 件（アドレスは正規化した IP）
@@ -30,6 +31,8 @@ export interface Refusal {
 export interface TargetDeps {
   resolve: (host: string) => Promise<string[]>;
   protectedAddrs: ProtectedAddr[];
+  // RPROXY_UI_PROTECTED_TARGETS（CIDR とポート。port が null ならすべて）
+  protectedCidrs?: ProtectedTarget[];
 }
 
 // 既定で断る範囲
@@ -91,6 +94,7 @@ function portsLabel(ports: [number, number]): string {
 
 // 1 件の宛先を確かめる。断る理由（なければ null）
 async function refusalOf(ref: DestRef, allow: UserTargets | null, deps: TargetDeps): Promise<string | null> {
+  if (ref.invalid) return `URL「${ref.host}」のホストとポートを読めません（ポートは 1〜65535 の数字、ゾーン ID は不可）。`;
   const literal = toIp(ref.host);
   let addrs: string[];
   if (literal !== null) {
@@ -107,6 +111,8 @@ async function refusalOf(ref: DestRef, allow: UserTargets | null, deps: TargetDe
   for (const a of addrs) {
     const hit = deps.protectedAddrs.find((p) => p.addr === a && p.port >= ref.ports[0] && p.port <= ref.ports[1]);
     if (hit) return `${a}:${hit.port} は ${hit.what} のアドレスです。`;
+    const fixed = (deps.protectedCidrs ?? []).find((p) => cidrContains(p.cidr, a) && (p.port === null || (p.port >= ref.ports[0] && p.port <= ref.ports[1])));
+    if (fixed) return `${a} は管理者が守る宛先（RPROXY_UI_PROTECTED_TARGETS の ${fixed.cidr}${fixed.port !== null ? `:${fixed.port}` : ''}）です。`;
     const special = SPECIAL.find((s) => cidrContains(s.cidr, a));
     if (special && !(allow?.cidrs ?? []).some((c) => cidrContains(c, a) && cidrWithin(c, special.cidr))) {
       return `${a} は ${special.label} のアドレスです。`;
@@ -132,7 +138,7 @@ export async function checkDestinations(refs: DestRef[], allow: UserTargets | nu
 }
 
 export function refusalText(refusals: Refusal[]): string {
-  return refusals.map((r) => `${r.ref.host}:${portsLabel(r.ref.ports)}（${r.reason}）`).join(' ');
+  return refusals.map((r) => (r.ref.invalid ? r.reason : `${r.ref.host}:${portsLabel(r.ref.ports)}（${r.reason}）`)).join(' ');
 }
 
 // ---- 守る相手（制御 API・UI・DB）を集める ----

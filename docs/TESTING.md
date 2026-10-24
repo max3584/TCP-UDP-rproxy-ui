@@ -258,7 +258,8 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 | redactFiles | 固定ルールの `*_file`・証明書の期限のファイル・誤りの文のパスを `<hidden>` にする（元は変えない） |
 | API（add・modify・plan） | 利用者はファイルのパスで 403 `file_not_allowed`、許可の外の登録済みの証明書で 403 `cert_not_allowed`、断る転送先で 403 `target_not_allowed`（rproxy にも DB にも何もしない）。管理者は通る。自分のルールの変更では前からあるファイルのパス・転送先はそのまま通り、変えた値だけを断る。`GET /interfaces` の予約済みのアドレスを断る |
 | ダッシュボード・詳細 | 利用者には固定ルールのパスを伏せ、管理者には出す |
-| /api/forward/certs | 名前・名前の一覧・期限だけ、利用者には `RPROXY_UI_USER_CERTS` の名前だけ、403・404 は `available: false` |
+| /api/forward/certs | 名前・名前の一覧・期限だけ、利用者には `RPROXY_UI_USER_CERTS` の名前だけ、`?target=` は `RPROXY_UI_USER_NODES` の内だけ、403・404 は `available: false` |
+| レビューの指摘 | 読めない URL（`:65536`・`:8a`・`[fe80::1%25eth0]`）はだれでも 400、保存済みなら利用者は 403。L4 の死活確認のポート、上書きの転送先の置き場所、oidc の変更は 403、`RPROXY_UI_PROTECTED_TARGETS` |
 
 テストの名前解決は `tests/setup.ts` が決める（`localhost` は 127.0.0.1、`*.invalid` は解決できない、ほかは 192.0.2.10）。利用者のロールは `vitest.config.mts` の `RPROXY_UI_USER_ROLE=rproxy-user`。
 

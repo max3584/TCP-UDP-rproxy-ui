@@ -22,6 +22,15 @@ export interface RoleConfig {
   userTargets: UserTargets | null;
   // user（admin 以外）が使える登録済みの証明書の名前の先頭（RPROXY_UI_USER_CERTS。#155）。null なら制限なし
   userCerts: string[] | null;
+  // user（admin 以外）がいつも使えない宛先（RPROXY_UI_PROTECTED_TARGETS。CIDR か CIDR:ポート。#155 のレビュー M3）。
+  // 許可リストに入っていても断る（別のホストの DB・Kubernetes の Service の CIDR など）
+  protectedTargets: ProtectedTarget[];
+}
+
+// port が null ならすべてのポート
+export interface ProtectedTarget {
+  cidr: string;
+  port: number | null;
 }
 
 // 転送先の許可リスト：CIDR（正規化した形）とホスト名（完全一致か、*.example.com で下の名前すべて）
@@ -52,6 +61,28 @@ function parseTargets(value: string | undefined): UserTargets | null {
     out.names.push(name);
   }
   return out;
+}
+
+function parseProtected(value: string | undefined): ProtectedTarget[] {
+  const list = (value ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
+  return list.map((item) => {
+    let addr = item;
+    let port: number | null = null;
+    const bracket = /^\[([^\]]+)\](?::([0-9]+))?$/.exec(item);
+    if (bracket) {
+      addr = bracket[1];
+      port = bracket[2] !== undefined ? Number(bracket[2]) : null;
+    } else if ((item.match(/:/g) ?? []).length === 1) {
+      const i = item.indexOf(':');
+      addr = item.slice(0, i);
+      port = /^[0-9]+$/.test(item.slice(i + 1)) ? Number(item.slice(i + 1)) : NaN;
+    }
+    const c = parseCidr(addr);
+    if (!c.ok || (port !== null && !(Number.isInteger(port) && port >= 1 && port <= 65535))) {
+      throw new RoleConfigError(`RPROXY_UI_PROTECTED_TARGETS は CIDR か CIDR:ポート（IPv6 は [2001:db8::/64]:5432）をカンマで区切って書いてください: ${item}`);
+    }
+    return { cidr: c.value, port: port };
+  });
 }
 
 function parseCertPrefixes(value: string | undefined): string[] | null {
@@ -91,6 +122,7 @@ export function roleConfig(env: Record<string, string | undefined> = process.env
     userNodes: parseNodes(env.RPROXY_UI_USER_NODES),
     userTargets: parseTargets(env.RPROXY_UI_USER_TARGETS),
     userCerts: parseCertPrefixes(env.RPROXY_UI_USER_CERTS),
+    protectedTargets: parseProtected(env.RPROXY_UI_PROTECTED_TARGETS),
   };
 }
 

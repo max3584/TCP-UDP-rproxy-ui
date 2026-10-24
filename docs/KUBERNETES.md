@@ -192,7 +192,7 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `url` | （必須） | `NEXTAUTH_URL` |
 | `existingSecret` | （必須） | `NEXTAUTH_SECRET`・`KEYCLOAK_CLIENT_SECRET`・`DB_PASSWORD` |
 | `keycloak.issuer`・`clientId` | （必須）・`rproxy-ui` | |
-| `roles.*` | 空 | `RPROXY_UI_ROLES_CLAIM`・`_ADMIN_ROLE`・`_USER_ROLE`・`_USER_PORTS`・`_USER_NODES`・`_USER_TARGETS`・`_USER_CERTS`（`userRole` が空なら `rproxy-admin` のない人は使えない） |
+| `roles.*` | 空 | `RPROXY_UI_ROLES_CLAIM`・`_ADMIN_ROLE`・`_USER_ROLE`・`_USER_PORTS`・`_USER_NODES`・`_USER_TARGETS`・`_USER_CERTS`・`RPROXY_UI_PROTECTED_TARGETS`（`protectedTargets`。Pod の IP は変わるので Pod と Service の CIDR を書く。`userRole` が空なら `rproxy-admin` のない人は使えない） |
 | `db.host`・`port`・`database`・`user` | 空・3306・`rproxy`・`rproxy_ui` | |
 | `migrate.enabled`・`existingSecret`・`baseline`・`createDatabase`・`createUser` | `true`・空・空・`false`・`false` | |
 | `mariadb.enabled`・`existingSecret`・`image`・`persistence` | `false`・空・`mariadb:11.8`・10Gi | |

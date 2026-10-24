@@ -258,7 +258,8 @@ That exporting and importing again gives the same rules is checked in `tests/exp
 | redactFiles | The `*_file` values of static rules, the files of certificate expiry and the paths in error texts become `<hidden>` (the original is not changed) |
 | API (add, modify, plan) | Users get 403 `file_not_allowed` for file paths, 403 `cert_not_allowed` for stored certificates outside the allowed names and 403 `target_not_allowed` for refused destinations (nothing is done to rproxy or the DB). Admins pass. On changes to an own rule, file paths and destinations already there pass unchanged and only changed values are refused. The reserved addresses of `GET /interfaces` are refused |
 | Dashboard, details | Users get static rules with the paths hidden; admins see them |
-| /api/forward/certs | Names, SANs and expiry only; users get only the names of `RPROXY_UI_USER_CERTS`; 403 and 404 become `available: false` |
+| /api/forward/certs | Names, SANs and expiry only; users get only the names of `RPROXY_UI_USER_CERTS`; `?target=` only inside `RPROXY_UI_USER_NODES`; 403 and 404 become `available: false` |
+| Review fixes | Unreadable URLs (`:65536`, `:8a`, `[fe80::1%25eth0]`) are 400 for everyone and 403 for users when already stored; the L4 health check port, the place of override destinations, oidc changes refused, `RPROXY_UI_PROTECTED_TARGETS` |
 
 Name resolution in the tests is decided by `tests/setup.ts` (`localhost` is 127.0.0.1, `*.invalid` does not resolve, others are 192.0.2.10). The user role is `RPROXY_UI_USER_ROLE=rproxy-user` in `vitest.config.mts`.
 

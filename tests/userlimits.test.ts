@@ -194,3 +194,69 @@ describe('redactFiles', () => {
     expect(rule.tls.certificates[0].key_file).toBe('/etc/rproxy/tls/a.key');
   });
 });
+
+// レビューの指摘（#155）：読めない URL・死活確認のポート・上書きの置き場所・oidc・守る宛先の環境変数
+describe('review fixes (#155)', () => {
+  it('parseHttpUrl reads only well-formed http(s) URLs (port 1-65535 digits, no zone ID, no userinfo)', async () => {
+    const { parseHttpUrl, validateHttp } = await import('@/components/httpspec');
+    expect(parseHttpUrl('http://192.0.2.1:8080/x')).toEqual({ scheme: 'http', host: '192.0.2.1', port: 8080 });
+    expect(parseHttpUrl('https://[2001:db8::1]/')).toEqual({ scheme: 'https', host: '2001:db8::1', port: 443 });
+    expect(parseHttpUrl('HTTP://Example.COM')).toEqual({ scheme: 'http', host: 'example.com', port: 80 });
+    for (const bad of ['http://169.254.169.254:65536/', 'http://127.0.0.1:8a/', 'http://[fe80::1%25eth0]/', 'http://[fe80::1%eth0]/', 'http://u:p@127.0.0.1/', 'http://127.0.0.1:0/', 'http://127.0.0.1:/', 'http://a b/', 'ftp://x/']) {
+      expect(parseHttpUrl(bad), bad).toBeNull();
+    }
+    // サーバ側の検証（管理者も）で断る
+    const errors = validateHttp({ routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's' }, { name: 't', match: 'Host(`t`)', to: 'http://127.0.0.1:8a/' }], services: { s: { servers: [{ url: 'http://169.254.169.254:65536/' }] } },
+      middlewares: { fa: { forward_auth: { address: 'http://[fe80::1%25eth0]/' } }, o: { oidc: { issuer: 'https://idp:99999', client_id: 'c', client_secret_file: '/a', cookie_secret_file: '/b' } } } });
+    expect(errors.join('\n')).toMatch(/サービス「s」の転送先/);
+    expect(errors.join('\n')).toMatch(/ルート「t」の転送先（to）/);
+    expect(errors.join('\n')).toMatch(/ミドルウェア「fa」の address/);
+    expect(errors.join('\n')).toMatch(/ミドルウェア「o」の issuer/);
+  });
+
+  it('an unreadable URL becomes an invalid destination that is always refused', async () => {
+    const rule: ForwardRule = { ...base, distAddr: '', distPort: 0, http: { routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's' }], services: { s: { servers: [{ url: 'http://169.254.169.254:65536/' }] } } } };
+    const refs = destRefs(rule);
+    expect(refs).toEqual([{ where: 'http.services.*.servers[].url', host: 'http://169.254.169.254:65536/', ports: [0, 0], invalid: true }]);
+    const out = await checkDestinations(refs, null, { resolve: async () => ['192.0.2.1'], protectedAddrs: [] });
+    expect(out).toHaveLength(1);
+    expect(out[0].reason).toContain('読めません');
+  });
+
+  it('health_check.port is a destination on every target', () => {
+    const rule: ForwardRule = { ...base, distAddr: '', distPort: 0, targets: [{ addr: '192.0.2.1', port: 80 }, { addr: '192.0.2.2', port: 80 }], healthCheck: { port: 3306 } };
+    expect(destRefs(rule).filter((d) => d.where === 'health_check').map((d) => `${d.host}:${d.ports[0]}`)).toEqual(['192.0.2.1:3306', '192.0.2.2:3306']);
+  });
+
+  it('locatedDests keeps a node override destination apart from the rule destination', async () => {
+    const { locatedDests } = await import('@/components/userlimits');
+    const rule: ForwardRule = { ...base, distAddr: '192.0.2.5', distPort: 80 };
+    const withOverride = locatedDests(rule, { n1: { distAddr: '127.0.0.1', distPort: 9000 } });
+    expect(withOverride.map((d) => `${d.where} ${d.host}:${d.ports[0]}`)).toEqual(['rule:remote 192.0.2.5:80', 'node:n1:remote 127.0.0.1:9000']);
+    // moving the override's value to the rule is new there
+    const moved = locatedDests({ ...rule, distAddr: '127.0.0.1', distPort: 9000 }, {});
+    expect(addedRefs(moved, withOverride, destKey).map((d) => d.where)).toEqual(['rule:remote']);
+  });
+
+  it('oidcConfigs compares the whole oidc setting regardless of key order', async () => {
+    const { oidcConfigs } = await import('@/components/userlimits');
+    const a = oidcConfigs({ http: { middlewares: { o: { oidc: { issuer: 'https://i', client_id: 'c' } }, h: { headers: {} } } } });
+    const b = oidcConfigs({ http: { middlewares: { renamed: { oidc: { client_id: 'c', issuer: 'https://i' } } } } });
+    expect(a).toEqual(b);
+    expect(oidcConfigs({ http: { middlewares: { o: { oidc: { issuer: 'https://i', client_id: 'd' } } } } })).not.toEqual(a);
+  });
+
+  it('RPROXY_UI_PROTECTED_TARGETS is refused even inside the allow-list', async () => {
+    const { roleConfig, RoleConfigError } = await import('@/components/roles');
+    const cfg = roleConfig({ RPROXY_UI_PROTECTED_TARGETS: '10.0.0.5:3306, 10.96.0.0/12, [fd00::/8]:5432, [2001:db8::1]' });
+    expect(cfg.protectedTargets).toEqual([
+      { cidr: '10.0.0.5/32', port: 3306 }, { cidr: '10.96.0.0/12', port: null }, { cidr: 'fd00::/8', port: 5432 }, { cidr: '2001:db8::1/128', port: null },
+    ]);
+    for (const bad of ['10.0.0.5:0', '10.0.0.5:x', 'db.example.com:3306', '[fd00::/8]:99999']) expect(() => roleConfig({ RPROXY_UI_PROTECTED_TARGETS: bad }), bad).toThrow(RoleConfigError);
+    const deps = { resolve: async () => [], protectedAddrs: [], protectedCidrs: cfg.protectedTargets };
+    const allow = { cidrs: ['10.0.0.0/8'], names: [] };
+    const ref = (host: string, port: number) => ({ where: 'remote', host: host, ports: [port, port] as [number, number] });
+    const out = await checkDestinations([ref('10.0.0.5', 3306), ref('10.0.0.5', 80), ref('10.100.0.1', 443)], allow, deps);
+    expect(out.map((r) => `${r.ref.host}:${r.ref.ports[0]}`)).toEqual(['10.0.0.5:3306', '10.100.0.1:443']);
+  });
+});

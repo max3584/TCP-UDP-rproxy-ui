@@ -7,6 +7,9 @@
 // React にも Node にも依存しない（画面と API route の両方で使う）
 
 import type { ForwardRule } from './lib';
+import { parseHttpUrl } from './httpspec';
+import { effectiveRule } from './overrides';
+import type { Overrides } from './overrides';
 
 // サーバのファイルを指す 1 項目。where は位置（例 tls.certificates[].cert_file、http.middlewares.*.basic_auth.users_file）
 export interface FileRef {
@@ -19,6 +22,8 @@ export interface DestRef {
   where: string;
   host: string;
   ports: [number, number];
+  // URL を読めなかった（ホストとポートが分からない）。利用者には前からあっても断る（#155 のレビュー H1）
+  invalid?: boolean;
 }
 
 // ファイルを指す項目の名前（rproxy の設定で *_file。今後の項目もこの名前なら同じ扱い）
@@ -61,18 +66,10 @@ export function certNames(rule: Pick<ForwardRule, 'tls'> | null | undefined): st
   return (rule?.tls?.certificates ?? []).map((c) => c.cert).filter((c): c is string => typeof c === 'string' && c !== '');
 }
 
-// http(s):// の URL のホストとポート（既定のポートを補う）。読めなければ null
+// http(s):// の URL のホストとポート（既定のポートを補う）。厳しく読み（httpspec.ts の parseHttpUrl）、読めなければ null
 export function urlHostPort(text: string): { host: string; port: number } | null {
-  let u: URL;
-  try {
-    u = new URL(text);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-  const host = u.hostname.replace(/^\[|\]$/g, '');
-  if (host === '') return null;
-  return { host: host, port: u.port !== '' ? Number(u.port) : u.protocol === 'https:' ? 443 : 80 };
+  const u = parseHttpUrl(text);
+  return u ? { host: u.host, port: u.port } : null;
 }
 
 // ルールの転送先（1 つのルール。ノードごとの上書きは呼ぶ側で effectiveRule にしてから渡す）
@@ -87,15 +84,48 @@ export function destRefs(rule: ForwardRule | null | undefined): DestRef[] {
   };
   if (rule.distAddr) add('remote', rule.distAddr, rule.distPort, true);
   for (const t of rule.targets ?? []) add('targets[]', t.addr, t.port, true);
+  // 宛先の死活確認は、各宛先のアドレスの health_check.port につなぐ
+  const hcPort = rule.healthCheck?.port;
+  if (hcPort !== undefined && hcPort !== null) for (const t of rule.targets ?? []) add('health_check', t.addr, hcPort, false);
   for (const r of rule.tls?.routes ?? []) {
     add('tls.routes[].remote', r.remote_addr, r.remote_port, false);
     for (const t of r.targets ?? []) add('tls.routes[].targets[]', t.addr, t.port, false);
   }
   walk(rule.http, 'http', (key, v, path) => {
     if (!URL_KEYS.has(key) || typeof v !== 'string') return;
+    if (v.trim() === '') return;
     const hp = urlHostPort(v.trim());
     if (hp) add(path, hp.host, hp.port, false);
+    else out.push({ where: path, host: v.trim(), ports: [0, 0], invalid: true });
   });
+  return out;
+}
+
+// L7 の oidc ミドルウェアの設定（JSON。前からある設定と比べる）。rproxy は issuer の discovery の token_endpoint・jwks_uri にも
+// つなぐが UI はそれを確かめられないので、利用者は oidc を新しく足せない・変えられない（#155 のレビュー M1）
+export function oidcConfigs(rule: Pick<ForwardRule, 'http'> | null | undefined): string[] {
+  const mws = rule?.http?.middlewares;
+  if (!isObject(mws)) return [];
+  return Object.values(mws).filter((m): m is Record<string, unknown> => isObject(m) && m.oidc !== undefined).map((m) => stableJson(m.oidc));
+}
+
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (isObject(v)) return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson(v[k])}`).join(',')}}`;
+  return JSON.stringify(v);
+}
+
+// 転送先を置き場所ごとに：ルールの分（rule:）と、ノードごとの上書きで変わる分（node:<名前>:）。
+// 前からある値は同じ置き場所のものだけとみなす（ノードの上書きの値をルールへ、またはその逆へ動かせないように。#155 のレビュー L1）
+export function locatedDests(rule: ForwardRule, overrides: Overrides | undefined): DestRef[] {
+  const base = destRefs(rule);
+  const baseKeys = new Set(base.map(destKey));
+  const out = base.map((d) => ({ ...d, where: `rule:${d.where}` }));
+  for (const [node, ov] of Object.entries(overrides ?? {})) {
+    for (const d of destRefs(effectiveRule(rule, ov))) {
+      if (!baseKeys.has(destKey(d))) out.push({ ...d, where: `node:${node}:${d.where}` });
+    }
+  }
   return out;
 }
 
