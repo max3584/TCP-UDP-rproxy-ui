@@ -1,5 +1,7 @@
 // サインインのセッション（NextAuth の JWT）の長さと、Keycloak に聞き直してロールを更新する仕組み（tests/session.test.ts）。
-// - セッションはサインインから RPROXY_UI_SESSION_MAX_AGE 秒（既定 8 時間）で切れる。使い続けても延びない（authTime から数える）。
+// - セッションは Keycloak で実際に認証した時刻（ID トークンの auth_time）から RPROXY_UI_SESSION_MAX_AGE 秒（既定 8 時間）で切れる。
+//   使い続けても延びない（authTime から数える）。認可の要求に max_age を付けるので、切れたあとのサインインでは
+//   Keycloak の SSO のセッションが残っていても、もう一度パスワードなどを聞かれる（SSO で黙って 8 時間を延ばさない）。
 // - RPROXY_UI_ROLE_REFRESH_SECS 秒（既定 300、0 で止める）ごとに refresh_token で Keycloak のトークンのエンドポイントに聞き直し、
 //   新しいアクセストークンのロールに置き換える。Keycloak が断ったら（利用者の無効化・SSO セッションの終わり・取り消し）セッションを無効にする。
 //   Keycloak に届かない・5xx のときは、最後に確かめてから 3 回分の間隔までは今のロールのまま使い、それを過ぎたら無効にする。
@@ -70,9 +72,23 @@ export type Refresher = (refreshToken: string) => Promise<RefreshResult>;
 
 const nowSecs = (): number => Math.floor(Date.now() / 1000);
 
-// サインインの時の token を作る
+// ID トークンの auth_time（Keycloak で利用者が実際に認証した時刻）。なければ・読めなければ・先の時刻なら null
+export function authTimeFromIdToken(idToken: string | undefined, now = nowSecs()): number | null {
+  if (!idToken) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(idToken.split('.')[1] ?? '', 'base64url').toString('utf8')) as { auth_time?: unknown };
+    const t = payload.auth_time;
+    return typeof t === 'number' && Number.isFinite(t) && t > 0 && t <= now + 60 ? Math.min(Math.floor(t), now) : null;
+  } catch {
+    return null;
+  }
+}
+
+// サインインの時の token を作る。期限は Keycloak で認証した時刻から数える（SSO のセッションで黙ってサインインし直しても延びない）。
+// auth_time がなければ今（max_age を付けているので Keycloak は auth_time を返すはず）
 export function signInToken(token: JWT, account: Account, env: Env = process.env, now = nowSecs()): SessionToken {
-  const next: SessionToken = { ...token, authTime: now, rolesAt: now };
+  const authTime = authTimeFromIdToken(account.id_token, now) ?? now;
+  const next: SessionToken = { ...token, authTime, rolesAt: now };
   next.roles = account.access_token ? rolesFromToken(account.access_token, roleConfig(env).claim) : [];
   if (account.refresh_token) next.refreshToken = account.refresh_token;
   delete next.retryAt;
@@ -148,8 +164,15 @@ export async function keycloakRefresh(refreshToken: string, env: Env = process.e
   } catch {
     // 読めない本文は下で扱う
   }
-  if (res.status >= 400 && res.status < 500) {
-    return { kind: 'refused', status: res.status, error: typeof body.error === 'string' ? body.error : `http ${res.status}` };
+  const error = typeof body.error === 'string' ? body.error : `http ${res.status}`;
+  // 断りは invalid_grant（refresh token の失効・利用者の無効化・SSO セッションの終わり）と 400・401・403 だけ。
+  // 408・429・5xx は一時的なもの、404 は設定の誤り（KEYCLOAK_ISSUER）で、全員をサインアウトさせずに猶予の間は今のロールで使う
+  if (body.error === 'invalid_grant' || res.status === 400 || res.status === 401 || res.status === 403) {
+    return { kind: 'refused', status: res.status, error };
+  }
+  if (res.status === 404) {
+    log.error({ url: ep.token }, 'Keycloak のトークンのエンドポイントが 404 です。KEYCLOAK_ISSUER を確かめてください');
+    return { kind: 'unavailable', reason: 'http 404 (check KEYCLOAK_ISSUER)' };
   }
   if (!res.ok || typeof body.access_token !== 'string') {
     return { kind: 'unavailable', reason: `http ${res.status}` };
@@ -181,10 +204,22 @@ export function sharedRefresher(refresh: Refresher, shareMs = SHARE_MS): Refresh
   };
 }
 
-// サインアウトで Keycloak の SSO セッションも終わらせる（失敗してもサインアウトは続ける）
+// サインアウトで Keycloak の SSO セッションも終わらせる（失敗しても UI のサインアウトは続ける）。
+// 失敗したときは Keycloak の SSO のセッションが残る（次のサインインでパスワードを聞かれないことがある）ので、はっきりログに出す
+function logoutFailed(fields: Record<string, unknown>): void {
+  log.error(fields, 'Keycloak の SSO のセッションを終わらせられませんでした（UI のサインアウトは済み。Keycloak の管理コンソールでセッションを消してください）');
+}
+
 export async function keycloakLogout(refreshToken: string | undefined, env: Env = process.env, fetchImpl: typeof fetch = fetch): Promise<boolean> {
   const ep = keycloakEndpoints(env);
-  if (!ep || !refreshToken) return false;
+  if (!ep) {
+    logoutFailed({ reason: 'KEYCLOAK_ISSUER is not set' });
+    return false;
+  }
+  if (!refreshToken) {
+    logoutFailed({ reason: 'no refresh token in the session' });
+    return false;
+  }
   try {
     const res = await fetchImpl(ep.logout, {
       method: 'POST',
@@ -192,10 +227,10 @@ export async function keycloakLogout(refreshToken: string | undefined, env: Env 
       body: new URLSearchParams({ refresh_token: refreshToken, ...clientParams(env) }),
       signal: AbortSignal.timeout(KEYCLOAK_TIMEOUT_MS),
     });
-    if (!res.ok) log.warn({ status: res.status }, 'Keycloak のサインアウト（end_session）が失敗しました');
+    if (!res.ok) logoutFailed({ url: ep.logout, status: res.status });
     return res.ok;
   } catch (e) {
-    log.warn({ err: e instanceof Error ? e.message : String(e) }, 'Keycloak のサインアウト（end_session）に届きませんでした');
+    logoutFailed({ url: ep.logout, err: e instanceof Error ? e.message : String(e) });
     return false;
   }
 }

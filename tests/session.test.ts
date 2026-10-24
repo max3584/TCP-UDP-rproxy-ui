@@ -3,7 +3,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Account } from 'next-auth';
 import {
-  DEFAULT_ROLE_REFRESH_SECS, DEFAULT_SESSION_MAX_AGE, SessionInvalid, checkSession, keycloakEndpoints, keycloakLogout,
+  DEFAULT_ROLE_REFRESH_SECS, DEFAULT_SESSION_MAX_AGE, SessionInvalid, authTimeFromIdToken, checkSession, keycloakEndpoints, keycloakLogout,
   keycloakRefresh, sessionConfig, sharedRefresher, signInToken, type RefreshResult, type SessionToken,
 } from '@/components/session';
 
@@ -55,6 +55,21 @@ describe('checkSession', () => {
     expect(t).toMatchObject({ sub: 'u1', roles: ['rproxy-admin'], refreshToken: 'rt-1', authTime: T0, rolesAt: T0 });
   });
 
+  it('counts the session from the Keycloak authentication (auth_time), not from a silent SSO sign-in', async () => {
+    const refresh = vi.fn<(rt: string) => Promise<RefreshResult>>();
+    // signed in again through a live SSO session, authenticated with Keycloak 7 hours ago
+    const sso = signInToken({ sub: 'u1' }, { ...account(['rproxy-admin']), id_token: jwtOf({ auth_time: T0 - 7 * 3600 }) }, ENV, T0);
+    expect(sso.authTime).toBe(T0 - 7 * 3600);
+    await expect(checkSession(sso, { ...CFG, refreshSecs: 0 }, refresh, ENV, T0 + 3600)).rejects.toThrow(/expired/);
+    // no auth_time, a broken token or a time in the future: now
+    expect(authTimeFromIdToken(undefined, T0)).toBeNull();
+    expect(authTimeFromIdToken('garbage', T0)).toBeNull();
+    expect(authTimeFromIdToken(jwtOf({ auth_time: 'x' }), T0)).toBeNull();
+    expect(authTimeFromIdToken(jwtOf({ auth_time: T0 + 3600 }), T0)).toBeNull();
+    expect(authTimeFromIdToken(jwtOf({ auth_time: T0 + 30 }), T0)).toBe(T0);
+    expect(signInToken({}, { ...account([]), id_token: 'garbage' }, ENV, T0).authTime).toBe(T0);
+  });
+
   it('does not ask Keycloak before the interval', async () => {
     const refresh = vi.fn<(rt: string) => Promise<RefreshResult>>();
     const t = signedIn();
@@ -102,6 +117,19 @@ describe('checkSession', () => {
     await expect(checkSession(noRefresh, CFG, refresh, ENV, T0 + 300)).rejects.toThrow(/no refresh token/);
     // without the refresh it is fine until it expires
     expect(await checkSession(noRefresh, { ...CFG, refreshSecs: 0 }, refresh, ENV, T0 + 300)).toBe(noRefresh);
+  });
+
+  it('treats only invalid_grant, 400, 401 and 403 as a refusal', async () => {
+    const reply = (status: number, json: unknown = {}) => keycloakRefresh('rt', ENV, tokenEndpoint(() => ({ status, json })).fetchImpl);
+    expect((await reply(403)).kind).toBe('refused');
+    expect((await reply(400)).kind).toBe('refused');
+    expect((await reply(401)).kind).toBe('refused');
+    expect((await reply(500, { error: 'invalid_grant' })).kind).toBe('refused');
+    for (const status of [404, 408, 429, 500, 502, 503]) expect((await reply(status)).kind, String(status)).toBe('unavailable');
+    expect(await reply(404)).toEqual({ kind: 'unavailable', reason: 'http 404 (check KEYCLOAK_ISSUER)' });
+    // a 429 does not sign the user out while within the grace period
+    const t = await checkSession(signedIn(), CFG, () => reply(429), ENV, T0 + 300);
+    expect(t.roles).toEqual(['rproxy-admin']);
   });
 
   it('keeps the roles for a while when Keycloak is unreachable, then gives up', async () => {
@@ -181,6 +209,17 @@ describe('NextAuth callbacks', () => {
     authOptions.callbacks!.jwt!({ token, account: acct ?? null, user: undefined as never }) as Promise<SessionToken>;
   const session = async (token: SessionToken) =>
     authOptions.callbacks!.session!({ session: { expires: new Date(Date.now() + 7200_000).toISOString() } as never, token, user: undefined as never, newSession: undefined, trigger: 'update' }) as Promise<{ user: { access: string; roles: string[] }; expires: string }>;
+
+  it('asks Keycloak to authenticate again when the authentication is older than the session (max_age)', () => {
+    const provider = authOptions.providers[0] as unknown as { options: { authorization: { params: Record<string, unknown> } } };
+    expect(provider.options.authorization.params).toEqual({ scope: 'openid email profile', max_age: 7200 });
+  });
+
+  it('never puts the refresh token into the session the browser gets', async () => {
+    const out = await session({ sub: 'u1', roles: ['rproxy-user'], refreshToken: 'rt-secret', authTime: Math.floor(Date.now() / 1000) });
+    expect(JSON.stringify(out)).not.toContain('rt-secret');
+    expect(JSON.stringify(out)).not.toMatch(/refresh/i);
+  });
 
   it('uses a short session and turns an admin into a user, then signs the session out when Keycloak refuses', async () => {
     expect(authOptions.session).toMatchObject({ strategy: 'jwt', maxAge: 7200 });

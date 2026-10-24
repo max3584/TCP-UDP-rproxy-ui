@@ -6,7 +6,10 @@ import { expect, test, type Page } from '@playwright/test';
 import { FAKE_ISSUER, FAKE_ISSUER_PORT, baseURL } from '../../playwright.config';
 
 const AUTH_ENDPOINT = `${FAKE_ISSUER}/protocol/openid-connect/auth`;
-const PAGES = ['/', '/rules/new', '/rules/import', '/history', '/usage', '/system', '/ha', '/profile'];
+// 詳細・変更の画面に使うルール（テストの中で作って消す）
+const RULE_PORT = 19581;
+const RULE = `/rules/tcp/127.0.0.1/${RULE_PORT}`;
+const PAGES = ['/', '/rules/new', '/rules/import', RULE, `${RULE}/edit`, '/history', '/usage', '/system', '/ha', '/profile', '/no-such-page'];
 
 let issuer: http.Server;
 
@@ -42,9 +45,9 @@ test.afterAll(async () => {
 });
 
 // CSP の違反（securitypolicyviolation のイベントと、Chrome がコンソールに出す「Refused to ...」）を集める
-function watchCsp(page: Page): string[] {
+async function watchCsp(page: Page): Promise<string[]> {
   const violations: string[] = [];
-  void page.addInitScript(() => {
+  await page.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (e) => {
       console.error(`CSP violation: ${e.violatedDirective} ${e.blockedURI} ${e.sourceFile}:${e.lineNumber}`);
     });
@@ -95,11 +98,24 @@ test.describe('security headers and CSP', () => {
   });
 
   test('the pages work under the CSP (no violations)', async ({ page }) => {
-    const violations = watchCsp(page);
-    for (const path of PAGES) {
-      await page.goto(path);
-      // networkidle は使わない（ダッシュボードは 5 秒ごとに読み直す）
-      await expectHydrated(page, path);
+    const violations = await watchCsp(page);
+    const rule = { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: RULE_PORT };
+    await page.request.post('/api/forward/delete', { data: rule });
+    const add = await page.request.post('/api/forward/add', { data: { ...rule, distAddr: '127.0.0.1', distPort: 9 } });
+    expect(add.status(), await add.text()).toBe(200);
+    try {
+      for (const path of PAGES) {
+        const res = await page.goto(path);
+        if (path === '/no-such-page') expect(res!.status()).toBe(404);
+        // networkidle は使わない（ダッシュボードは 5 秒ごとに読み直す）
+        await expectHydrated(page, path);
+      }
+      // the rule pages really rendered the rule (not an error)
+      await page.goto(RULE);
+      await expect(page.getByRole('heading', { level: 1 })).toContainText(String(RULE_PORT));
+      await expect(page.getByText(/127\.0\.0\.1:9\b/).first()).toBeVisible();
+    } finally {
+      await page.request.post('/api/forward/delete', { data: rule });
     }
     // client-side navigation as well
     await page.goto('/');
@@ -112,18 +128,20 @@ test.describe('security headers and CSP', () => {
     test.use({ storageState: { cookies: [], origins: [] } });
 
     test('an unauthenticated page redirects to Keycloak without CSP violations', async ({ page }) => {
-      const violations = watchCsp(page);
+      const violations = await watchCsp(page);
       await page.goto('/rules/new');
       await page.waitForURL((url) => url.href.startsWith(AUTH_ENDPOINT));
       const url = new URL(page.url());
       expect(url.searchParams.get('client_id')).toBe('rproxy-ui');
+      // Keycloak re-authenticates when the authentication is older than the session (RPROXY_UI_SESSION_MAX_AGE, default 8 h)
+      expect(url.searchParams.get('max_age')).toBe('28800');
       expect(url.searchParams.get('redirect_uri')).toBe(`${baseURL}/api/auth/callback/keycloak`);
       await expect(page.getByRole('heading', { name: 'fake keycloak sign-in' })).toBeVisible();
       expect(violations).toEqual([]);
     });
 
     test('the NextAuth sign-in page form reaches Keycloak (form-action allows the issuer)', async ({ page }) => {
-      const violations = watchCsp(page);
+      const violations = await watchCsp(page);
       await page.goto('/api/auth/signin');
       await page.getByRole('button', { name: /Keycloak/ }).click();
       await page.waitForURL((url) => url.href.startsWith(AUTH_ENDPOINT));
@@ -131,7 +149,7 @@ test.describe('security headers and CSP', () => {
     });
 
     test('the profile page (public) loads without CSP violations', async ({ page }) => {
-      const violations = watchCsp(page);
+      const violations = await watchCsp(page);
       await page.goto('/profile');
       await expect(page.getByText('You are not signed in')).toBeVisible();
       expect(violations).toEqual([]);

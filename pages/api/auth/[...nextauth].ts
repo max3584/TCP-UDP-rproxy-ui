@@ -16,6 +16,8 @@ export const authOptions: NextAuthOptions = {
       clientId: process.env.KEYCLOAK_CLIENT_ID ?? '',
       clientSecret: process.env.KEYCLOAK_CLIENT_SECRET ?? '',
       issuer: process.env.KEYCLOAK_ISSUER,
+      // max_age：Keycloak での認証が RPROXY_UI_SESSION_MAX_AGE より古ければ、SSO のセッションがあっても認証し直させる（components/session.ts）
+      authorization: { params: { scope: 'openid email profile', max_age: sessionCfg.maxAgeSecs } },
       // NextAuth のサインインのページが authjs.dev から読むロゴを出さない（CSP の img-src 'self' で止まる。外のサイトにも聞かない）
       style: { logo: '', bg: '#fff', text: '#000' },
     })
@@ -50,7 +52,7 @@ export const authOptions: NextAuthOptions = {
     },
   },
   events: {
-    // Keycloak の SSO セッションも終わらせる（end_session。失敗してもサインアウトは続ける）
+    // Keycloak の SSO セッションも終わらせる（end_session。失敗はログに出し、UI のサインアウトは続ける）
     async signOut({ token }) {
       await keycloakLogout((token as SessionToken | null)?.refreshToken);
     },

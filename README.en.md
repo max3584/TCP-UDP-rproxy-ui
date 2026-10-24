@@ -173,12 +173,14 @@ The UI adds these headers to every response (pages, API and static files; `proxy
 
 ### Sessions
 
-- A sign-in lasts `RPROXY_UI_SESSION_MAX_AGE` (seconds, default 28800 = 8 hours), counted from the time of sign-in; using the UI does not extend it. After that, users sign in again.
-- Every `RPROXY_UI_ROLE_REFRESH_SECS` (seconds, default 300, `0` turns it off) the UI asks Keycloak's token endpoint again with the refresh token received at sign-in and replaces the roles with those of the new access token.
+- A sign-in lasts `RPROXY_UI_SESSION_MAX_AGE` (seconds, default 28800 = 8 hours), counted from when Keycloak actually authenticated the user (the ID token's `auth_time`); using the UI does not extend it. After that, users sign in again.
+  - The authorization request carries `max_age=<RPROXY_UI_SESSION_MAX_AGE>`, so even with a live Keycloak SSO session, Keycloak asks for authentication again when it is older than that (a silent SSO sign-in does not extend the 8 hours).
+  - Set the realm's "SSO Session Max" in Keycloak to at most `RPROXY_UI_SESSION_MAX_AGE` (`keycloak/realm-rproxy-dev.json` uses 8 hours).
+- Every `RPROXY_UI_ROLE_REFRESH_SECS` (seconds, default 300; `0` turns it off, and then a role removed or a user disabled in Keycloak does not reach the UI until the session ends, up to `RPROXY_UI_SESSION_MAX_AGE`) the UI asks Keycloak's token endpoint again with the refresh token received at sign-in and replaces the roles with those of the new access token.
   - When Keycloak refuses (the user was disabled, the SSO session ended, the session was removed in the admin console), the UI session becomes invalid at once (the screens go to sign-in, the API answers 401).
-  - When Keycloak is unreachable or answers 5xx, the current roles stay and the UI asks again every minute. Three intervals (15 minutes by default) after the last successful check, the session becomes invalid.
+  - Only `invalid_grant` and 400, 401 and 403 count as a refusal. When Keycloak is unreachable or answers 408, 429, 5xx or 404 (a wrong `KEYCLOAK_ISSUER`; logged), the current roles stay and the UI asks again every minute. Three intervals (15 minutes by default) after the last successful check, the session becomes invalid.
   - Idle for longer than Keycloak's "SSO Session Idle" (30 minutes by default), the refresh token expires and users sign in again the next time they open the UI.
-- Signing out also sends the refresh token to Keycloak's end_session endpoint (`/protocol/openid-connect/logout`), ending the Keycloak SSO session too.
+- Signing out also sends the refresh token to Keycloak's end_session endpoint (`/protocol/openid-connect/logout`), ending the Keycloak SSO session too. If that fails (e.g. Keycloak is unreachable), the UI sign-out still completes but the Keycloak SSO session remains (the UI logs `Keycloak の SSO のセッションを終わらせられませんでした`; remove the session in the Keycloak admin console if needed).
 - Sessions from before this version (without the time of sign-in) are not accepted; sign in once again after the update.
 
 ## L7 (HTTP) rules

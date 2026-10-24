@@ -173,12 +173,14 @@ UI はすべての応答（画面・API・静的なファイル）に次のヘ�
 
 ### セッション
 
-- サインインの長さは `RPROXY_UI_SESSION_MAX_AGE`（秒。既定 28800 = 8 時間）。サインインした時刻から数え、使い続けても延びない。過ぎたらサインインし直す。
-- `RPROXY_UI_ROLE_REFRESH_SECS`（秒。既定 300、`0` で止める）ごとに、サインインのときに受け取った refresh token で Keycloak のトークンのエンドポイントに聞き直し、ロールを新しいアクセストークンのものに置き換える。
+- サインインの長さは `RPROXY_UI_SESSION_MAX_AGE`（秒。既定 28800 = 8 時間）。Keycloak で実際に認証した時刻（ID トークンの `auth_time`）から数え、使い続けても延びない。過ぎたらサインインし直す。
+  - 認可の要求に `max_age=<RPROXY_UI_SESSION_MAX_AGE>` を付けるので、Keycloak の SSO のセッションが残っていても、認証がそれより古ければ Keycloak がもう一度認証を求める（SSO で黙ってサインインし直して 8 時間を延ばすことはない）。
+  - Keycloak のレルムの「SSO Session Max」は `RPROXY_UI_SESSION_MAX_AGE` 以下にしておく（`keycloak/realm-rproxy-dev.json` は 8 時間）。
+- `RPROXY_UI_ROLE_REFRESH_SECS`（秒。既定 300。`0` で止める。止めると Keycloak でロールを外す・利用者を無効にしても、セッションが切れるまで（最大 `RPROXY_UI_SESSION_MAX_AGE`）UI には反映されない）ごとに、サインインのときに受け取った refresh token で Keycloak のトークンのエンドポイントに聞き直し、ロールを新しいアクセストークンのものに置き換える。
   - Keycloak が断ったら（利用者を無効にした・SSO のセッションが終わった・管理コンソールでセッションを消した）、UI のセッションもその場で無効になる（画面はサインインへ、API は 401）。
-  - Keycloak に届かない・5xx のときは今のロールのまま使い、1 分おきに聞き直す。最後に確かめてから間隔の 3 回分（既定 15 分）を過ぎたらセッションを無効にする。
+  - 断りとして扱うのは `invalid_grant` と 400・401・403 だけ。Keycloak に届かない・408・429・5xx・404（`KEYCLOAK_ISSUER` の誤り。ログに出す）のときは今のロールのまま使い、1 分おきに聞き直す。最後に確かめてから間隔の 3 回分（既定 15 分）を過ぎたらセッションを無効にする。
   - Keycloak の「SSO Session Idle」（既定 30 分）より長く何もしないと refresh token が切れ、次に開いたときにサインインし直しになる。
-- サインアウトでは Keycloak の end_session（`/protocol/openid-connect/logout`）にも refresh token を送り、Keycloak の SSO のセッションも終わらせる。
+- サインアウトでは Keycloak の end_session（`/protocol/openid-connect/logout`）にも refresh token を送り、Keycloak の SSO のセッションも終わらせる。Keycloak に届かないなどで失敗しても UI のサインアウトは済むが、Keycloak の SSO のセッションは残る（UI のログに `Keycloak の SSO のセッションを終わらせられませんでした` と出る。必要なら Keycloak の管理コンソールでセッションを消す）。
 - この版より前のセッション（サインインの時刻を持たないもの）は使えず、更新のあとは一度サインインし直す。
 
 ## L7（HTTP）のルール
