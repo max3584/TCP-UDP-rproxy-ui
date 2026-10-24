@@ -1,7 +1,10 @@
 // セキュリティレビュー（UI v0.4.0）の画面と API の確認。利用者（rproxy-user）のセッションで動く
 import { expect, test } from '@playwright/test';
+import { USER_STATE } from './global-setup';
 
 test.describe('security review fixes', () => {
+  test.use({ storageState: USER_STATE });
+
   test('a POST from another site is refused (CSRF, 403 csrf) before anything changes', async ({ page }) => {
     const port = 19491;
     const res = await page.request.post('/api/forward/add', {

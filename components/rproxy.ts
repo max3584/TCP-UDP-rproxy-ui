@@ -430,6 +430,11 @@ export function getConfigStatus(): Promise<RproxyConfigStatus> {
 }
 
 // ACME の状態（GET /acme。rules:read のスコープ）。global.acme がなければ 404。秘密は rproxy も返さない
+// rproxy の証明書の API に登録した証明書の一覧（rproxy-api v0.4.2、certs:read。鍵は返さない）
+export function listCerts(): Promise<unknown> {
+  return request<unknown>('GET', '/certs');
+}
+
 export function getAcme(): Promise<unknown> {
   return request<unknown>('GET', '/acme');
 }

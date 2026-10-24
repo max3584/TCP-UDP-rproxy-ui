@@ -138,14 +138,33 @@ Keycloak のロールで、だれが何をできるかを決める（API route �
 | ロール | できること |
 |---|---|
 | `rproxy-admin` | すべての利用者のルールを一覧・詳細・変更・削除できる（一覧と詳細に所有者（Keycloak の ID）を出す）。どの待ち受けポートでも使える |
-| `rproxy-user` | 自分のルールだけを作成・一覧・変更・削除できる。既定ではロールを問わず、サインインできる人はだれでもこの扱い（v0.3.1 までと同じ） |
-| どちらもない | `RPROXY_UI_USER_ROLE=rproxy-user` のようにロールを必須にしたときだけ、画面も API も使えない（403。「権限がありません」と出る） |
+| `rproxy-user` | 自分のルールだけを作成・一覧・変更・削除できる（ファイルのパスと転送先に制限がある。下の「利用者の制限」）。`RPROXY_UI_USER_ROLE` で利用者のロールを決めたときだけ |
+| どちらもない | 画面も API も使えない（403。「権限がありません」と出る）。`RPROXY_UI_USER_ROLE` が空（既定）なら、`rproxy-admin` のない人はすべてこれ |
 
 - ロールはアクセストークンの `realm_access.roles`（realm ロール）から読む。クライアントロールを使うなら `RPROXY_UI_ROLES_CLAIM=resource_access.rproxy-ui.roles` のようにクレームの位置（ドット区切り）を変える。
-- ロールの名前は `RPROXY_UI_ADMIN_ROLE`（既定 `rproxy-admin`）と `RPROXY_UI_USER_ROLE`（既定は空）で決める。`RPROXY_UI_USER_ROLE` が空（既定）なら、サインインできる人はだれでも `rproxy-user` と同じ扱い（ロールを使わない運用）。`RPROXY_UI_USER_ROLE=rproxy-user` にすると、そのロールのない利用者は使えなくなる。
+- ロールの名前は `RPROXY_UI_ADMIN_ROLE`（既定 `rproxy-admin`）と `RPROXY_UI_USER_ROLE`（既定は空）で決める。利用者に使わせるなら `RPROXY_UI_USER_ROLE=rproxy-user` にして、そのロールを付ける。
+- **v0.4.9 で既定を変えた**：`RPROXY_UI_USER_ROLE` が空（既定）なら、`rproxy-admin` のない人は使えない（403 `no_role`）。v0.4.8 までは、空ならサインインできる人がだれでも `rproxy-user` と同じ扱いだった。ロールを使わずに利用者に使わせていたなら、上げる前に `RPROXY_UI_USER_ROLE=rproxy-user` にして、利用者にそのロールを付ける。
 - `RPROXY_UI_USER_PORTS=1024-65535` のように書くと、`rproxy-user` が使える待ち受けポートを制限できる（範囲の外は 403 `port_not_allowed`。`rproxy-admin` は制限されない）。既定は制限なし。
 - 複数の rproxy では `RPROXY_UI_USER_NODES=node1,node2` で `rproxy-user` が触れるノードを絞れる（下の「複数の rproxy（ノードとグループ）」）。
 - ロールはサインインしたときに読み、そのあとも `RPROXY_UI_ROLE_REFRESH_SECS`（既定 300 秒）ごとに Keycloak に聞き直す（下の「セキュリティ」）。Keycloak でロールを外すと、遅くともその間隔のあとで反映される。
+
+### 利用者の制限（ファイルのパス・転送先）
+
+`rproxy-user`（`rproxy-admin` でない人）のルールは、API route が次のように確かめる（画面はファイルの欄を読み取り専用にし、注意を出すだけ）。`rproxy-admin` は今までどおり制限されない。
+
+- **サーバのファイルを指す項目は書けない**（403 `file_not_allowed`）：`tls.certificates[]` の `cert_file`・`chain_file`・`key_file`、`tls.client_auth` の `ca_file`・`chain_file`、`tls.upstream` と `tls.routes[].upstream` の `ca_file`・`cert_file`・`chain_file`・`key_file`、L7 のサービスの `tls` のファイル、`basic_auth` の `users_file`、`oidc` の `client_secret_file`・`cookie_secret_file`・`ca_file` など、`*_file` の項目すべて（JSON で書くミドルウェアも同じ）。rproxy は自分が読めるどの鍵でも使えるので、利用者がダッシュボードの鍵で別のポートに TLS を終端すると、管理者の cookie を盗めるため。
+- **TLS の証明書は登録済みの名前から選ぶ**：rproxy-api v0.4.2 の証明書の API（`PUT /certs/{name}`。`features.cert_store`）に管理者が登録した証明書を、`tls.certificates[]` の `{"cert": "<名前>"}` で使う。フォームの「＋ 登録済みの証明書を追加」は `/api/forward/certs`（rproxy の `GET /certs`。UI のトークンに `certs:read` が要る。名前・名前の一覧・期限だけ）から選ばせる。`RPROXY_UI_USER_CERTS=tenant-,shared-` のように名前の先頭を書くと、利用者が選べる名前を絞れる（外は 403 `cert_not_allowed`。空（既定）ならすべての名前）。先頭は利用者みんなで共通（利用者ごとには分けられない）で、区切りを見ずに文字の先頭だけで比べる（`tenant` は `tenantx` にも一致するので、`tenant-` のように区切りの文字で終える）。ダッシュボードの証明書を証明書の API に置くなら、必ずこれで外す。`?target=` で聞くノードも `RPROXY_UI_USER_NODES` の内だけ。
+- **OIDC のミドルウェアは足せない・変えられない**（403 `middleware_not_allowed`）：rproxy は `issuer` の discovery が返す `token_endpoint`・`jwks_uri` にもつなぐが、UI はその先を確かめられないため。前からある同じ設定はそのまま残せる（秘密のファイルも書けないので、利用者が新しく作ることはもともとできない）。
+- **転送先**（`remote_addr`・`targets`・宛先の死活確認（`health_check.port`）・`tls.routes[]` の宛先・L7 のサービスの `url`・ルートの `to`・`forward_auth` の `address`・`oidc` の `issuer`、ノードごとの上書きの転送先）（403 `target_not_allowed`）：
+  - URL は厳しく読む（だれでも）：ホストは名前・IPv4・`[IPv6]`（ゾーン ID は不可）、ポートは 1〜65535 の数字だけ、userinfo（`@`）は不可。読めない URL は保存の前に 400 `invalid`、前から保存してある読めない URL は利用者には 403。
+  - `RPROXY_UI_USER_TARGETS=10.0.0.0/8,2001:db8::/32,backend.example.com,*.svc.example.com` のように CIDR・IP アドレス・ホスト名（`*.example.com` は下の名前すべて）を書くと、その中だけ。名前は一致するか、解決したアドレスがすべて CIDR の中のとき使える。既定（空）は許可リストなし（下の断る宛先だけを断る）。本番では書くことを勧める。
+  - 既定で断る：ループバック（`127.0.0.0/8`・`::1`）・リンクローカル（`169.254.0.0/16`（クラウドのメタデータ `169.254.169.254` を含む）・`fe80::/10`）・未指定（`0.0.0.0/8`・`::`）・マルチキャスト・ブロードキャスト・`fd00:ec2::254`。許可リストにその範囲の中だけの CIDR（例 `127.0.0.1/32`）を書けば使える（`0.0.0.0/0` のような広い範囲では使えない）。
+  - いつも断る（許可リストに書いても）：rproxy の制御 API（`RPROXY_API_URL`・`RPROXY_UI_NODES` の URL と、各 rproxy の `GET /interfaces` の予約済みのアドレス）、この UI（`PORT` と `HOSTNAME`、`NEXTAUTH_URL`）、データベース（`DB_HOST` の解決先と `DB_PORT`）のアドレスとポート。ループバックで待ち受けているものは、そのホストのほかのアドレスも断る。
+  - ほかに守るもの（別のホストの DB・レプリカ・管理用のサービスなど）は `RPROXY_UI_PROTECTED_TARGETS=10.0.0.5:3306,10.96.0.0/12,[fd00::/8]:5432` のように CIDR か CIDR:ポートで書く（許可リストに書いても断る）。Kubernetes では DB などの Pod の IP は入れ替わると変わるので、Pod と Service の CIDR を書くか、NetworkPolicy で rproxy からの通信を絞る（`DB_HOST` が Service の名前なら、断るのは Service の IP だけで、Pod の IP へ直接つなぐのは止まらない）。
+  - ホスト名は UI のホストで名前解決し、解決したアドレスもすべて確かめる（解決できない名前は断る）。rproxy が後で解決し直したときに向き先が変わる（DNS rebinding）ことまでは防げないので、許可リストの名前は管理者が持つものにする。
+  - ノードごとの上書きの転送先は、ルールの転送先と別の置き場所として比べる（前からある値をルールと上書きの間で動かすと新しい値として確かめる）。
+- **前からある値はそのまま残せる**：自分のルールの変更では、今のルールにあるファイルのパス・証明書の名前・転送先は、変えなければそのまま保存できる（項目の位置と値の組で比べる。配列の順番やサービス・ミドルウェアの名前を変えても同じ値なら残せる）。新しく書いた値・変えた値だけを断る。インポートの置き換えと巻き戻しは今のルールと比べ、新しく作るルール（追加・インポートの追加・ほかのノードへのコピー・移動）は前の値がないので全部を確かめる。上げる前からある利用者のルールは動いたままなので、管理者は利用者のルールのファイルのパスと転送先を見直す。
+- **ほかの人のルールのパスを伏せる**：固定ルール（rproxy の設定ファイルのルール）を利用者に見せるとき（ダッシュボード・詳細）、`*_file` の値・証明書の期限のファイル・誤りの文の中のそのパスを `<hidden>` にする。
 - 状態を変える API（`POST /api/forward/*`）は、ほかのサイトからの要求（`Sec-Fetch-Site` が same-origin でない、`Origin`（なければ `Referer`）の host が要求の `Host`・`X-Forwarded-Host`・`NEXTAUTH_URL` のどれとも違う）を 403 `csrf` で断る（SameSite=Lax の cookie に加えた CSRF の対策）。前に置くリバースプロキシは `Host` か `X-Forwarded-Host` を渡すか、`NEXTAUTH_URL` を利用者が開く URL にしておく。
 - 履歴（`forward_rules_log`）の `auth_id` は操作した利用者（管理者がほかの人のルールを変えたら管理者）。
 

@@ -108,15 +108,24 @@ describe('/api/forward/[forward]: roles and the UI token', () => {
     vi.unstubAllEnvs();
   });
 
-  it('by default (RPROXY_UI_USER_ROLE unset or empty) everyone who signs in is a user', async () => {
-    vi.stubEnv('RPROXY_UI_USER_ROLE', '');
-    try {
-      as([]);
-      pool.query.mockResolvedValue([]);
-      mocks.listRules.mockResolvedValue([]);
-      expect((await call('list', undefined, 'GET')).status).toBe(200);
-    } finally {
-      vi.unstubAllEnvs();
+  // #155：利用者のロールを決めていなければ、admin でない人は使えない（v0.4.8 まではだれでも user だった）
+  it('without RPROXY_UI_USER_ROLE (unset or empty) only admins may use it', async () => {
+    for (const value of ['', undefined]) {
+      if (value === undefined) vi.stubEnv('RPROXY_UI_USER_ROLE', undefined as unknown as string);
+      else vi.stubEnv('RPROXY_UI_USER_ROLE', value);
+      try {
+        pool.query.mockResolvedValue([]);
+        mocks.listRules.mockResolvedValue([]);
+        for (const roles of [[], ['rproxy-user']]) {
+          as(roles);
+          const res = await call('list', undefined, 'GET');
+          expect([res.status, res.body.code]).toEqual([403, 'no_role']);
+        }
+        as(['rproxy-admin']);
+        expect((await call('list', undefined, 'GET')).status).toBe(200);
+      } finally {
+        vi.unstubAllEnvs();
+      }
     }
   });
 

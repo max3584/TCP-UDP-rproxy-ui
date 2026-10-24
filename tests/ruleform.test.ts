@@ -371,3 +371,29 @@ describe('RuleForm: route ごとの source_ip と proxy_protocol', () => {
     expect(html).not.toContain('の送信元 IP の渡し方"');
   });
 });
+
+// 管理者でない人（#155）：ファイルのパスの欄は読み取り専用、ファイルの証明書は足せず、登録済みの証明書を足せる。案内も出す
+describe('RuleForm for users who are not admins (#155)', () => {
+  const withFiles: ForwardRule = { ...terminateRule, tls: { mode: 'terminate', certificates: [{ cert_file: '/etc/rproxy/a.pem', key_file: '/etc/rproxy/a.key' }, { cert: 'tenant-a' }] } };
+  const renderAs = (restricted: boolean) =>
+    renderToStaticMarkup(createElement(RuleForm, { onCancel: () => undefined, onSubmit: () => undefined, initialData: withFiles, restricted }));
+
+  it('locks the file fields and offers stored certificates', () => {
+    const html = renderAs(true);
+    expect(html).toMatch(/<input id="rule-cert-0-cert"[^>]*readonly=""/i);
+    expect(html).toMatch(/<input id="rule-cert-0-key"[^>]*readonly=""/i);
+    expect(html).toContain('id="rule-cert-1-name"');
+    expect(html).toContain('value="tenant-a"');
+    expect(html).not.toContain('＋ 証明書を追加');
+    expect(html).toContain('＋ 登録済みの証明書を追加');
+    expect(html).toContain('data-testid="user-files-note"');
+    expect(html).toContain('data-testid="user-targets-note"');
+  });
+
+  it('admins keep the file fields editable', () => {
+    const html = renderAs(false);
+    expect(html).not.toMatch(/<input id="rule-cert-0-cert"[^>]*readonly/i);
+    expect(html).toContain('＋ 証明書を追加');
+    expect(html).not.toContain('data-testid="user-files-note"');
+  });
+});

@@ -333,8 +333,41 @@ export function defaultPriority(match: string): number {
 
 // ---- 検証 ----
 
+// http(s):// の URL を厳しく読む（#155 のレビュー H1）。ホストは名前・IPv4・[IPv6]（ゾーン ID は不可）、ポートは 1〜65535 の数字だけ、
+// userinfo（@）は不可。読めなければ null（rproxy が別の読み方をしてホストだけで既定のポートにつながないように、どちらも断る）
+export function parseHttpUrl(v: string): { scheme: 'http' | 'https'; host: string; port: number } | null {
+  const m = /^(https?):\/\/([^/?#\s]+)(?:[/?#]\S*)?$/i.exec(v);
+  if (!m) return null;
+  const scheme = m[1].toLowerCase() as 'http' | 'https';
+  const auth = m[2];
+  if (auth.includes('@')) return null;
+  let host: string;
+  let portText: string | null;
+  if (auth.startsWith('[')) {
+    const end = auth.indexOf(']');
+    if (end < 0) return null;
+    host = auth.slice(1, end);
+    const rest = auth.slice(end + 1);
+    if (rest !== '' && !rest.startsWith(':')) return null;
+    portText = rest === '' ? null : rest.slice(1);
+    if (!host.includes(':') || !/^[0-9A-Fa-f:.]+$/.test(host)) return null;
+  } else {
+    const i = auth.lastIndexOf(':');
+    host = i < 0 ? auth : auth.slice(0, i);
+    portText = i < 0 ? null : auth.slice(i + 1);
+    if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(host)) return null;
+  }
+  let port = scheme === 'https' ? 443 : 80;
+  if (portText !== null) {
+    if (!/^[0-9]{1,5}$/.test(portText)) return null;
+    port = Number(portText);
+    if (port < 1 || port > 65535) return null;
+  }
+  return { scheme: scheme, host: host.toLowerCase(), port: port };
+}
+
 function isHttpUrl(v: string): boolean {
-  return /^https?:\/\/[^\s/]+/.test(v);
+  return parseHttpUrl(v) !== null;
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -390,6 +423,13 @@ function checkMiddlewareConfig(name: string, kind: string, c: Record<string, unk
         errors.push(`${label}の ${side}.add は {名前: 値} の形にしてください。`);
       }
     }
+  }
+  // rproxy が自分から接続しに行く URL（forward_auth の address、oidc の issuer）も厳しく読む（#155 のレビュー H1）
+  if (kind === 'forward_auth' && typeof c.address === 'string' && c.address !== '' && !isHttpUrl(c.address)) {
+    errors.push(`${label}の address は http:// か https:// の URL にしてください（ポートは 1〜65535 の数字）。`);
+  }
+  if (kind === 'oidc' && typeof c.issuer === 'string' && c.issuer !== '' && !isHttpUrl(c.issuer)) {
+    errors.push(`${label}の issuer は http:// か https:// の URL にしてください（ポートは 1〜65535 の数字）。`);
   }
   if (kind === 'replace_host') {
     const host = c.host;
@@ -493,7 +533,7 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
         if (!(Number.isInteger(srv.status) && srv.status >= 100 && srv.status <= 599)) errors.push(`サービス「${name}」の転送先の状態コードは 100〜599 にしてください。`);
         if ((srv.middlewares ?? []).length > 0) errors.push(`サービス「${name}」の状態コードで答える転送先には、ミドルウェアを付けられません。`);
       } else if (!isHttpUrl(url)) {
-        errors.push(`サービス「${name}」の転送先「${url}」は http:// か https:// で始まる URL にしてください。`);
+        errors.push(`サービス「${name}」の転送先「${url}」は http:// か https:// で始まる URL にしてください（ポートは 1〜65535 の数字）。`);
       }
       if (srv.weight !== undefined && !(Number.isInteger(srv.weight) && srv.weight >= 1)) errors.push(`サービス「${name}」の重みは 1 以上の整数にしてください。`);
       for (const mw of srv.middlewares ?? []) {
@@ -546,7 +586,7 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
     if (m) errors.push(`${label}の match: ${m}`);
     if (r.service && r.to) errors.push(`${label}は service と to のどちらか一方にしてください。`);
     if (r.service && !(r.service in services)) errors.push(`${label}のサービス「${r.service}」がありません。`);
-    if (r.to !== undefined && !isHttpUrl(r.to)) errors.push(`${label}の転送先（to）は http:// か https:// で始まる URL にしてください。`);
+    if (r.to !== undefined && !isHttpUrl(r.to)) errors.push(`${label}の転送先（to）は http:// か https:// で始まる URL にしてください（ポートは 1〜65535 の数字）。`);
     for (const mw of r.middlewares ?? []) {
       if (!(mw in middlewares)) errors.push(`${label}のミドルウェア「${mw}」がありません。`);
     }

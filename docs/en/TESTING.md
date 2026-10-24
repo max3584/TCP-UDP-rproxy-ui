@@ -169,7 +169,9 @@ Only `deb` (Debian package), which builds, installs and checks the .deb, runs in
 
 ## Screen E2E (`tests/ui`, Playwright)
 
-Runs in the CI `e2e` job against the same MariaDB and rproxy-api.
+Runs in the CI `e2e` job against the same MariaDB and rproxy-api. The default session is an administrator (`rproxy-admin`); the user session is `tests/ui/.auth/user.json` (`security.spec.ts`, `user-limits.spec.ts`; CI sets `RPROXY_UI_USER_ROLE=rproxy-user`).
+
+- `user-limits.spec.ts` (#155): with the user session, the API refuses loopback, metadata and `localhost` destinations and certificate file paths with 403 and creates nothing; the form shows the destination and file notes, does not offer file certificates, offers stored certificates and makes the file fields of TLS to the backend read-only
 
 - `rules.spec.ts`: adds, changes and deletes TCP and L7 (HTTP) rules from the screen and checks that traffic is forwarded; signed-out visitors do not get the form
 - `settings.spec.ts`: TLS options (minimum version 1.3 without a TLS 1.3 suite is refused before sending; once saved, TLS 1.2 clients are refused; the edit page shows the current values), basic_auth realm, user_header and keep_authorization (the 401 `WWW-Authenticate` and the user name the backend receives), and UDP sni offered without the version note. The self-signed certificate is made with openssl (apk's openssl in CI)
@@ -246,6 +248,20 @@ That exporting and importing again gives the same rules is checked in `tests/exp
 | Report and CSV | Grouping by owner, label and rule; label keys; CSV (not read as formulas); period and settings (environment variables) |
 | collectNode | Values added to the hourly and daily tables, owner and marks, updating the baseline, dropping baselines of rules that disappeared |
 | /api/forward/usage | Users see only their rules; rule filter; `available: false` without the tables; report and CSV; bad period |
+
+## Unit tests: limits for users (`tests/userlimits.test.ts`, `tests/forward-userlimits.test.ts`, `tests/certs-route.test.ts`, #155)
+
+| Test | What it checks |
+|---|---|
+| fileRefs, destRefs | Extracting a rule's `*_file` fields (certificates, client auth, upstream, route upstream, service tls, basic_auth, oidc) and destinations (remote, targets, tls.routes, service urls, a route's to, forward_auth, oidc issuer; the range for port-range rules). Reordering and renaming services keep values as already there; changed values, values moved to another field and destinations with a changed port are new |
+| checkDestinations | Without an allow-list, loopback, link-local (metadata), unspecified, multicast and broadcast are refused (also behind names and IPv4-mapped). The allow-list's CIDRs and names, a special range usable only through a CIDR inside it (not 0.0.0.0/0), the control API and DB addresses and ports always refused, collecting the protected addresses |
+| redactFiles | The `*_file` values of static rules, the files of certificate expiry and the paths in error texts become `<hidden>` (the original is not changed) |
+| API (add, modify, plan) | Users get 403 `file_not_allowed` for file paths, 403 `cert_not_allowed` for stored certificates outside the allowed names and 403 `target_not_allowed` for refused destinations (nothing is done to rproxy or the DB). Admins pass. On changes to an own rule, file paths and destinations already there pass unchanged and only changed values are refused. The reserved addresses of `GET /interfaces` are refused |
+| Dashboard, details | Users get static rules with the paths hidden; admins see them |
+| /api/forward/certs | Names, SANs and expiry only; users get only the names of `RPROXY_UI_USER_CERTS`; `?target=` only inside `RPROXY_UI_USER_NODES`; 403 and 404 become `available: false` |
+| Review fixes | Unreadable URLs (`:65536`, `:8a`, `[fe80::1%25eth0]`) are 400 for everyone and 403 for users when already stored; the L4 health check port, the place of override destinations, oidc changes refused, `RPROXY_UI_PROTECTED_TARGETS` |
+
+Name resolution in the tests is decided by `tests/setup.ts` (`localhost` is 127.0.0.1, `*.invalid` does not resolve, others are 192.0.2.10). The user role is `RPROXY_UI_USER_ROLE=rproxy-user` in `vitest.config.mts`.
 
 ## Not yet tested
 

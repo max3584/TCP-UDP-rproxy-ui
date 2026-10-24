@@ -1,12 +1,13 @@
 // L7（ルールの http）の編集欄。RuleForm の「L7 (HTTP)」タブで使う（tests/httpeditor.test.ts）。
 // 値は親が持ち、変更は onChange で丸ごと返す。検証は httpspec.ts の validateHttp（送信時に親が呼ぶ）
 
-import React, { useState } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 import { BALANCES, type Balance } from './lib';
 import type { HttpOutlierSpec } from './v04';
 import { BALANCE_LABELS } from './dashboard';
 import { BALANCE_HELP } from './targets';
 import { FILE_OWNER_NOTE } from './messages';
+import { USER_FILES_NOTE } from './userlimits';
 import {
   HttpOption,
   HttpRules,
@@ -37,13 +38,18 @@ export interface HttpEditorProps {
   // features.http_options（Gateway API 向けの項目。features を取得できなかったときは null。そのときはすべて出す）
   httpOptions: readonly string[] | null;
   http3: boolean;
+  // 管理者でない人（#155）：ファイルのパスの欄（*_file）を読み取り専用にする（前からある値はそのまま送る。確かめるのは API）
+  filesLocked?: boolean;
 }
+
+// ファイルのパスの欄を読み取り専用にするか（HttpEditor の filesLocked）
+const FilesLocked = createContext(false);
 
 // rproxy が使えると言う項目か（null は分からない＝出す）
 const supports = (list: readonly string[] | null, name: string) => list === null || list.includes(name);
 
 const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
-const monoInput = `${inputClass} font-mono text-sm`;
+const monoInput = `${inputClass} font-mono text-sm read-only:bg-gray-100`;
 const smallButton = 'bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded-sm text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 const removeButton = 'text-red-700 hover:text-red-900 text-sm px-1 rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:min-h-11 max-lg:min-w-11';
 const labelClass = 'block text-xs font-medium text-gray-800 mb-1';
@@ -207,6 +213,7 @@ const JsonConfig: React.FC<{ id: string; value: Record<string, unknown>; onChang
 };
 
 const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void; httpOptions: readonly string[] | null }> = ({ id, fields, value, onChange, httpOptions }) => {
+  const filesLocked = useContext(FilesLocked);
   const set = (key: string, v: unknown) => {
     const next = { ...value };
     if (v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) delete next[key];
@@ -250,6 +257,7 @@ const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<stri
             ) : (
               <input
                 id={fid}
+                readOnly={filesLocked && f.key.endsWith('_file')}
                 type={f.type === 'number' ? 'number' : 'text'}
                 className={f.type === 'number' ? inputClass : monoInput}
                 placeholder={f.placeholder}
@@ -344,6 +352,7 @@ const TLS_TEXT_FIELDS: { key: keyof ServiceTlsSpec & ('server_name' | 'ca_file' 
 ];
 
 const ServiceTlsFields: React.FC<{ id: string; name: string; value: ServiceTlsSpec | undefined; onChange: (v: ServiceTlsSpec | undefined) => void }> = ({ id, name, value, onChange }) => {
+  const filesLocked = useContext(FilesLocked);
   const on = value !== undefined;
   const set = (patch: Partial<ServiceTlsSpec>) => {
     const next: Record<string, unknown> = { ...(value ?? {}), ...patch };
@@ -361,7 +370,7 @@ const ServiceTlsFields: React.FC<{ id: string; name: string; value: ServiceTlsSp
           {TLS_TEXT_FIELDS.map((f) => (
             <div key={f.key}>
               <label htmlFor={`${id}-${f.key}`} className={labelClass}>{f.label}</label>
-              <input id={`${id}-${f.key}`} className={monoInput} placeholder={f.placeholder} value={value?.[f.key] ?? ''}
+              <input id={`${id}-${f.key}`} className={monoInput} placeholder={f.placeholder} value={value?.[f.key] ?? ''} readOnly={filesLocked && f.key.endsWith('_file')}
                 aria-label={`サービス ${name}: ${f.label}`} onChange={(e) => set({ [f.key]: e.target.value.trim() || undefined })} />
             </div>
           ))}
@@ -487,7 +496,7 @@ const ServiceOutlierFields: React.FC<{ id: string; name: string; value: HttpOutl
 
 // ---- 本体 ----
 
-const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3 }) => {
+const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, filesLocked = false }) => {
   const services = value.services ?? {};
   const mws = value.middlewares ?? {};
   const serviceNames = Object.keys(services);
@@ -557,7 +566,9 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
   };
 
   return (
+    <FilesLocked.Provider value={filesLocked}>
     <div>
+      {filesLocked && <p className="mb-3 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-sm px-2 py-1" data-testid="http-user-files-note">{USER_FILES_NOTE}（JSON で書くミドルウェアの *_file も同じです）</p>}
       <p className="mb-3 text-xs text-gray-700">
         HTTP のリクエストごとに、<strong>ルート</strong>の条件（match）で転送先を選びます。条件の式は Traefik と同じ書き方です（例 <span className="font-mono">Host(`app.example.com`) &amp;&amp; PathPrefix(`/api/`)</span>）。
         優先度が大きいルールから順に試し、省略時は式の長さが優先度になります。
@@ -938,6 +949,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
         </div>
       </section>
     </div>
+    </FilesLocked.Provider>
   );
 };
 

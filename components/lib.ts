@@ -76,9 +76,11 @@ export function routeNames(route: Pick<TlsRoute, 'server_name' | 'server_names'>
   return route.server_names ?? (route.server_name !== undefined ? [route.server_name] : []);
 }
 
-// ファイル（cert_file / chain_file / key_file）か ACME（acme / domains。v0.3）のどちらか一方。
+// ファイル（cert_file / chain_file / key_file）か ACME（acme / domains。v0.3）か登録済みの証明書の名前（cert）のどれか 1 つ。
 // chain_file は中間 CA の証明書（サーバ証明書を発行した CA からルートへ向かう順。ルートは不要）
 export interface TlsCertificate {
+  // rproxy の証明書の API（PUT /certs/{name}）に登録した証明書の名前（rproxy-api v0.4.2、features.cert_store）。ファイル・ACME の代わり
+  cert?: string;
   cert_file?: string;
   chain_file?: string;
   key_file?: string;

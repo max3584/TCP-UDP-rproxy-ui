@@ -279,7 +279,13 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
             <thead><tr><th scope="col">#</th><th scope="col">サーバ証明書</th><th scope="col">中間 CA</th><th scope="col">秘密鍵</th></tr></thead>
             <tbody>
               {tls.certificates.map((c, i) => (
-                c.acme !== undefined ? (
+                c.cert !== undefined ? (
+                  // 登録済みの証明書（rproxy の証明書の API の名前。rproxy-api v0.4.2）
+                  <tr key={i} data-testid="stored-certificate">
+                    <td>{i + 1}</td>
+                    <td colSpan={3} className="break-all">登録済みの証明書: <Mono>{c.cert}</Mono></td>
+                  </tr>
+                ) : c.acme !== undefined ? (
                   // ACME の証明書（rproxy v0.3.21）はファイルを持たない。状態は rproxy のルールの acme
                   <tr key={i} data-testid="acme-certificate">
                     <td>{i + 1}</td>

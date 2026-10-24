@@ -2,8 +2,9 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { useSession } from 'next-auth/react';
 import RuleForm from '@/components/RuleForm';
-import type { ForwardRule } from '@/components/lib';
+import type { ForwardRule, sessionUser } from '@/components/lib';
 import { hostPort, parseRuleKey, portsLabel, ruleHref, toRule } from '@/components/dashboard';
 import { ErrorBanner, goBack, postPlan, postRule, useRule } from '@/components/ui';
 import { t } from '@/i18n/core';
@@ -11,6 +12,9 @@ import { OWNED_RULE_MESSAGE, READONLY_NODE_MESSAGE, STATIC_RULE_MESSAGE } from '
 
 const EditRulePage: React.FC = () => {
   const router = useRouter();
+  // 管理者でない人はファイルのパスを書けない（#155。フォームは案内だけで、確かめるのは API）
+  const { data: session } = useSession();
+  const restricted = (session as sessionUser | null)?.user?.access !== 'admin';
   const key = useMemo(() => (router.isReady ? parseRuleKey(router.query) : null), [router.isReady, router.query]);
   const { rule, error: loadError, notFound } = useRule(key);
   const [error, setError] = useState('');
@@ -88,6 +92,7 @@ const EditRulePage: React.FC = () => {
       )}
       {initial && key && rule?.origin !== 'static' && !rule?.readonlyNode && !(rule?.origin === 'api' && rule.ruleset) && (
         <RuleForm
+          restricted={restricted}
           initialData={initial}
           submitting={submitting}
           onSubmit={handleSubmit}

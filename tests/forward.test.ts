@@ -47,6 +47,8 @@ import { RproxyError } from '@/components/rproxy';
 const { conn, pool } = mocks;
 
 const session = { user: { id: 'user-1', name: 'n', email: 'e', image: '', role: 'rproxy-user', roles: ['rproxy-user'] }, expires: '' };
+// サーバのファイルを指す項目は管理者だけが書ける（#155）。ファイルの形を確かめる試験は同じ id の管理者で動かす
+const adminSession = { ...session, user: { ...session.user, role: 'rproxy-admin', roles: ['rproxy-admin'] } };
 
 const tcpRule = {
   protocol: 'tcp',
@@ -413,6 +415,9 @@ describe('/api/forward/[forward]', () => {
 });
 
 describe('/api/forward/[forward]: port ranges and TLS', () => {
+  beforeEach(() => {
+    mocks.getServerSession.mockResolvedValue(adminSession);
+  });
   const cert = { cert_file: '/etc/rproxy/certs/mail.pem', key_file: '/etc/rproxy/certs/mail.key' };
   const submission = {
     ...tcpRule,
@@ -859,6 +864,7 @@ describe('/api/forward/[forward]: allow_from, unmatched and static rules', () =>
   });
 
   it('passes unmatched: reject through and drops the default', async () => {
+    mocks.getServerSession.mockResolvedValue(adminSession);
     mocks.addRule.mockResolvedValue({});
 
     await call('add', { ...tcpRule, srcPort: 443, tls: { mode: 'sni', routes: [route], unmatched: 'reject' } });
@@ -1163,6 +1169,7 @@ describe('/api/forward/[forward]: L7 (http) rules and v0.3 TLS', () => {
 
   // SNI の passthrough（rproxy v0.3.3）：registry と **.tenant は終端せず、ほかの名前は L7 で振り分ける
   it('add sends passthrough tls.routes with server_names on an http rule, and refuses non-passthrough ones', async () => {
+    mocks.getServerSession.mockResolvedValue(adminSession);
     mocks.addRule.mockResolvedValue({});
     const passthrough = {
       server_names: ['Registry.Example.com', '**.tenant.example.com'], remote_addr: '10.0.1.10', remote_port: 443, passthrough: true,

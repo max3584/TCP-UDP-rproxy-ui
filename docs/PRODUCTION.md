@@ -95,7 +95,8 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
    - Valid redirect URIs: `https://dashboard.example.com/api/auth/callback/keycloak`
    - Web origins / Root URL: `https://dashboard.example.com`
 3. 「Credentials」のクライアントシークレットを `KEYCLOAK_CLIENT_SECRET` に設定する。
-4. 利用者を作るか、既存の IdP と連携し、管理者には realm ロール `rproxy-admin`（すべてのルール）を付ける。ほかの利用者は既定で自分のルールだけを扱える。ロールで利用者を絞るなら `RPROXY_UI_USER_ROLE=rproxy-user` にして、そのロールを付ける（README の「ロール」。ロールの名前・クレームの位置・利用者が使えるポートは `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_USER_PORTS` で変えられる）。
+4. 利用者を作るか、既存の IdP と連携し、管理者には realm ロール `rproxy-admin`（すべてのルール）を付ける。利用者（自分のルールだけ）に使わせるなら、`RPROXY_UI_USER_ROLE=rproxy-user` にして、そのロールを付ける（v0.4.9 から、空なら `rproxy-admin` のない人は使えない。README の「ロール」。ロールの名前・クレームの位置・利用者が使えるポートは `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_USER_PORTS` で変えられる）。
+   利用者を入れるなら、利用者の転送先の許可リスト `RPROXY_UI_USER_TARGETS`（CIDR とホスト名）も書く（README の「利用者の制限」）。利用者はサーバのファイルのパスを書けないので、利用者の TLS の証明書は rproxy の証明書の API（`PUT /certs/{name}`）に登録し、UI のトークンに `certs:read` を付ける。ダッシュボードの証明書と鍵（`/etc/rproxy/tls/`）は証明書の API に置かない（置くなら `RPROXY_UI_USER_CERTS` で外す）。別のホストの DB など、ほかに守る宛先は `RPROXY_UI_PROTECTED_TARGETS` に書く。
 
 レルムの「Realm settings」→「Sessions」の「SSO Session Max」は `RPROXY_UI_SESSION_MAX_AGE`（既定 8 時間）以下にする（UI は認可の要求に `max_age` を付け、8 時間を過ぎたら Keycloak で認証し直させる。`keycloak/realm-rproxy-dev.json` は 8 時間）。
 UI は 5 分ごと（`RPROXY_UI_ROLE_REFRESH_SECS`）に refresh token でロールを確かめ直し、サインアウトで end_session も呼ぶので、UI のホストから Keycloak のトークンのエンドポイントに届くようにしておく（サインインと同じ口）。

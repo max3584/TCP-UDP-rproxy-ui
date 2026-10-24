@@ -503,6 +503,10 @@ describe('nodes and groups (#98)', () => {
     lockRows();
     const added: string[] = [];
     mocks.addRule.mockImplementation(onNode(added, () => ({})));
+    // コピーは新しいルールなので、ファイルのパスは管理者だけ（#155）。利用者は 403 file_not_allowed
+    const refused = await call('copy', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', to: 'c' });
+    expect([refused.status, refused.body.code]).toEqual([403, 'file_not_allowed']);
+    mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, roles: ['rproxy-admin'], role: 'rproxy-admin' } });
     const copy = await call('copy', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', to: 'c' });
     expect(copy.status, JSON.stringify(copy.body)).toBe(200);
     expect(mocks.addRule.mock.calls[0][0].tls).toEqual(tls);

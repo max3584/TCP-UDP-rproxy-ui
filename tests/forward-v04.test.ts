@@ -289,6 +289,8 @@ describe('route ごとの upstream（/api/forward）', () => {
   });
 
   it('add は route の upstream（{} を含む）を rproxy と DB に渡す', async () => {
+    // ファイルのパスは管理者だけ（#155）
+    mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, roles: ['rproxy-admin'] } });
     mocks.addRule.mockResolvedValue({});
     const { status } = await call('add', { ...tcpRule, tls: terminateTls });
     expect(status).toBe(200);
