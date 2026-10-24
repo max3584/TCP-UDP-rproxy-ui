@@ -97,6 +97,10 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
 3. 「Credentials」のクライアントシークレットを `KEYCLOAK_CLIENT_SECRET` に設定する。
 4. 利用者を作るか、既存の IdP と連携し、管理者には realm ロール `rproxy-admin`（すべてのルール）を付ける。ほかの利用者は既定で自分のルールだけを扱える。ロールで利用者を絞るなら `RPROXY_UI_USER_ROLE=rproxy-user` にして、そのロールを付ける（README の「ロール」。ロールの名前・クレームの位置・利用者が使えるポートは `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_USER_PORTS` で変えられる）。
 
+レルムの「Realm settings」→「Sessions」の「SSO Session Max」は `RPROXY_UI_SESSION_MAX_AGE`（既定 8 時間）以下にする（UI は認可の要求に `max_age` を付け、8 時間を過ぎたら Keycloak で認証し直させる。`keycloak/realm-rproxy-dev.json` は 8 時間）。
+UI は 5 分ごと（`RPROXY_UI_ROLE_REFRESH_SECS`）に refresh token でロールを確かめ直し、サインアウトで end_session も呼ぶので、UI のホストから Keycloak のトークンのエンドポイントに届くようにしておく（サインインと同じ口）。
+クライアントの「Revoke Refresh Token」（refresh token を使い捨てにする）は有効にしない。UI の 1 つのプロセスの中では同じ refresh token の聞き直しを 1 つにまとめるが、UI を複数台で動かすと、同じクッキーの要求が別の台で同時に聞き直して片方が断られ、サインアウトされることがある。
+
 Keycloak の証明書が社内の CA のものなら、Node.js がその CA を信頼するように `rproxy-ui.env` に `NODE_EXTRA_CA_CERTS=/etc/rproxy-ui/ca.pem` を足す（`rproxy-ui` ユーザーが読めること。`/home`・`/root`・`/tmp` には置かない）。
 
 ## 4. rproxy-api
@@ -194,6 +198,8 @@ DB_PASSWORD=<password>
 RPROXY_API_URL=http://127.0.0.1:8080   # Unix ソケットなら unix:/run/rproxy/api.sock（4. を参照）
 RPROXY_API_TOKEN=                       # 前の版でコピーしたトークンはここに残る（あればこちらを使う）
 RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # インストール時に入る（1 行に 1 トークンの書き方のとき。グループ rproxy で読む）
+# RPROXY_UI_SESSION_MAX_AGE=28800        # サインインの長さ（秒。既定 8 時間。Keycloak で認証した時刻から。使い続けても延びない）
+# RPROXY_UI_ROLE_REFRESH_SECS=300        # Keycloak でロールを確かめ直す間隔（秒。0 で止めると、取り消しはセッションが切れるまで反映されない）
 ```
 
 `RPROXY_API_TOKEN_FILE` は最初の空でない・`#` でない行をトークンとして読み、ファイルが変われば次の問い合わせから新しいトークンを使う（UI の設定を書き換えなくてよい）。トークンファイルを YAML（下）にすると SHA-256 しか置かないので、UI のトークンは `RPROXY_API_TOKEN` に書くか、UI だけが読むファイル（`root:rproxy-ui` 0640）に 1 行で書いて `RPROXY_API_TOKEN_FILE` で指す。
@@ -210,6 +216,14 @@ tokens:
 ```
 
 `TOKEN` は UI の `RPROXY_API_TOKEN` に入れる値（`openssl rand -hex 32` などで作る）。トークンファイルを変えたら `sudo systemctl reload rproxy-api`。
+
+### セキュリティのヘッダとセッション
+
+- UI はすべての応答に CSP（要求ごとの nonce、`frame-ancestors 'none'`、`form-action` に `KEYCLOAK_ISSUER` の origin）・`X-Frame-Options: DENY`・`X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・`Permissions-Policy`・`Cross-Origin-Opener-Policy`・`Cross-Origin-Resource-Policy` を付け、`NEXTAUTH_URL` が `https://` なら `Strict-Transport-Security: max-age=31536000; includeSubDomains` も付ける（値は README の「セキュリティ」）。
+- 前にある rproxy-api は L4（TCP と TLS の終端）で、HTTP のヘッダを足せない。ヘッダは UI が付けるので、この構成では何もしなくてよい。HSTS が付くように `NEXTAUTH_URL` は利用者が開く `https://` の URL にする。
+- セッションは Keycloak で認証してから `RPROXY_UI_SESSION_MAX_AGE`（既定 8 時間）で切れ、そのあとは Keycloak で認証し直す。Keycloak で利用者を無効にする・ロールを外すと、`RPROXY_UI_ROLE_REFRESH_SECS`（既定 5 分）のうちに UI にも反映される（無効にした利用者はサインアウトされる）。`RPROXY_UI_ROLE_REFRESH_SECS=0` にすると、取り消しはセッションが切れるまで反映されない。
+- サインアウトは Keycloak の SSO のセッションも終わらせる。Keycloak に届かないと UI のサインアウトだけになり、SSO のセッションは残る（UI のログに「SSO のセッションを終わらせられませんでした」と出る。`journalctl -u rproxy-ui` で探す）。
+- 確かめ方：`curl -sI https://dashboard.example.com/api/healthz` にヘッダが並ぶこと。
 
 ## 6. 起動と確認
 

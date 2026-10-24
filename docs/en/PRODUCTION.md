@@ -97,6 +97,10 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
 3. Set the client secret from "Credentials" as `KEYCLOAK_CLIENT_SECRET`.
 4. Create users or federate with an existing IdP, and give administrators the realm role `rproxy-admin` (all rules). Other users can handle only their own rules by default. To restrict users by role, set `RPROXY_UI_USER_ROLE=rproxy-user` and assign that role ("Roles" in the [README](../../README.en.md); the role names, the claim location and the ports users can use can be changed with `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_USER_PORTS`).
 
+Set "SSO Session Max" under "Realm settings" → "Sessions" to at most `RPROXY_UI_SESSION_MAX_AGE` (default 8 hours); the UI sends `max_age` in the authorization request and makes Keycloak authenticate again after 8 hours (`keycloak/realm-rproxy-dev.json` uses 8 hours).
+The UI checks roles again with the refresh token every 5 minutes (`RPROXY_UI_ROLE_REFRESH_SECS`) and calls end_session on sign-out, so the UI host must reach Keycloak's token endpoint (the same one used for sign-in).
+Do not turn on "Revoke Refresh Token" (one-time refresh tokens) for the client. Within one UI process, checks with the same refresh token are merged into one, but with several UI instances, requests with the same cookie can check at the same time on different instances, one is refused, and the user is signed out.
+
 If Keycloak's certificate is from an internal CA, add `NODE_EXTRA_CA_CERTS=/etc/rproxy-ui/ca.pem` to `rproxy-ui.env` so that Node.js trusts that CA (it must be readable by the `rproxy-ui` user; do not put it under `/home`, `/root` or `/tmp`).
 
 ## 4. rproxy-api
@@ -194,6 +198,8 @@ DB_PASSWORD=<password>
 RPROXY_API_URL=http://127.0.0.1:8080   # for a Unix socket, unix:/run/rproxy/api.sock (see 4.)
 RPROXY_API_TOKEN=                       # a token copied by an earlier version stays here (used when set)
 RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # filled in at install time (when it holds one token per line; read through the group rproxy)
+# RPROXY_UI_SESSION_MAX_AGE=28800        # length of a sign-in (seconds, default 8 hours; from the Keycloak authentication; using the UI does not extend it)
+# RPROXY_UI_ROLE_REFRESH_SECS=300        # how often roles are checked again with Keycloak (seconds; 0 turns it off, and revocations then wait until the session ends)
 ```
 
 `RPROXY_API_TOKEN_FILE` reads the first non-empty line not starting with `#` as the token and uses a changed file from the next request (no change to the UI's settings needed). A YAML token file (below) holds only SHA-256 values, so then put the UI's token in `RPROXY_API_TOKEN`, or on one line in a file only the UI reads (`root:rproxy-ui` 0640) and point `RPROXY_API_TOKEN_FILE` at it.
@@ -210,6 +216,14 @@ tokens:
 ```
 
 `TOKEN` is the value put in the UI's `RPROXY_API_TOKEN` (generate it with e.g. `openssl rand -hex 32`). After changing the token file, run `sudo systemctl reload rproxy-api`.
+
+### Security headers and sessions
+
+- The UI adds to every response a CSP (per-request nonce, `frame-ancestors 'none'`, the origin of `KEYCLOAK_ISSUER` in `form-action`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`, `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy`, and `Strict-Transport-Security: max-age=31536000; includeSubDomains` when `NEXTAUTH_URL` is `https://` (values: "Security" in the [README](../../README.en.md)).
+- rproxy-api in front works at L4 (TCP and TLS termination) and cannot add HTTP headers. The UI adds them, so nothing is needed in this setup. Set `NEXTAUTH_URL` to the `https://` URL users open so that HSTS is sent.
+- A session ends `RPROXY_UI_SESSION_MAX_AGE` (default 8 hours) after the Keycloak authentication, and users then authenticate with Keycloak again. Disabling a user or removing a role in Keycloak reaches the UI within `RPROXY_UI_ROLE_REFRESH_SECS` (default 5 minutes; disabled users are signed out). With `RPROXY_UI_ROLE_REFRESH_SECS=0`, revocations do not take effect until the session ends.
+- Signing out also ends the Keycloak SSO session. If Keycloak is unreachable, only the UI signs out and the SSO session remains (the UI logs "SSO のセッションを終わらせられませんでした"; look in `journalctl -u rproxy-ui`).
+- To check: `curl -sI https://dashboard.example.com/api/healthz` lists the headers.
 
 ## 6. Starting and checking
 

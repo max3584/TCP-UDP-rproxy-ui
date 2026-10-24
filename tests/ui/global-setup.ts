@@ -7,7 +7,8 @@ import { NEXTAUTH_SECRET, baseURL } from '../../playwright.config';
 export const E2E_USER = { sub: 'ui-e2e-user', name: 'UI E2E', email: 'ui-e2e@example.invalid', roles: ['rproxy-user'] };
 
 export default async function globalSetup(): Promise<void> {
-  const token = await encode({ token: E2E_USER, secret: NEXTAUTH_SECRET, maxAge: 60 * 60 });
+  // authTime（サインインした時刻）がないセッションは、この版から断られる（components/session.ts）
+  const token = await encode({ token: { ...E2E_USER, authTime: Math.floor(Date.now() / 1000) }, secret: NEXTAUTH_SECRET, maxAge: 60 * 60 });
   const { hostname } = new URL(baseURL);
   const state = {
     cookies: [{
