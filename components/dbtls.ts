@@ -1,5 +1,5 @@
 // DB（MariaDB）への接続の TLS（#164）。環境変数（db/migrate.mjs の dbSsl と同じ規則。tests/dbtls.test.ts）：
-// - DB_SSL：true（1・yes・on）で TLS を使い、サーバの証明書を確かめる（OS の CA か DB_SSL_CA）。false（既定）なら使わない
+// - DB_SSL：true（1・yes・on）で TLS を使い、サーバの証明書を確かめる（DB_SSL_CA、なければ Node.js が持つ公開の CA と NODE_EXTRA_CA_CERTS。OS の CA の一覧ではない）。false（既定）なら使わない
 // - DB_SSL_CA：サーバの証明書を確かめる CA の PEM のファイル（書けば DB_SSL を書かなくても TLS を使う）
 // - DB_SSL_VERIFY：false にすると証明書を確かめない（試験用。勧めない）
 // 誤った値は DbTlsError（起動時の確かめ・プールを作るときに止める）

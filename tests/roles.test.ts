@@ -20,11 +20,12 @@ describe('roles', () => {
     expect(cfg.userCertsBySub).toEqual(new Map([['5b1e-uuid', ['alice-', 'tenant-a-']]]));
     expect(certPrefixesFor('user', cfg, 'u1', ['rproxy-user', 'tenant-a'])).toEqual(['tenant-a-', 'common-']);
     expect(certPrefixesFor('user', cfg, '5b1e-uuid', ['tenant-a', 'urn:corp:team'])).toEqual(['alice-', 'tenant-a-', 'common-', 'team-']);
-    // 割り当てを設定したのに割り当てのない利用者は、共通の先頭か、なければ何も選べない
+    // 割り当てを設定したのに割り当てのない利用者は、共通の先頭があっても何も選べない
     expect(certPrefixesFor('user', cfg, 'u2', ['rproxy-user'])).toEqual([]);
-    expect(certPrefixesFor('user', { ...cfg, userCerts: ['shared-'] }, 'u2', ['rproxy-user'])).toEqual(['shared-']);
+    expect(certPrefixesFor('user', { ...cfg, userCerts: ['shared-'] }, 'u2', ['rproxy-user'])).toEqual([]);
     expect(certPrefixesFor('admin', cfg, 'u2', [])).toBeNull();
-    for (const bad of ['tenant-a', ':tenant-a-', 'tenant-a:', 'tenant-a:Bad', 'tenant-a:a b']) {
+    // 先頭は - . _ で終える（tenant-a が tenant-ab-* に一致しないように）
+    for (const bad of ['tenant-a', ':tenant-a-', 'tenant-a:', 'tenant-a:Bad-', 'tenant-a:a b-', 'tenant-a:tenant-a']) {
       expect(() => roleConfig({ RPROXY_UI_USER_CERTS_BY_ROLE: bad }), bad).toThrow(RoleConfigError);
       expect(() => roleConfig({ RPROXY_UI_USER_CERTS_BY_SUB: bad }), bad).toThrow(RoleConfigError);
     }
@@ -64,6 +65,8 @@ describe('roles', () => {
       expect(() => roleConfig({ RPROXY_UI_USER_TARGETS: bad }), bad).toThrow(RoleConfigError);
     }
     expect(() => roleConfig({ RPROXY_UI_USER_CERTS: 'Bad' })).toThrow(RoleConfigError);
+    for (const bad of ['tenant', 'tenant-a', 'shared.x']) expect(() => roleConfig({ RPROXY_UI_USER_CERTS: bad }), bad).toThrow(RoleConfigError);
+    expect(roleConfig({ RPROXY_UI_USER_CERTS: 'a-,b.,c_' }).userCerts).toEqual(['a-', 'b.', 'c_']);
   });
 
   it('limits user ports when RPROXY_UI_USER_PORTS is set', () => {

@@ -560,6 +560,15 @@ describe('nodes and groups (#98)', () => {
       expect(asked).toEqual([]);
       expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '9443', target: 'c' })).status).toBe(200);
       expect(asked).toEqual(['c']);
+
+      // インポートの確かめ（dryRun）も、触れないノードに聞く前に 403（固定ルールのキー・予約済みのアドレスを見せない）
+      mocks.listRules.mockClear();
+      mocks.getInterfaces.mockClear();
+      const text = JSON.stringify({ format: 'rproxy-ui-export', version: 1, rules: [{ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8500, remote_addr: 'example.com', remote_port: 80 }] });
+      const dry = await call('import', { text: text, target: 'a', dryRun: true });
+      expect([dry.status, dry.body.code]).toEqual([403, 'node_not_allowed']);
+      expect(mocks.listRules).not.toHaveBeenCalled();
+      expect(mocks.getInterfaces).not.toHaveBeenCalled();
     } finally {
       delete process.env.RPROXY_UI_USER_NODES;
     }

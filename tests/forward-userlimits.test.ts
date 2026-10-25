@@ -120,13 +120,14 @@ describe('server files (#155)', () => {
     mocks.getServerSession.mockResolvedValue({ ...user, user: { ...user.user, id: 'user-9', roles: ['rproxy-user', 'tenant-b'] } });
     expect((await add('special-x')).status).toBe(200);
     expect((await add('tenant-b-www')).status).toBe(200);
-    // 割り当てのない利用者は共通の先頭（RPROXY_UI_USER_CERTS）
+    // 割り当てを設定したら、割り当てのない利用者は共通の先頭（RPROXY_UI_USER_CERTS）にも戻らず、何も選べない
     mocks.getServerSession.mockResolvedValue(user);
-    expect((await add('shared-www')).status).toBe(200);
-    expect((await add('tenant-a-www')).status).toBe(403);
-    // 共通の先頭もなければ何も選べない
-    vi.stubEnv('RPROXY_UI_USER_CERTS', '');
     expect((await add('shared-www')).status).toBe(403);
+    expect((await add('tenant-a-www')).status).toBe(403);
+    // 割り当てを外せば共通の先頭（今までどおり）
+    vi.stubEnv('RPROXY_UI_USER_CERTS_BY_ROLE', '');
+    vi.stubEnv('RPROXY_UI_USER_CERTS_BY_SUB', '');
+    expect((await add('shared-www')).status).toBe(200);
     mocks.getServerSession.mockResolvedValue(admin);
     expect((await add('tenant-b-www')).status).toBe(200);
   });

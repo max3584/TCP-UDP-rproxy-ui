@@ -65,14 +65,13 @@ describe('/api/forward/certs', () => {
   });
 
   it('users with an assignment (RPROXY_UI_USER_CERTS_BY_ROLE) see only their names (#160)', async () => {
-    vi.stubEnv('RPROXY_UI_USER_CERTS', 'dash');
+    vi.stubEnv('RPROXY_UI_USER_CERTS', 'dash.');
     vi.stubEnv('RPROXY_UI_USER_CERTS_BY_ROLE', 'tenant-a:tenant-');
     mocks.listCerts.mockResolvedValue(RAW);
     mocks.getServerSession.mockResolvedValue({ ...user, user: { ...user.user, roles: ['rproxy-user', 'tenant-a'] } });
     expect((await call()).body.certs.map((c: { name: string }) => c.name)).toEqual(['tenant-a']);
+    // 割り当てのない利用者は RPROXY_UI_USER_CERTS に戻らず、何も見えない
     mocks.getServerSession.mockResolvedValue(user);
-    expect((await call()).body.certs.map((c: { name: string }) => c.name)).toEqual(['dashboard']);
-    vi.stubEnv('RPROXY_UI_USER_CERTS', '');
     expect((await call()).body.certs).toEqual([]);
   });
 

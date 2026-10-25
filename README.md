@@ -157,9 +157,9 @@ Keycloak のロールで、だれが何をできるかを決める（API route �
 `rproxy-user`（`rproxy-admin` でない人）のルールは、API route が次のように確かめる（画面はファイルの欄を読み取り専用にし、注意を出すだけ）。`rproxy-admin` は今までどおり制限されない。
 
 - **サーバのファイルを指す項目は書けない**（403 `file_not_allowed`）：`tls.certificates[]` の `cert_file`・`chain_file`・`key_file`、`tls.client_auth` の `ca_file`・`chain_file`、`tls.upstream` と `tls.routes[].upstream` の `ca_file`・`cert_file`・`chain_file`・`key_file`、L7 のサービスの `tls` のファイル、`basic_auth` の `users_file`、`oidc` の `client_secret_file`・`cookie_secret_file`・`ca_file` など、`*_file` の項目すべて（JSON で書くミドルウェアも同じ）。rproxy は自分が読めるどの鍵でも使えるので、利用者がダッシュボードの鍵で別のポートに TLS を終端すると、管理者の cookie を盗めるため。
-- **TLS の証明書は登録済みの名前から選ぶ**：rproxy-api v0.4.2 の証明書の API（`PUT /certs/{name}`。`features.cert_store`）に管理者が登録した証明書を、`tls.certificates[]` の `{"cert": "<名前>"}` で使う。フォームの「＋ 登録済みの証明書を追加」は `/api/forward/certs`（rproxy の `GET /certs`。UI のトークンに `certs:read` が要る。名前・名前の一覧・期限だけ）から選ばせる。`RPROXY_UI_USER_CERTS=tenant-,shared-` のように名前の先頭を書くと、利用者が選べる名前を絞れる（外は 403 `cert_not_allowed`。空（既定）ならすべての名前）。先頭は区切りを見ずに文字の先頭だけで比べる（`tenant` は `tenantx` にも一致するので、`tenant-` のように区切りの文字で終える）。ダッシュボードの証明書を証明書の API に置くなら、必ずこれで外す。`?target=` で聞くノードも `RPROXY_UI_USER_NODES` の内だけ。
+- **TLS の証明書は登録済みの名前から選ぶ**：rproxy-api v0.4.2 の証明書の API（`PUT /certs/{name}`。`features.cert_store`）に管理者が登録した証明書を、`tls.certificates[]` の `{"cert": "<名前>"}` で使う。フォームの「＋ 登録済みの証明書を追加」は `/api/forward/certs`（rproxy の `GET /certs`。UI のトークンに `certs:read` が要る。名前・名前の一覧・期限だけ）から選ばせる。`RPROXY_UI_USER_CERTS=tenant-,shared-` のように名前の先頭を書くと、利用者が選べる名前を絞れる（外は 403 `cert_not_allowed`。空（既定）ならすべての名前）。先頭は区切りを見ずに文字の先頭だけで比べるので、`-`・`.`・`_` のどれかで終える（`tenant-a` だと `tenant-ab-www` にも一致するため。ほかの終わり方は起動時に止める。`RPROXY_UI_USER_CERTS_BY_*` の先頭も同じ）。ダッシュボードの証明書を証明書の API に置くなら、必ずこれで外す。`?target=` で聞くノードも `RPROXY_UI_USER_NODES` の内だけ。
   - **利用者・ロールごとの割り当て**（#160）：`RPROXY_UI_USER_CERTS` は利用者みんなで共通なので、tenant-a の利用者が `tenant-b-www` を選び、同じ IP の自分のポートで TLS を終端できてしまう（cookie はポートで分かれない）。テナントを分けるなら、`RPROXY_UI_USER_CERTS_BY_ROLE=tenant-a:tenant-a-,tenant-b:tenant-b-`（Keycloak のロール:先頭）か `RPROXY_UI_USER_CERTS_BY_SUB=<sub>:alice-`（Keycloak の `sub`:先頭）で割り当てる。カンマで区切り、同じロール・`sub` を並べれば先頭を足せる（ロールの名前に `:` があってもよい。最後の `:` の後ろが先頭）。
-  - 割り当てのある利用者は、その `sub` とロールに割り当てた先頭を合わせたものだけを選べ、`RPROXY_UI_USER_CERTS` は使わない。どちらかの割り当てを書いたとき、割り当てのない利用者は `RPROXY_UI_USER_CERTS`（空なら何も選べない）。どちらも空（既定）なら今までどおり。
+  - 割り当てのある利用者は、その `sub` とロールに割り当てた先頭を合わせたものだけを選べ、`RPROXY_UI_USER_CERTS` は使わない。どちらかの割り当てを書いたら、割り当てのない利用者は何も選べない（`RPROXY_UI_USER_CERTS` には戻らない）。共通の `RPROXY_UI_USER_CERTS` が効くのは、割り当てをどちらも書かないとき（既定。今までどおり）だけ。
   - 割り当ては `/api/forward/certs` の一覧と、証明書の名前を受け取るすべての経路（追加・変更・差分・インポート・巻き戻し・コピー・移動・ノードごとの上書き）で確かめる。自分のルールに前からある名前は、変えなければそのまま残せる。
 - **OIDC のミドルウェアは足せない・変えられない**（403 `middleware_not_allowed`）：rproxy は `issuer` の discovery が返す `token_endpoint`・`jwks_uri` にもつなぐが、UI はその先を確かめられないため。前からある同じ設定はそのまま残せる（秘密のファイルも書けないので、利用者が新しく作ることはもともとできない）。
 - **転送先**（`remote_addr`・`targets`・宛先の死活確認（`health_check.port`）・`tls.routes[]` の宛先・L7 のサービスの `url`・ルートの `to`・`forward_auth` の `address`・`oidc` の `issuer`、ノードごとの上書きの転送先）（403 `target_not_allowed`）：
@@ -204,7 +204,7 @@ DB が別のホストにあるなら、UI と DB の間を TLS にする（`comp
 
 | 環境変数 | 内容 |
 |---|---|
-| `DB_SSL` | `true` で TLS を使い、DB の証明書を確かめる（OS の CA か `DB_SSL_CA`。名前は `DB_HOST` と比べる）。既定 `false` |
+| `DB_SSL` | `true` で TLS を使い、DB の証明書を確かめる（`DB_SSL_CA` がなければ Node.js が持つ公開の CA（Mozilla の一覧）と `NODE_EXTRA_CA_CERTS`。OS の CA の一覧は使わない。名前は `DB_HOST` と比べる）。既定 `false` |
 | `DB_SSL_CA` | DB の証明書を確かめる CA（PEM）のファイル。書けば `DB_SSL` を書かなくても TLS を使う（`rproxy-ui` ユーザーが読めること） |
 | `DB_SSL_VERIFY` | `false` で証明書を確かめない（試験用。勧めない） |
 

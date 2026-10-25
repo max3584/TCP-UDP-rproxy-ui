@@ -2,7 +2,7 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
 import { requireRole } from '@/components/apiguard';
 import { loadNodes, visibleNodes } from '@/components/nodes';
-import { accessOf, roleConfig } from '@/components/roles';
+import { accessOf, nodesAllowed, roleConfig } from '@/components/roles';
 import { versionsView } from '@/components/versioncheck';
 import { localizedApi } from '@/i18n/server';
 
@@ -15,8 +15,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(405).json({ error: 'Method Not Allowed', code: 'method_not_allowed' });
   }
   try {
-    // Kubernetes の rproxy（見るだけ）は管理者だけ
-    const view = await versionsView(visibleNodes(loadNodes(), accessOf(session.user.roles ?? [], roleConfig()) === 'admin'));
+    // Kubernetes の rproxy（見るだけ）は管理者だけ。RPROXY_UI_USER_NODES の利用者には触れるノードだけ（#164）
+    const roles = roleConfig();
+    const access = accessOf(session.user.roles ?? [], roles);
+    const shown = visibleNodes(loadNodes(), access === 'admin');
+    const cfg = shown.configured ? { ...shown, nodes: shown.nodes.filter((n) => nodesAllowed(access, roles, [n.name])) } : shown;
+    const view = await versionsView(cfg);
     return res.status(200).json(view);
   } catch (err) {
     // RPROXY_UI_NODES の誤りなど（起動時に止まるので、ふつうは来ない）

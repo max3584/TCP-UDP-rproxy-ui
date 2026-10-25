@@ -1633,6 +1633,8 @@ type ImportResult = 'added' | 'replaced' | 'skipped' | 'error';
 // ノードを設定していれば body.target（なければ default_target）のノード／グループに読み込む
 async function importRules(actor: Actor, body: any, logger: AppLogger) {
   const place = placeForAdd(actor.cfg, body?.target);
+  // 確かめるだけ（dryRun）でも置き場所のノードに聞く（固定ルール・予約済みのアドレス）ので、触れないノードなら先に断る
+  checkNodes(actor, place);
   const { items, ignoredGlobal } = await inspectImport(actor, place, body?.text, logger);
   const strip = (i: ImportItem) => ({ index: i.index, key: i.key, status: i.status, ...(i.message ? { message: i.message } : {}) });
   if (body?.dryRun === true) return { ignoredGlobal: ignoredGlobal, items: items.map(strip) };

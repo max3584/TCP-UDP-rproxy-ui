@@ -33,9 +33,9 @@ roles:
   userPorts: ""    # RPROXY_UI_USER_PORTS, e.g. 1024-65535
   userNodes: ""    # RPROXY_UI_USER_NODES, e.g. node1,node2
   userTargets: ""  # RPROXY_UI_USER_TARGETS, e.g. 10.0.0.0/8,backend.example.com (destinations users may use)
-  userCerts: ""    # RPROXY_UI_USER_CERTS, e.g. tenant- (stored certificate name prefixes users may use; shared by all users, end with a separator)
-  # per-user / per-role stored certificate name prefixes (they replace userCerts for the users they name; when either is set,
-  # users with no assignment fall back to userCerts, or may pick none when it is empty)
+  userCerts: ""    # RPROXY_UI_USER_CERTS, e.g. tenant- (stored certificate name prefixes users may use; shared by all users; each must end with -, . or _)
+  # per-user / per-role stored certificate name prefixes (each ending with -, . or _). When either is set, userCerts is not
+  # used: users get only the prefixes assigned to their sub and roles, and users with no assignment get none
   userCertsBySub: ""   # RPROXY_UI_USER_CERTS_BY_SUB, e.g. 0b6f...-sub:tenant-a- (Keycloak sub:prefix, comma-separated; repeat a sub for more prefixes)
   userCertsByRole: ""  # RPROXY_UI_USER_CERTS_BY_ROLE, e.g. tenant-a:tenant-a-,tenant-b:tenant-b- (role:prefix, comma-separated)
   protectedTargets: ""  # RPROXY_UI_PROTECTED_TARGETS, e.g. 10.96.0.0/12,10.244.0.0/16 (always refused to users; Pod IPs change, so use CIDRs)
@@ -51,7 +51,8 @@ db:
   # The bundled MariaDB does not serve TLS: leave this off with it
   tls:
     enabled: false
-    # Secret with the CA certificate (PEM) that signed the DB's certificate; empty: the image's CA bundle
+    # Secret with the CA certificate (PEM) that signed the DB's certificate; empty: Node.js's bundled public CAs
+    # (the Mozilla list, plus NODE_EXTRA_CA_CERTS via extraEnv), not the image's CA store
     caSecret: ""
     caKey: ca.crt
     # false skips the certificate check (testing only)

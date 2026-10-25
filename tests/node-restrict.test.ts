@@ -36,6 +36,7 @@ import acme from '@/pages/api/forward/acme';
 import capabilities from '@/pages/api/forward/capabilities';
 import interfaces from '@/pages/api/forward/interfaces';
 import certs from '@/pages/api/forward/certs';
+import versions from '@/pages/api/forward/versions';
 import { parseNodesConfig } from '@/components/nodes';
 
 type Handler = (req: NextApiRequest, res: NextApiResponse) => unknown;
@@ -99,5 +100,17 @@ describe.each([['acme', acme], ['capabilities', capabilities], ['interfaces', in
     vi.stubEnv('RPROXY_UI_USER_NODES', 'n1');
     expect((await call(handler)).status).toBe(200);
     expect(mocks.asked).toEqual(['-']);
+  });
+});
+
+describe('/api/forward/versions', () => {
+  it('users of RPROXY_UI_USER_NODES get (and ask) only their nodes; admins get all but read-only ones are admin-only', async () => {
+    vi.stubEnv('RPROXY_UI_USER_NODES', 'n1');
+    const res = await call(versions);
+    expect(res.status).toBe(200);
+    expect(res.body.nodes.map((n: { name: string }) => n.name)).toEqual(['n1']);
+    expect(mocks.asked).toEqual(['n1']);
+    mocks.getServerSession.mockResolvedValue(admin);
+    expect((await call(versions)).body.nodes.map((n: { name: string }) => n.name)).toEqual(['n1', 'n2', 'k1']);
   });
 });
