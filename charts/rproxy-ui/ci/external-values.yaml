@@ -2,7 +2,9 @@
 url: https://rproxy-ui.example.com
 existingSecret: rproxy-ui
 keycloak: {issuer: https://sso.example.com/realms/rproxy}
-db: {host: mariadb.db.svc}
+db: {host: mariadb.db.svc, tls: {enabled: true, caSecret: rproxy-ui-db-ca}}
+roles: {userRole: rproxy-user, userCertsByRole: "tenant-a:tenant-a-,tenant-b:tenant-b-"}
+backup: {enabled: true, existingSecret: rproxy-ui-backup}
 migrate: {existingSecret: rproxy-ui-db-admin, baseline: "012", createUser: true}
 replicas: 1
 image: {digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}

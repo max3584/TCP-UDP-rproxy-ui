@@ -22,6 +22,10 @@ export interface RoleConfig {
   userTargets: UserTargets | null;
   // user（admin 以外）が使える登録済みの証明書の名前の先頭（RPROXY_UI_USER_CERTS。#155）。null なら制限なし
   userCerts: string[] | null;
+  // 利用者・ロールごとに割り当てた登録済みの証明書の名前の先頭（RPROXY_UI_USER_CERTS_BY_SUB・RPROXY_UI_USER_CERTS_BY_ROLE。#160）。
+  // どちらも空なら null（今までどおり userCerts を全員で共通に使う）。certPrefixesFor で利用者ごとの先頭にする
+  userCertsBySub: Map<string, string[]> | null;
+  userCertsByRole: Map<string, string[]> | null;
   // user（admin 以外）がいつも使えない宛先（RPROXY_UI_PROTECTED_TARGETS。CIDR か CIDR:ポート。#155 のレビュー M3）。
   // 許可リストに入っていても断る（別のホストの DB・Kubernetes の Service の CIDR など）
   protectedTargets: ProtectedTarget[];
@@ -85,12 +89,35 @@ function parseProtected(value: string | undefined): ProtectedTarget[] {
   });
 }
 
+// 証明書の名前の先頭。区切りを見ずに文字の先頭で比べるので、区切り（- . _）で終える（tenant-a が tenant-ab-* に一致しないように）
+const CERT_PREFIX = /^[a-z0-9][a-z0-9._-]*[-._]$/;
+
 function parseCertPrefixes(value: string | undefined): string[] | null {
   const list = (value ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
   if (list.length === 0) return null;
-  const bad = list.find((n) => !/^[a-z0-9][a-z0-9._-]*$/.test(n));
-  if (bad !== undefined) throw new RoleConfigError(`RPROXY_UI_USER_CERTS は証明書の名前の先頭をカンマで区切って書いてください: ${bad}`);
+  const bad = list.find((n) => !CERT_PREFIX.test(n));
+  if (bad !== undefined) throw new RoleConfigError(`RPROXY_UI_USER_CERTS は証明書の名前の先頭（- . _ のどれかで終える）をカンマで区切って書いてください: ${bad}`);
   return list;
+}
+
+// <キー>:<先頭> をカンマで区切った割り当て（同じキーを並べれば先頭を足す）。キー（sub・ロールの名前）は最後の : の前
+// （先頭に : は入らない）。空なら null
+function parseCertAssignments(name: string, value: string | undefined): Map<string, string[]> | null {
+  const list = (value ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
+  if (list.length === 0) return null;
+  const out = new Map<string, string[]>();
+  for (const item of list) {
+    const i = item.lastIndexOf(':');
+    const key = i > 0 ? item.slice(0, i).trim() : '';
+    const prefix = i > 0 ? item.slice(i + 1).trim() : '';
+    if (key === '' || !CERT_PREFIX.test(prefix)) {
+      throw new RoleConfigError(`${name} は <名前>:<証明書の名前の先頭（- . _ のどれかで終える）> をカンマで区切って書いてください（例 tenant-a:tenant-a-,tenant-b:tenant-b-）: ${item}`);
+    }
+    const prefixes = out.get(key) ?? [];
+    if (!prefixes.includes(prefix)) prefixes.push(prefix);
+    out.set(key, prefixes);
+  }
+  return out;
 }
 
 function parsePorts(value: string): [number, number] {
@@ -122,6 +149,8 @@ export function roleConfig(env: Record<string, string | undefined> = process.env
     userNodes: parseNodes(env.RPROXY_UI_USER_NODES),
     userTargets: parseTargets(env.RPROXY_UI_USER_TARGETS),
     userCerts: parseCertPrefixes(env.RPROXY_UI_USER_CERTS),
+    userCertsBySub: parseCertAssignments('RPROXY_UI_USER_CERTS_BY_SUB', env.RPROXY_UI_USER_CERTS_BY_SUB),
+    userCertsByRole: parseCertAssignments('RPROXY_UI_USER_CERTS_BY_ROLE', env.RPROXY_UI_USER_CERTS_BY_ROLE),
     protectedTargets: parseProtected(env.RPROXY_UI_PROTECTED_TARGETS),
   };
 }
@@ -157,4 +186,28 @@ export function portsAllowed(access: Access, cfg: RoleConfig, first: number, las
 export function nodesAllowed(access: Access, cfg: RoleConfig, nodes: readonly string[]): boolean {
   if (access === 'admin' || cfg.userNodes === null) return true;
   return nodes.length > 0 && nodes.every((n) => cfg.userNodes!.includes(n));
+}
+
+// user（admin 以外）が使える登録済みの証明書の名前の先頭（#160）。null なら制限なし（admin と、どれも設定していないとき）。
+// - 割り当て（RPROXY_UI_USER_CERTS_BY_SUB・RPROXY_UI_USER_CERTS_BY_ROLE）がなければ、今までどおり RPROXY_UI_USER_CERTS（全員で共通）
+// - 割り当てがあれば、その利用者の sub とロールに割り当てた先頭を合わせたもの（RPROXY_UI_USER_CERTS は使わない）
+// - 割り当てを設定したのに、その利用者に割り当てがなければ何も選べない（[]。RPROXY_UI_USER_CERTS は使わない）
+export function certPrefixesFor(access: Access, cfg: RoleConfig, sub: string, roles: readonly string[]): string[] | null {
+  if (access === 'admin') return null;
+  if (cfg.userCertsBySub === null && cfg.userCertsByRole === null) return cfg.userCerts;
+  const out: string[] = [];
+  const add = (list: string[] | undefined) => { for (const p of list ?? []) if (!out.includes(p)) out.push(p); };
+  let assigned = false;
+  if (cfg.userCertsBySub?.has(sub)) {
+    assigned = true;
+    add(cfg.userCertsBySub.get(sub));
+  }
+  for (const r of roles) {
+    if (cfg.userCertsByRole?.has(r)) {
+      assigned = true;
+      add(cfg.userCertsByRole.get(r));
+    }
+  }
+  // 割り当てを設定したら、割り当てのない利用者は何も選べない（RPROXY_UI_USER_CERTS には戻さない。#160 の決まり）
+  return assigned ? out : [];
 }

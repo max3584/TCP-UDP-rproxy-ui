@@ -77,7 +77,7 @@ const status = (port: number, extra: Record<string, unknown> = {}) => ({
 });
 
 function call(action: string, body?: unknown, method = 'POST', query: Record<string, string> = {}) {
-  const req = { method, query: { ...query, forward: action }, body, headers: {} } as unknown as NextApiRequest;
+  const req = { method, query: { ...query, forward: action }, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest;
   const res: any = {};
   res.status = vi.fn(() => res);
   res.json = vi.fn(() => res);
@@ -525,6 +525,50 @@ describe('nodes and groups (#98)', () => {
       expect((await call('add', { ...tcpRule, target: 'c' })).status).toBe(200);
       const info = await call('nodes', undefined, 'GET');
       expect(info.body.allowedTargets).toEqual(['c']);
+    } finally {
+      delete process.env.RPROXY_UI_USER_NODES;
+    }
+  });
+
+  // #164：絞った利用者のダッシュボードと 1 件のルールは、触れないノードに聞かず、その状態・固定ルール・誤りの文を返さない
+  it('RPROXY_UI_USER_NODES: the dashboard and rule do not show (or ask) the nodes users may not touch', async () => {
+    process.env.RPROXY_UI_USER_NODES = 'c';
+    try {
+      const asked: string[] = [];
+      pool.query.mockImplementation(async (q: string) => (q.includes('FROM forward_rules') ? [row(2, 'c'), row(1, 'ha')] : []));
+      mocks.listRules.mockImplementation(onNode(asked, (node) => {
+        if (node === 'a') return [status(9443, { origin: 'static', listen_port: 9443 })];
+        if (node === 'b') throw new RproxyError('rproxy に接続できません: secret-host:8081', 'unreachable', 0);
+        return [status(8002)];
+      }));
+      const { status: code, body } = await call('dashboard', undefined, 'GET');
+      expect(code).toBe(200);
+      expect([...new Set(asked)]).toEqual(['c']);
+      expect(body.nodes.map((n: any) => n.name)).toEqual(['c']);
+      expect(body.rproxyError).toBeNull();
+      expect(body.rules.some((r: any) => r.origin === 'static')).toBe(false);
+      expect(body.groups).toBeUndefined();
+      // 設定を変えた後に残った自分のグループのルールは、聞かずに unknown
+      const old = body.rules.find((r: any) => r.id === 1);
+      expect(old.nodes.map((n: any) => [n.node, n.state])).toEqual([['a', 'unknown'], ['b', 'unknown']]);
+      expect(JSON.stringify(body)).not.toContain('secret-host');
+
+      mocks.getRule.mockImplementation(onNode(asked, () => status(9443, { origin: 'static', listen_port: 9443 })));
+      asked.length = 0;
+      const denied = await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '9443', target: 'a' });
+      expect([denied.status, denied.body.code]).toEqual([403, 'node_not_allowed']);
+      expect(asked).toEqual([]);
+      expect((await call('rule', undefined, 'GET', { protocol: 'tcp', addr: '0.0.0.0', port: '9443', target: 'c' })).status).toBe(200);
+      expect(asked).toEqual(['c']);
+
+      // インポートの確かめ（dryRun）も、触れないノードに聞く前に 403（固定ルールのキー・予約済みのアドレスを見せない）
+      mocks.listRules.mockClear();
+      mocks.getInterfaces.mockClear();
+      const text = JSON.stringify({ format: 'rproxy-ui-export', version: 1, rules: [{ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8500, remote_addr: 'example.com', remote_port: 80 }] });
+      const dry = await call('import', { text: text, target: 'a', dryRun: true });
+      expect([dry.status, dry.body.code]).toEqual([403, 'node_not_allowed']);
+      expect(mocks.listRules).not.toHaveBeenCalled();
+      expect(mocks.getInterfaces).not.toHaveBeenCalled();
     } finally {
       delete process.env.RPROXY_UI_USER_NODES;
     }

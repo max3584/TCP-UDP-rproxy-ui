@@ -17,8 +17,13 @@ describe('isCrossSiteRequest', () => {
     expect(isCrossSiteRequest(req('POST', { host: 'ui.internal', referer: 'http://ui.internal/rules/new' }), env)).toBe(false);
   });
 
-  it('ブラウザでない要求（Origin も Referer もない）は通す', () => {
-    expect(isCrossSiteRequest(req('POST', { host: 'ui.internal' }), env)).toBe(false);
+  // #164：Sec-Fetch-Site も Origin・Referer もない要求は断る（スクリプトは Origin を付ける）
+  it('Sec-Fetch-Site も Origin・Referer もない要求は断り、Sec-Fetch-Site: same-origin だけ・Origin だけなら通す', () => {
+    expect(isCrossSiteRequest(req('POST', { host: 'ui.internal' }), env)).toBe(true);
+    expect(isCrossSiteRequest(req('POST', {}), env)).toBe(true);
+    expect(isCrossSiteRequest(req('POST', { host: 'ui.internal', 'sec-fetch-site': 'same-origin' }), env)).toBe(false);
+    expect(isCrossSiteRequest(req('POST', { host: '127.0.0.1:3000', origin: 'https://rproxy.example.com' }), env)).toBe(false);
+    expect(isCrossSiteRequest(req('GET', { host: 'ui.internal' }), env)).toBe(false);
   });
 
   it('ほかのオリジン・Sec-Fetch-Site が same-origin でない・Origin: null は断る', () => {

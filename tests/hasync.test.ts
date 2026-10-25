@@ -264,7 +264,13 @@ describe('keepalived endpoints', () => {
     expect(checkHaToken('Bearer secret-2', env)).toEqual({ ok: true });
     expect(checkHaToken('Bearer secret-3', env)).toMatchObject({ ok: false, status: 401 });
     expect(checkHaToken(undefined, env)).toMatchObject({ ok: false, status: 401 });
-    expect(checkHaToken('Bearer x', { RPROXY_UI_HA_TOKEN_FILE: join(dir, 'none') })).toMatchObject({ ok: false, status: 500 });
+    // #164：読めないファイルのパスと理由は返さない（ログだけ）。Bearer のない要求はファイルを読む前に 401
+    const unreadable = checkHaToken('Bearer x', { RPROXY_UI_HA_TOKEN_FILE: join(dir, 'none') });
+    expect(unreadable).toMatchObject({ ok: false, status: 500, code: 'ha_token_file' });
+    expect(JSON.stringify(unreadable)).not.toContain(dir);
+    expect(JSON.stringify(unreadable)).not.toContain('ENOENT');
+    expect(checkHaToken(undefined, { RPROXY_UI_HA_TOKEN_FILE: join(dir, 'none') })).toMatchObject({ ok: false, status: 401, code: 'unauthorized' });
+    expect(checkHaToken('Basic eA==', { RPROXY_UI_HA_TOKEN_FILE: join(dir, 'none') })).toMatchObject({ ok: false, status: 401 });
   });
 
   it('GET ha/ready: 200 in sync, 503 with the issues otherwise; 404 without the token file', async () => {

@@ -9,9 +9,12 @@ import { needsRecreateOnNode, ruleDrift } from './drift';
 import { ruleFromStatus } from './dashboard';
 import { v04Of, v04PatchFields } from './v04';
 import type { V04Settings } from './v04';
+import { dbSslOptions } from './dbtls';
 
 // MariaDBのコネクションプールを作成
 function createPool() {
+  // DB_SSL・DB_SSL_CA・DB_SSL_VERIFY（components/dbtls.ts）。TLS を使わなければ今までと同じ
+  const ssl = dbSslOptions();
   return mariadb.createPool({
     host: process.env.DB_HOST,
     port: Number(process.env.DB_PORT) || 3306,
@@ -19,6 +22,7 @@ function createPool() {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     connectionLimit: 10,
+    ...(ssl ? { ssl: ssl } : {}),
   });
 }
 

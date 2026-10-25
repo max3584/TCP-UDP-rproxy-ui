@@ -97,6 +97,9 @@ DB_PORT=3307
 DB_DATABASE="[database]"
 DB_USER="[username]"
 DB_PASSWORD="[password]"
+# TLS to the DB ("TLS to the DB" in the README). Writing DB_SSL_CA turns TLS on without DB_SSL
+# DB_SSL=true
+# DB_SSL_CA="/etc/rproxy-ui/db-ca.pem"
 
 # Keycloak
 KEYCLOAK_CLIENT_ID="[client_id]"
@@ -128,6 +131,7 @@ By default rproxy-api creates the Unix socket with mode 660, so add the user tha
 
 The Keycloak realm can be created from `keycloak/realm-rproxy-dev.json` (load it in the admin console with "Create realm" → "Resource file").
 The file contains no client secret and no users, so after loading it, check the secret under "Credentials" of the client `rproxy-ui` and set it as `KEYCLOAK_CLIENT_SECRET`. The URLs are for the con0 development environment (`http://con0.dev.home:3001`).
+The file is for development (no password policy or OTP, http URIs). To base production on it, change it as in "3. Keycloak" of [docs/en/PRODUCTION.md](docs/en/PRODUCTION.md).
 
 Register `${NEXTAUTH_URL}/api/auth/callback/keycloak` in "Valid redirect URIs" of the Keycloak client.
 
@@ -153,7 +157,10 @@ Keycloak roles decide who can do what (the API routes check on every request).
 For the rules of `rproxy-user` (people without `rproxy-admin`), the API routes check the following (the form only makes the file fields read-only and shows notes). `rproxy-admin` is not limited, as before.
 
 - **Fields naming server files cannot be written** (403 `file_not_allowed`): `cert_file`, `chain_file` and `key_file` of `tls.certificates[]`, `ca_file` and `chain_file` of `tls.client_auth`, `ca_file`, `cert_file`, `chain_file` and `key_file` of `tls.upstream` and `tls.routes[].upstream`, the files of an L7 service's `tls`, `users_file` of `basic_auth`, `client_secret_file`, `cookie_secret_file` and `ca_file` of `oidc`: every `*_file` field (also in middlewares written as JSON). rproxy can use any key it can read, so a user terminating TLS on another port with the dashboard's key could steal an administrator's cookie.
-- **TLS certificates are picked by stored name**: certificates administrators stored with rproxy-api v0.4.2's certificate API (`PUT /certs/{name}`, `features.cert_store`) are used as `{"cert": "<name>"}` in `tls.certificates[]`. "+ Add a stored certificate" in the form offers the names from `/api/forward/certs` (rproxy's `GET /certs`; the UI token needs `certs:read`; names, SANs and expiry only). Name prefixes such as `RPROXY_UI_USER_CERTS=tenant-,shared-` limit the names users can pick (others: 403 `cert_not_allowed`; empty (the default) means every name). The prefixes are shared by all users (they cannot differ per user) and are compared as plain string prefixes without looking for a separator (`tenant` also matches `tenantx`, so end them with a separator such as `tenant-`). If the dashboard's certificate is in the certificate API, always leave it out this way. The node asked with `?target=` must also be inside `RPROXY_UI_USER_NODES`.
+- **TLS certificates are picked by stored name**: certificates administrators stored with rproxy-api v0.4.2's certificate API (`PUT /certs/{name}`, `features.cert_store`) are used as `{"cert": "<name>"}` in `tls.certificates[]`. "+ Add a stored certificate" in the form offers the names from `/api/forward/certs` (rproxy's `GET /certs`; the UI token needs `certs:read`; names, SANs and expiry only). Name prefixes such as `RPROXY_UI_USER_CERTS=tenant-,shared-` limit the names users can pick (others: 403 `cert_not_allowed`; empty (the default) means every name). The prefixes are compared as plain string prefixes without looking for a separator, so they must end with `-`, `.` or `_` (`tenant-a` would also match `tenant-ab-www`; other endings stop the UI at startup; the same holds for the prefixes of `RPROXY_UI_USER_CERTS_BY_*`). If the dashboard's certificate is in the certificate API, always leave it out this way. The node asked with `?target=` must also be inside `RPROXY_UI_USER_NODES`.
+  - **Assignments per user or role** (#160): `RPROXY_UI_USER_CERTS` is shared by all users, so a tenant-a user could pick `tenant-b-www` and terminate TLS with it on their own port on the same IP (cookies are not separated by port). To separate tenants, assign prefixes with `RPROXY_UI_USER_CERTS_BY_ROLE=tenant-a:tenant-a-,tenant-b:tenant-b-` (Keycloak role:prefix) or `RPROXY_UI_USER_CERTS_BY_SUB=<sub>:alice-` (Keycloak `sub`:prefix). Separate entries with commas; repeat a role or `sub` to add prefixes (a role name may contain `:`; the prefix is after the last `:`).
+  - Users with an assignment can pick only the prefixes assigned to their `sub` and roles together; `RPROXY_UI_USER_CERTS` does not apply to them. When either assignment is set, users without one can pick nothing (they do not fall back to `RPROXY_UI_USER_CERTS`). The shared `RPROXY_UI_USER_CERTS` applies only when neither assignment is set (the default; unchanged).
+  - The assignment is checked for the `/api/forward/certs` list and on every path that takes certificate names (add, modify, plan, import, revert, copy, move, per-node overrides). Names already on the user's own rule can stay as long as they are unchanged.
 - **OIDC middlewares cannot be added or changed** (403 `middleware_not_allowed`): rproxy also connects to the `token_endpoint` and `jwks_uri` the `issuer`'s discovery returns, which the UI cannot check. The same setting already there can stay (secret files cannot be written either, so users could not create one anyway).
 - **Destinations** (`remote_addr`, `targets`, the target health check (`health_check.port`), the destinations of `tls.routes[]`, the `url` of L7 services, a route's `to`, `address` of `forward_auth`, `issuer` of `oidc`, and the destinations of per-node overrides) (403 `target_not_allowed`):
   - URLs are read strictly (for everyone): the host is a name, IPv4 or `[IPv6]` (no zone ID), the port only digits from 1 to 65535, no userinfo (`@`). Unreadable URLs get 400 `invalid` before saving; an unreadable URL already stored is 403 for users.
@@ -166,6 +173,7 @@ For the rules of `rproxy-user` (people without `rproxy-admin`), the API routes c
 - **Values already there can stay**: when changing an own rule, file paths, certificate names and destinations already on the current rule can be saved again unchanged (compared as pairs of field location and value; reordering arrays or renaming services and middlewares keeps the same values). Only new or changed values are refused. Replacing on import and reverting compare with the current rule; new rules (add, import of a new rule, copy or move to another node) have no previous values, so everything is checked. Users' rules from before the upgrade keep running, so administrators should review the file paths and destinations of users' rules.
 - **Paths of rules users do not own are hidden**: when static rules (rules of rproxy's settings file) are shown to users (dashboard, details), the `*_file` values, the files of certificate expiry and those paths in error texts become `<hidden>`.
 - State-changing APIs (`POST /api/forward/*`) refuse requests from other sites with 403 `csrf` (when `Sec-Fetch-Site` is not same-origin, or the host of `Origin` (else `Referer`) matches none of the request's `Host`, `X-Forwarded-Host` and `NEXTAUTH_URL`), as CSRF protection on top of the SameSite=Lax cookie. A reverse proxy in front should pass `Host` or `X-Forwarded-Host`, or set `NEXTAUTH_URL` to the URL users open.
+  - Requests with neither `Sec-Fetch-Site` nor `Origin` / `Referer` also get 403 `csrf` (from v0.4.10; current browsers always send one of them with a POST from the page). A script that calls the API with a sign-in cookie (not a documented use) should send `Origin: <the origin of NEXTAUTH_URL>`. The keepalived endpoints (`/api/forward/ha/*`, a bearer token) do not go through this check and keep working. A reverse proxy in front must not drop `Origin`, `Referer` or `Sec-Fetch-*`.
 - The `auth_id` in the history (`forward_rules_log`) is the user who performed the operation (the administrator, if an administrator changed someone else's rule).
 
 ## Security
@@ -189,6 +197,20 @@ The UI adds these headers to every response (pages, API and static files; `proxy
 - The Keycloak origin in `form-action` comes from `KEYCLOAK_ISSUER` (the sign-in form moves on to Keycloak).
 - Under `next dev` (development), `'unsafe-eval'` is added to `script-src` and `ws:`/`wss:` to `connect-src`.
 - rproxy in front works at L4 (TCP and TLS termination) and cannot add HTTP headers. The UI adds them itself, so nothing needs to add headers in front (if you put an HTTP reverse proxy in front, do not add the same headers twice).
+
+### TLS to the DB
+
+When the DB is on another host, use TLS between the UI and the DB (`components/dbtls.ts`; `db/migrate.mjs` reads the same variables).
+
+| Variable | Meaning |
+|---|---|
+| `DB_SSL` | `true` uses TLS and checks the DB's certificate (without `DB_SSL_CA`, Node.js's bundled public CAs (the Mozilla list) plus `NODE_EXTRA_CA_CERTS`; the OS CA store is not used; the name is compared with `DB_HOST`). Default `false` |
+| `DB_SSL_CA` | File with the CA (PEM) that checks the DB's certificate. Writing it turns TLS on without `DB_SSL` (the `rproxy-ui` user must be able to read it) |
+| `DB_SSL_VERIFY` | `false` skips the certificate check (testing only; not recommended) |
+
+- Wrong values and an unreadable CA stop the UI at startup (the reason is in `journalctl -u rproxy-ui`).
+- On the MariaDB side, enforce TLS with `require_secure_transport=ON` or `ALTER USER 'rproxy_ui'@'%' REQUIRE SSL` for the UI's user.
+- A MariaDB on the same host (`DB_HOST=127.0.0.1`) does not need TLS.
 
 ### Sessions
 
@@ -421,6 +443,7 @@ Rules created by calling the rproxy API directly (CI, scripts, Kubernetes contro
 You can filter by protocol, listen address, port, operation and period (`rproxy-admin` can also filter by the user who performed the operation). The rule details screen also shows the history of that rule.
 
 - What you can see: users see the history they performed and the history of the rules they currently own. `rproxy-admin` sees everything.
+  - **Earlier owners' versions are visible too**: history rows have no owner column, and rules are matched by key (protocol, listen address, port and, with nodes configured, the node / group). A user who creates a rule with the key of a rule someone else deleted also sees the versions from when the other person owned it (who performed it, targets, stored certificate names, file paths, allowed sources, labels and so on; nothing is hidden) as "history of the rules they currently own", and "Revert to this version" can create the same contents (the user limits check them like new values). To hide old versions between users, an administrator deletes them from `forward_rules_log` with the DB's admin user (e.g. `DELETE FROM forward_rules_log WHERE protocol = 'tcp' AND src_addr = '0.0.0.0' AND src_port = 8443 AND updated_at < '2026-10-01'`).
 - "Revert to this version" restores the contents at that point. For change and add rows it restores the contents after that operation; for delete rows, the contents just before deletion.
   If the rule still exists it is replaced (a version that differs in source IP handling, port range or L4 / L7 is recreated); if it was deleted it is recreated. Reverts are also recorded in the history.
 - rproxy static rules are not in the DB, so they do not appear in the history (a revert is not possible when a static rule with the same key exists).
@@ -475,7 +498,7 @@ default_target: ha                   # chosen first on the add screen (optional;
 - **Per node**: "Pause all / Resume all" on a node's tab of the dashboard pauses or resumes all of that node's rules (rules on that node as a whole, group rules on that node only). The scope (node / group) can be chosen next to "Export".
 - **Syncing before an act / stb promotion** (#109): so that a stb that drifted from act (= the DB definition) is not promoted as is,
   - the UI checks active_standby groups every `RPROXY_UI_HA_SYNC_SECS` (30 seconds by default; 0 stops it) and resends drifted / missing rules automatically (the history records "Resend" by `system`). `auto_resend: false` on a group only shows the drift. After 3 failures in a row the dashboard shows a warning. With several UIs running, a DB lock makes only one of them run each check.
-  - endpoints for keepalived (instead of a Keycloak session, they take a token from `RPROXY_UI_HA_TOKEN_FILE` (one per line) as `Authorization: Bearer`; 404 when it is not set): `GET /api/forward/ha/ready?node=` (200 when in sync, 503 with the details otherwise) and `POST /api/forward/ha/notify?node=&state=MASTER` (resends to the node right after it is promoted).
+  - endpoints for keepalived (instead of a Keycloak session, they take a token from `RPROXY_UI_HA_TOKEN_FILE` (one per line) as `Authorization: Bearer`; 404 when it is not set; 401 without a bearer token; 500 `ha_token_file` when the file cannot be read (the path and the reason go to the UI's log only)): `GET /api/forward/ha/ready?node=` (200 when in sync, 503 with the details otherwise) and `POST /api/forward/ha/notify?node=&state=MASTER` (resends to the node right after it is promoted).
   - scripts and an example configuration are in `contrib/keepalived/` (`/usr/share/doc/rproxy-ui/examples/keepalived/` with the .deb). The track_script lowers the priority only on 503 and does nothing when the UI cannot be reached (if act fails, the stb is promoted even when not in sync).
   - the "act / stb" screen (`/ha`; administrators only; opened from the dashboard's node list) shows each group's act and whether each node is in sync, and "Sync this node" resends. It also guides going back to the original act (failback). keepalived moves the VIP.
 - **Node-scoped roles**: `RPROXY_UI_USER_NODES=node1,node2` limits the nodes `rproxy-user` can change (a group only when all its nodes are listed; otherwise 403 `node_not_allowed`; the add screen's choices are limited too). `rproxy-admin` is not restricted. No restriction by default.

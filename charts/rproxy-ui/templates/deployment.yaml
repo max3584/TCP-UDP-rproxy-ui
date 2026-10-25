@@ -54,7 +54,7 @@ spec:
             {{- include "rproxy-ui.dbEnv" . | nindent 12 }}
             - name: RPROXY_UI_USAGE_SECS
               value: {{ .Values.usage.intervalSeconds | quote }}
-            {{- range $k, $v := dict "RPROXY_UI_ROLES_CLAIM" .Values.roles.claim "RPROXY_UI_ADMIN_ROLE" .Values.roles.adminRole "RPROXY_UI_USER_ROLE" .Values.roles.userRole "RPROXY_UI_USER_PORTS" .Values.roles.userPorts "RPROXY_UI_USER_NODES" .Values.roles.userNodes "RPROXY_UI_USER_TARGETS" .Values.roles.userTargets "RPROXY_UI_USER_CERTS" .Values.roles.userCerts "RPROXY_UI_PROTECTED_TARGETS" .Values.roles.protectedTargets }}
+            {{- range $k, $v := dict "RPROXY_UI_ROLES_CLAIM" .Values.roles.claim "RPROXY_UI_ADMIN_ROLE" .Values.roles.adminRole "RPROXY_UI_USER_ROLE" .Values.roles.userRole "RPROXY_UI_USER_PORTS" .Values.roles.userPorts "RPROXY_UI_USER_NODES" .Values.roles.userNodes "RPROXY_UI_USER_TARGETS" .Values.roles.userTargets "RPROXY_UI_USER_CERTS" .Values.roles.userCerts "RPROXY_UI_USER_CERTS_BY_SUB" .Values.roles.userCertsBySub "RPROXY_UI_USER_CERTS_BY_ROLE" .Values.roles.userCertsByRole "RPROXY_UI_PROTECTED_TARGETS" .Values.roles.protectedTargets }}
             {{- if $v }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -96,6 +96,7 @@ spec:
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
             - {name: cache, mountPath: /app/.next/cache}
+            {{- include "rproxy-ui.dbTlsMount" . | nindent 12 }}
             {{- if .Values.nodes }}
             - {name: nodes, mountPath: /etc/rproxy-ui/nodes, readOnly: true}
             {{- end }}
@@ -109,6 +110,7 @@ spec:
       volumes:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         - {name: cache, emptyDir: {sizeLimit: 256Mi}}
+        {{- include "rproxy-ui.dbTlsVolume" . | nindent 8 }}
         {{- if .Values.nodes }}
         - name: nodes
           configMap: {name: {{ include "rproxy-ui.fullname" . }}-nodes}

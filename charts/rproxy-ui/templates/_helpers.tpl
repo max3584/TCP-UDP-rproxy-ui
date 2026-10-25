@@ -71,6 +71,41 @@ app.kubernetes.io/component: database
   value: {{ .Values.db.user | quote }}
 - name: DB_PASSWORD
   valueFrom: {secretKeyRef: {name: {{ include "rproxy-ui.existingSecret" . }}, key: DB_PASSWORD}}
+{{ include "rproxy-ui.dbTlsEnv" . }}
+{{- end -}}
+
+{{/* TLS to the DB (db.tls): env, the CA volume and its mount (empty when off) */}}
+{{- define "rproxy-ui.dbTlsEnv" -}}
+{{- if .Values.db.tls.enabled }}
+- {name: DB_SSL, value: "true"}
+{{- if .Values.db.tls.caSecret }}
+- name: DB_SSL_CA
+  value: {{ printf "/etc/rproxy-ui/db-ca/%s" .Values.db.tls.caKey | quote }}
+{{- end }}
+{{- if not .Values.db.tls.verify }}
+- {name: DB_SSL_VERIFY, value: "false"}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{- define "rproxy-ui.dbTlsMount" -}}
+{{- if and .Values.db.tls.enabled .Values.db.tls.caSecret }}
+- {name: db-ca, mountPath: /etc/rproxy-ui/db-ca, readOnly: true}
+{{- end }}
+{{- end -}}
+
+{{- define "rproxy-ui.dbTlsVolume" -}}
+{{- if and .Values.db.tls.enabled .Values.db.tls.caSecret }}
+- name: db-ca
+  secret: {secretName: {{ .Values.db.tls.caSecret }}, defaultMode: 0444}
+{{- end }}
+{{- end -}}
+
+{{/* mariadb-dump options for db.tls */}}
+{{- define "rproxy-ui.dbDumpTls" -}}
+{{- if .Values.db.tls.enabled -}}
+--ssl{{ if .Values.db.tls.caSecret }} --ssl-ca={{ printf "/etc/rproxy-ui/db-ca/%s" .Values.db.tls.caKey }}{{ end }}{{ if .Values.db.tls.verify }} --ssl-verify-server-cert{{ else }} --disable-ssl-verify-server-cert{{ end }}
+{{- end -}}
 {{- end -}}
 
 {{- define "rproxy-ui.podSecurityContext" -}}

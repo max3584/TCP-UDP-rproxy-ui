@@ -6,6 +6,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { expect, test, type Page } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 
 // ほかの spec と重ならないポート（前は settings.spec と同じ 19441・19442 で、片方の後始末が失敗すると次の試験も落ちた）
 const ISSUE_PORT = 19541;
@@ -31,7 +32,7 @@ function issuerOf(port: number, servername: string): Promise<string> {
 
 // 後始末：接続を使い回した要求がサーバの閉じた接続に当たったら（socket hang up）、1 回だけ送り直す（#143）
 async function deleteRule(page: Page, port: number): Promise<void> {
-  const send = () => page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
+  const send = () => page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
   try {
     await send();
   } catch (err) {
@@ -138,7 +139,7 @@ test.describe('ACME certificates', () => {
   });
 
   test("rproxy's allowlist refusals come back as 400 invalid", async ({ page }) => {
-    const res = await page.request.post('/api/forward/add', {
+    const res = await page.request.post('/api/forward/add', { headers: SAME_ORIGIN,
       data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: OFFLINE_PORT, distAddr: '127.0.0.1', distPort: BACKEND_PORT,
         tls: { mode: 'terminate', certificates: [{ acme: 'pebble-http', domains: ['www.evil.example'] }] } },
     });
@@ -153,7 +154,7 @@ test.describe('ACME certificates', () => {
       test.setTimeout(120_000);
       await page.setViewportSize({ width: vp.width, height: vp.height });
       await deleteRule(page, OFFLINE_PORT);
-      const res = await page.request.post('/api/forward/add', {
+      const res = await page.request.post('/api/forward/add', { headers: SAME_ORIGIN,
         data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: OFFLINE_PORT, distAddr: '127.0.0.1', distPort: BACKEND_PORT,
           tls: { mode: 'terminate', certificates: [{ acme: 'offline', domains: [OFFLINE_NAME] }] } },
       });

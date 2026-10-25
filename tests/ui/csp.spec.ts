@@ -3,6 +3,7 @@
 // Keycloak の代わりに、OIDC の discovery と認可のエンドポイントだけの偽のサーバを動かす（playwright.config.ts の FAKE_ISSUER）
 import http from 'node:http';
 import { expect, test, type Page } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 import { FAKE_ISSUER, FAKE_ISSUER_PORT, baseURL } from '../../playwright.config';
 
 const AUTH_ENDPOINT = `${FAKE_ISSUER}/protocol/openid-connect/auth`;
@@ -100,8 +101,8 @@ test.describe('security headers and CSP', () => {
   test('the pages work under the CSP (no violations)', async ({ page }) => {
     const violations = await watchCsp(page);
     const rule = { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: RULE_PORT };
-    await page.request.post('/api/forward/delete', { data: rule });
-    const add = await page.request.post('/api/forward/add', { data: { ...rule, distAddr: '127.0.0.1', distPort: 9 } });
+    await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: rule });
+    const add = await page.request.post('/api/forward/add', { headers: SAME_ORIGIN, data: { ...rule, distAddr: '127.0.0.1', distPort: 9 } });
     expect(add.status(), await add.text()).toBe(200);
     try {
       for (const path of PAGES) {
@@ -115,7 +116,7 @@ test.describe('security headers and CSP', () => {
       await expect(page.getByRole('heading', { level: 1 })).toContainText(String(RULE_PORT));
       await expect(page.getByText(/127\.0\.0\.1:9\b/).first()).toBeVisible();
     } finally {
-      await page.request.post('/api/forward/delete', { data: rule });
+      await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: rule });
     }
     // client-side navigation as well
     await page.goto('/');

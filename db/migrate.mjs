@@ -16,6 +16,7 @@
 // DB_APP_USER・DB_APP_PASSWORD（DB_APP_HOST、既定 %）：UI の DB ユーザーを作り（あればパスワードを合わせ）、db/README.md の権限を渡す。
 // DB_BACKUP_USER・DB_BACKUP_PASSWORD（DB_BACKUP_HOST、既定 %）：バックアップ用の読むだけのユーザー（SELECT・LOCK TABLES・SHOW VIEW）。
 // --wait <秒>：DB に接続できるまで待つ（Job で DB と一緒に起動するとき）。--dry-run：何をするかを出すだけ。--status：当てたものと残り。
+// TLS：DB_SSL・DB_SSL_CA・DB_SSL_VERIFY（UI の components/dbtls.ts と同じ規則。dbSsl）。
 // 依存は mariadb のドライバだけ（UI と同じもの。.deb では /usr/lib/rproxy-ui/node_modules から読む）。テストは tests/migrate.test.ts
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -177,6 +178,37 @@ async function ensureUser(conn, db, user, password, host, grants) {
   }
 }
 
+// DB への接続の TLS（components/dbtls.ts の dbSslOptions と同じ規則。tests/dbtls.test.ts が両方を比べる）。使わなければ undefined
+/**
+ * @param {Record<string, string | undefined>} [e]
+ * @param {(path: string) => string} [read]
+ */
+export function dbSsl(e = process.env, read = (p) => readFileSync(p, 'utf8')) {
+  const flag = (name, value, fallback) => {
+    const v = String(value ?? '').trim().toLowerCase();
+    if (v === '') return fallback;
+    if (['1', 'true', 'yes', 'on'].includes(v)) return true;
+    if (['0', 'false', 'no', 'off'].includes(v)) return false;
+    throw new Error(`${name} は true か false を書いてください: ${value}`);
+  };
+  const caPath = String(e.DB_SSL_CA ?? '').trim();
+  const on = flag('DB_SSL', e.DB_SSL, caPath !== '');
+  if (!on) {
+    if (caPath !== '') throw new Error('DB_SSL=false と DB_SSL_CA は一緒に書けません。');
+    return undefined;
+  }
+  const verify = flag('DB_SSL_VERIFY', e.DB_SSL_VERIFY, true);
+  let ca;
+  if (caPath !== '') {
+    try {
+      ca = read(caPath);
+    } catch (err) {
+      throw new Error(`DB_SSL_CA（${caPath}）を読めません: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { ...(ca !== undefined ? { ca } : {}), rejectUnauthorized: verify };
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const opts = parseArgs(argv);
   if (opts.help) {
@@ -186,7 +218,9 @@ export async function main(argv = process.argv.slice(2)) {
   const db = env('DB_DATABASE', '');
   if (db === '') throw new Error('DB_DATABASE を指定してください');
   const driver = await loadDriver();
+  const ssl = dbSsl();
   const conn = await connect(driver, {
+    ...(ssl ? { ssl } : {}),
     host: env('DB_HOST', '127.0.0.1'),
     port: Number(env('DB_PORT', '3306')),
     user: env('DB_ADMIN_USER', env('DB_USER', 'root')),

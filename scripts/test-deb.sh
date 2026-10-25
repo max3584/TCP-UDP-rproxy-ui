@@ -80,6 +80,9 @@ for _ in $(seq 60); do [ "$(code /)" = 200 ] && break; sleep 0.5; done
 pid=$(systemctl show -p MainPID --value rproxy-ui)
 [ "$(ps -o user= -p "$pid" | tr -d ' ')" = rproxy-ui ] || fail "not running as rproxy-ui"
 grep -Eq "^Groups:.*\\b$(getent group rproxy | cut -d: -f3)\\b" "/proc/$pid/status" || fail "the service does not have the rproxy group"
+# 硬くしたユニット（#164）：capability を持たず、umask 0077
+grep -Eq '^CapBnd:[[:space:]]*0+$' "/proc/$pid/status" || fail "the service keeps capabilities (CapabilityBoundingSet=)"
+grep -Eq '^Umask:[[:space:]]*0077$' "/proc/$pid/status" || fail "the service does not run with UMask=0077"
 [ "$(code /api/auth/providers)" = 200 ] || fail "NextAuth is not configured"
 [ "$(code /api/forward/capabilities)" = 401 ] || fail "API answered without a session"
 # keepalived の口は RPROXY_UI_HA_TOKEN_FILE がなければ使えない（404）。スクリプトは 503 のときだけ優先度を下げる

@@ -127,7 +127,7 @@ describe('GET /acme (acmeInfoFromRproxy)', () => {
 describe('/api/forward/acme', () => {
   const session = { user: { id: 'user-1', name: 'n', email: 'e', image: '', role: 'rproxy-user', roles: ['rproxy-user'] }, expires: '' };
   const call = (method = 'GET') => {
-    const req = { method, query: {}, headers: {} } as unknown as NextApiRequest;
+    const req = { method, query: {}, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest;
     const res: any = {};
     res.status = vi.fn(() => res);
     res.json = vi.fn(() => res);

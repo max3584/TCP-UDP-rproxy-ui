@@ -72,7 +72,7 @@ import mariadb, { PoolConnection } from 'mariadb';
 import { localizedApi } from '@/i18n/server';
 import { rejectCrossSite } from '@/components/apiguard';
 import { translate } from '@/i18n/core';
-import { Access, RoleConfig, accessOf, nodesAllowed, portsAllowed, roleConfig } from '@/components/roles';
+import { Access, RoleConfig, accessOf, certPrefixesFor, nodesAllowed, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
 import { exportDoc, extraAddrs, formatDoc, parseDoc, remoteFields, settingsRuleToBody, starttlsFields, toRproxyRule } from '@/components/settingsdoc';
 import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, ruleChanges } from '@/components/history';
@@ -105,6 +105,8 @@ interface Actor {
   roles: RoleConfig;
   // ノードとグループ（RPROXY_UI_NODES。なければ RPROXY_API_URL の 1 台）
   cfg: NodesConfig;
+  // 使える登録済みの証明書の名前の先頭（certPrefixesFor。null なら制限なし。#160）
+  certPrefixes: string[] | null;
 }
 
 // ルールの置き場所（#98）。target は DB の target 列の値で、RPROXY_UI_NODES がなければ null（列を使わない）。
@@ -183,6 +185,15 @@ function checkNodes(actor: Actor, place: Place | RproxyNode[]): void {
   }
 }
 
+// 読むだけの要求（1 件のルール）でも、user（admin 以外）が RPROXY_UI_USER_NODES の外のノードを名指ししたら 403
+// （触れないノードの状態・固定ルール・誤りの文を返さない。#164）
+function checkNodesVisible(actor: Actor, place: Place): void {
+  if (place.target === null) return;
+  if (!nodesAllowed(actor.access, actor.roles, place.nodes.map((n) => n.name))) {
+    throw new HttpError(403, `ノード ${place.nodes.map((n) => n.name).join(', ')} は管理者だけが触れます（利用者が触れるのは ${(actor.roles.userNodes ?? []).join(', ')}）。`, 'node_not_allowed');
+  }
+}
+
 // 見るだけのノード・グループ（Kubernetes の rproxy。RPROXY_UI_K8S_DISCOVERY）への変更は 409 readonly_node
 function checkWritable(cfg: NodesConfig, names: unknown[]): void {
   const hit = names.find((n): n is string => typeof n === 'string' && isReadonlyTarget(cfg, n));
@@ -255,7 +266,7 @@ async function protectedFor(actor: Actor, place: Place, logger: AppLogger) {
 
 // 利用者のルールのうち、その場で決まるものを確かめる（admin は何もしない）。確かめる転送先（前の内容にないものと、読めない URL）を返す：
 // - サーバのファイルを指す項目は、前の内容にない値を断る（403 file_not_allowed）
-// - 登録済みの証明書の名前は、前の内容になく RPROXY_UI_USER_CERTS の外なら断る（403 cert_not_allowed）
+// - 登録済みの証明書の名前は、前の内容になく利用者の先頭（RPROXY_UI_USER_CERTS・割り当て。certPrefixesFor）の外なら断る（403 cert_not_allowed）
 // - oidc のミドルウェアは、前の内容と同じ設定でなければ断る（403 middleware_not_allowed。discovery の先を確かめられないため）
 function userRuleSync(actor: Actor, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null): DestRef[] {
   if (actor.access === 'admin') return [];
@@ -265,9 +276,9 @@ function userRuleSync(actor: Actor, rule: ForwardRule, overrides: Overrides | un
     throw new HttpError(403, `ファイルのパス（${where}）は管理者だけが指定できます。証明書は登録済みの証明書の名前（tls.certificates[].cert）から選んでください。`, 'file_not_allowed');
   }
   const oldCerts = new Set(certNames(before?.rule));
-  const certs = certNames(rule).filter((n) => !oldCerts.has(n) && !certAllowed(n, actor.roles.userCerts));
+  const certs = certNames(rule).filter((n) => !oldCerts.has(n) && !certAllowed(n, actor.certPrefixes));
   if (certs.length > 0) {
-    throw new HttpError(403, `登録済みの証明書 ${certs.join(', ')} は管理者だけが使えます（RPROXY_UI_USER_CERTS）。`, 'cert_not_allowed');
+    throw new HttpError(403, `登録済みの証明書 ${certs.join(', ')} はこの利用者には使えません（RPROXY_UI_USER_CERTS・RPROXY_UI_USER_CERTS_BY_SUB・RPROXY_UI_USER_CERTS_BY_ROLE）。`, 'cert_not_allowed');
   }
   const oldOidc = new Set(oidcConfigs(before?.rule));
   if (oidcConfigs(rule).some((c) => !oldOidc.has(c))) {
@@ -813,7 +824,9 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
     `SELECT id, auth_id, target, protocol, src_addr, src_port, src_port_end, dist_addr, dist_port, source_ip, udp_idle_secs, options FROM forward_rules${admin ? '' : ' WHERE auth_id = ?'} ORDER BY id`,
     admin ? [] : [actor.id]
   );
-  const nodes = cfg.nodes.map(toRproxyNode);
+  // 利用者には RPROXY_UI_USER_NODES のノードだけを聞いて出す（触れないノードの状態・固定ルール・誤りの文を返さない。#164）
+  const seen = (name: string) => nodesAllowed(actor.access, actor.roles, [name]);
+  const nodes = cfg.nodes.filter((n) => seen(n.name)).map(toRproxyNode);
   const [lives, held] = await Promise.all([
     Promise.all(nodes.map(async (node): Promise<NodeLive> => ({ node: node, ...(await fetchNodeLive(node, logger)) }))),
     fetchHeld(cfg, nodes, logger),
@@ -826,15 +839,20 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
 
   const allOverrides = await loadOverrides(pool, null);
   const lastSync = await lastSyncByNode(cfg);
-  for (const [name, at] of lastSync) summaries.get(name)!.lastSync = at;
+  for (const [name, at] of lastSync) {
+    const sum = summaries.get(name);
+    if (sum) sum.lastSync = at;
+  }
   const rules = rows.map((row: any): ForwardRules => {
     const ovs = allOverrides.get(Number(row.id)) ?? {};
     const rule: ForwardRule = { ...fromRow(row), ...(Object.keys(ovs).length > 0 ? { overrides: ovs } : {}) };
     const members = targetNodes(cfg, String(row.target)) ?? [];
     const states = members.map((m) => {
-      const l = byName.get(m.name)!;
       // そのノードで動かす内容（上書きを重ねたもの）と、その待ち受けのキーで比べる
       const eff = effectiveRule(rule, ovs[m.name]);
+      const l = byName.get(m.name);
+      // 利用者が触れないノード（設定を変えた後に残った自分のルール）は聞かずに unknown
+      if (!l) return nodeLiveState(m.name, eff, false, undefined, admin);
       const key = ruleKeyString(eff.protocol, eff.srcAddr, eff.srcPort);
       const st = nodeLiveState(m.name, eff, l.live !== null, l.live?.get(key), admin);
       const sum = summaries.get(m.name)!;
@@ -868,7 +886,7 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
   const down = lives.filter((l) => l.live === null);
   // vip を設定した active_standby のグループの act
   const groups: GroupHa[] = cfg.groups
-    .filter((g) => g.mode === 'active_standby' && g.vips.length > 0)
+    .filter((g) => g.mode === 'active_standby' && g.vips.length > 0 && g.nodes.every(seen))
     .map((g) => ({ name: g.name, nodes: [...g.nodes], ...haStatus(g.vips, g.nodes, held)!.status }));
   return {
     reachable: down.length < lives.length,
@@ -951,6 +969,7 @@ async function storedApiRule(key: RproxyRuleKey, node: string | null, logger: Ap
 async function getOnNodes(actor: Actor, key: RproxyRuleKey, target: string | string[] | undefined, logger: AppLogger): Promise<ForwardRules> {
   const ruleKey = { protocol: key.protocol, srcAddr: key.listen_addr, srcPort: key.listen_port };
   const place = await placeForKey(actor, ruleKey, queryString(target) || undefined);
+  checkNodesVisible(actor, place);
   const owner = ownerClause(actor);
   const where = keyWhere(place, ruleKey);
   const rows = await pool.query(
@@ -1614,6 +1633,8 @@ type ImportResult = 'added' | 'replaced' | 'skipped' | 'error';
 // ノードを設定していれば body.target（なければ default_target）のノード／グループに読み込む
 async function importRules(actor: Actor, body: any, logger: AppLogger) {
   const place = placeForAdd(actor.cfg, body?.target);
+  // 確かめるだけ（dryRun）でも置き場所のノードに聞く（固定ルール・予約済みのアドレス）ので、触れないノードなら先に断る
+  checkNodes(actor, place);
   const { items, ignoredGlobal } = await inspectImport(actor, place, body?.text, logger);
   const strip = (i: ImportItem) => ({ index: i.index, key: i.key, status: i.status, ...(i.message ? { message: i.message } : {}) });
   if (body?.dryRun === true) return { ignoredGlobal: ignoredGlobal, items: items.map(strip) };
@@ -2204,7 +2225,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     // Kubernetes の rproxy（見るだけ）は管理者にだけ見せる（利用者の設定からは外す）
     const cfg = visibleNodes(loadNodes(), access === 'admin');
-    const actor: Actor = { id: id, access: access, roles: roles, cfg: cfg };
+    const actor: Actor = { id: id, access: access, roles: roles, cfg: cfg, certPrefixes: certPrefixesFor(access, roles, id, session.user.roles ?? []) };
     await syncMembership(cfg, logger);
     // 見るだけのノード・グループ（Kubernetes の rproxy）を名指しした変更は、中身を見る前に断る
     // （target：置き場所・API のルールのノード、node：送り直し・上書き・まとめての停止・ha-sync、to：コピー・移動の先）

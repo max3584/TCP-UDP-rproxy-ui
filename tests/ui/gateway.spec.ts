@@ -4,6 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
 import { expect, test, type Page } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 
 const L7_PORT = 19521;
 const SNI_PORT = 19522;
@@ -21,7 +22,7 @@ async function features(page: Page): Promise<Record<string, unknown>> {
 const has = (f: Record<string, unknown>, key: string, names: string[]) => Array.isArray(f[key]) && names.every((n) => (f[key] as string[]).includes(n));
 
 async function deleteRule(page: Page, port: number): Promise<void> {
-  await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
+  await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
 }
 
 function listen<T extends net.Server>(server: T, port: number): Promise<T> {

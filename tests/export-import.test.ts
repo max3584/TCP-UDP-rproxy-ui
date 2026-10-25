@@ -55,7 +55,7 @@ const session = { user: { id: 'user-1', name: 'n', email: 'e', image: '', role: 
 const asAdmin = () => mocks.getServerSession.mockResolvedValue({ ...session, user: { ...session.user, id: 'admin-1', roles: ['rproxy-admin'], role: 'rproxy-admin' } });
 
 function call(action: string, body?: unknown, method = 'POST', query: Record<string, string> = {}) {
-  const req = { method, query: { ...query, forward: action }, body } as unknown as NextApiRequest;
+  const req = { method, query: { ...query, forward: action }, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest;
   const res: any = { headers: {} as Record<string, string> };
   res.status = vi.fn(() => res);
   res.json = vi.fn(() => res);

@@ -57,6 +57,7 @@ spec:
               value: {{ .Values.db.port | quote }}
             - name: DB_DATABASE
               value: {{ .Values.db.database | quote }}
+            {{- include "rproxy-ui.dbTlsEnv" . | nindent 12 }}
             {{- if $bundled }}
             - {name: DB_ADMIN_USER, value: root}
             - name: DB_ADMIN_PASSWORD
@@ -83,6 +84,8 @@ spec:
           securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- include "rproxy-ui.dbTlsMount" . | nindent 12 }}
       volumes:
         - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+        {{- include "rproxy-ui.dbTlsVolume" . | nindent 8 }}
 {{- end }}

@@ -72,6 +72,8 @@ CREATE USER 'rproxy'@'10.0.0.10' IDENTIFIED BY '<password>';
 GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'10.0.0.10';
 ```
 
+When the DB is on another host, use TLS between the UI and the DB: give MariaDB a certificate (`ssl_cert`, `ssl_key`, `ssl_ca`) and require TLS for the UI's user (`ALTER USER 'rproxy_ui'@'10.0.0.10' REQUIRE SSL;`). Write `DB_SSL=true` in the UI's `rproxy-ui.env` and, for an internal CA, `DB_SSL_CA=/etc/rproxy-ui/db-ca.pem` (readable by the `rproxy-ui` user) (5. and "TLS to the DB" in the README). `db/migrate.mjs` reads the same variables.
+
 ### Moving rules from an old environment
 
 To keep using the old environment's tables, take a backup first and then apply `db/migrations/` in order (for details, see [db/README.en.md](../../db/README.en.md)).
@@ -90,13 +92,23 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
 
 ## 3. Keycloak
 
-1. In the admin console, load `keycloak/realm-rproxy-dev.json` (in the repository) with "Create realm" → "Resource file", and change the realm name to one for production (e.g. `rproxy`).
+1. In the admin console, load `keycloak/realm-rproxy-dev.json` (in the repository) with "Create realm" → "Resource file", and change the realm name to one for production (e.g. `rproxy`). The file is for development, so also do "Changes for a production realm" below.
 2. Change the settings of the client `rproxy-ui` (confidential) to the production URLs.
    - Valid redirect URIs: `https://dashboard.example.com/api/auth/callback/keycloak`
    - Web origins / Root URL: `https://dashboard.example.com`
 3. Set the client secret from "Credentials" as `KEYCLOAK_CLIENT_SECRET`.
 4. Create users or federate with an existing IdP, and give administrators the realm role `rproxy-admin` (all rules). To let users (own rules only) in, set `RPROXY_UI_USER_ROLE=rproxy-user` and assign that role (from v0.4.9, when it is empty people without `rproxy-admin` cannot use the UI; "Roles" in the [README](../../README.en.md); the role names, the claim location and the ports users can use can be changed with `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_USER_PORTS`).
-   When you let users in, also write the allow-list of their destinations `RPROXY_UI_USER_TARGETS` (CIDRs and host names; "Limits for users" in the README). Users cannot write server file paths, so store their TLS certificates with rproxy's certificate API (`PUT /certs/{name}`) and give the UI token `certs:read`. Do not put the dashboard's certificate and key (`/etc/rproxy/tls/`) in the certificate API (if you do, leave it out with `RPROXY_UI_USER_CERTS`). Write other destinations to protect, such as a DB on another host, in `RPROXY_UI_PROTECTED_TARGETS`.
+   When you let users in, also write the allow-list of their destinations `RPROXY_UI_USER_TARGETS` (CIDRs and host names; "Limits for users" in the README). Users cannot write server file paths, so store their TLS certificates with rproxy's certificate API (`PUT /certs/{name}`) and give the UI token `certs:read`. Do not put the dashboard's certificate and key (`/etc/rproxy/tls/`) in the certificate API (if you do, leave it out with `RPROXY_UI_USER_CERTS`). To separate certificates per tenant (group of users), assign name prefixes per Keycloak role such as `RPROXY_UI_USER_CERTS_BY_ROLE=tenant-a:tenant-a-,tenant-b:tenant-b-` (per user with `RPROXY_UI_USER_CERTS_BY_SUB`) (with only the shared `RPROXY_UI_USER_CERTS`, users can pick other tenants' certificates; "Limits for users" in the README). Write other destinations to protect, such as a DB on another host, in `RPROXY_UI_PROTECTED_TARGETS`.
+
+### Changes for a production realm
+
+`keycloak/realm-rproxy-dev.json` is set up to make development easy; do not use it as is in production. After loading it, change at least the following.
+
+- **Password policy** ("Authentication" → "Policies" → "Password policy"): length (e.g. 12 characters or more), Not recently used, Not username, hash iterations. The development realm has no policy.
+- **OTP (two-factor authentication)** (enable "Configure OTP" under "Authentication" → "Required actions" and make it required for administrators, or make OTP required in the browser flow): `rproxy-admin` can change every user's rules, so always require it at least for administrators. When federating with an existing IdP, enforce two-factor authentication there.
+- **https URIs** (client `rproxy-ui`): make Valid redirect URIs, Valid post logout redirect URIs, Web origins, Root URL and Home URL production `https://` URLs only (do not leave the development `http://con0.dev.home:3001` or `*`). Set the realm's "Require SSL" to `all requests` (at least `external requests`).
+- **Session times** ("Realm settings" → "Sessions" and "Tokens"): SSO Session Max at most `RPROXY_UI_SESSION_MAX_AGE` (default 8 hours), SSO Session Idle around 30 minutes, Access Token Lifespan around 5 minutes (the UI checks again every `RPROXY_UI_ROLE_REFRESH_SECS`). Do not use offline sessions (the UI does not need offline_access).
+- Others: keep user registration and brute force detection ("Realm settings" → "Security defenses" → "Brute force detection") as in the development realm (registration off, detection on), and delete users and clients created for trials.
 
 Set "SSO Session Max" under "Realm settings" → "Sessions" to at most `RPROXY_UI_SESSION_MAX_AGE` (default 8 hours); the UI sends `max_age` in the authorization request and makes Keycloak authenticate again after 8 hours (`keycloak/realm-rproxy-dev.json` uses 8 hours).
 The UI checks roles again with the refresh token every 5 minutes (`RPROXY_UI_ROLE_REFRESH_SECS`) and calls end_session on sign-out, so the UI host must reach Keycloak's token endpoint (the same one used for sign-in).
@@ -196,6 +208,8 @@ DB_PORT=3306
 DB_DATABASE=rproxy
 DB_USER=rproxy_ui
 DB_PASSWORD=<password>
+# DB_SSL=true                           # TLS when the DB is on another host (checks the DB's certificate); DB_SSL_CA too for an internal CA
+# DB_SSL_CA=/etc/rproxy-ui/db-ca.pem
 RPROXY_API_URL=http://127.0.0.1:8080   # for a Unix socket, unix:/run/rproxy/api.sock (see 4.)
 RPROXY_API_TOKEN=                       # a token copied by an earlier version stays here (used when set)
 RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # filled in at install time (when it holds one token per line; read through the group rproxy)
@@ -225,6 +239,11 @@ tokens:
 - A session ends `RPROXY_UI_SESSION_MAX_AGE` (default 8 hours) after the Keycloak authentication, and users then authenticate with Keycloak again. Disabling a user or removing a role in Keycloak reaches the UI within `RPROXY_UI_ROLE_REFRESH_SECS` (default 5 minutes; disabled users are signed out). With `RPROXY_UI_ROLE_REFRESH_SECS=0`, revocations do not take effect until the session ends.
 - Signing out also ends the Keycloak SSO session. If Keycloak is unreachable, only the UI signs out and the SSO session remains (the UI logs "SSO のセッションを終わらせられませんでした"; look in `journalctl -u rproxy-ui`).
 - To check: `curl -sI https://dashboard.example.com/api/healthz` lists the headers.
+
+### Limits of the systemd unit
+
+The package's unit (`/usr/lib/systemd/system/rproxy-ui.service`) drops the privileges the UI does not need: no capabilities (`CapabilityBoundingSet=`), `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`, `ProtectProc=invisible`, address families `AF_UNIX`, `AF_INET`, `AF_INET6` and `AF_NETLINK` only (`RestrictAddressFamilies`), `SystemCallFilter=@system-service`, `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality` and `UMask=0077`. `MemoryDenyWriteExecute` is left out because it does not work with Node.js's JIT.
+Check it with `systemd-analyze security rproxy-ui`. Files the UI reads outside `/etc/rproxy-ui` (`NODE_EXTRA_CA_CERTS`, `DB_SSL_CA`, mTLS keys) must not be under `/home`, `/root` or `/tmp`. To change it, override with `systemctl edit rproxy-ui` (do not edit the package's file).
 
 ## 6. Starting and checking
 

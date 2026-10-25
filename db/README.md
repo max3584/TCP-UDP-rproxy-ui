@@ -40,7 +40,7 @@ DB_HOST=db.example DB_DATABASE=rproxy DB_ADMIN_USER=root DB_ADMIN_PASSWORD=... n
 - `schema_migrations` のない既存の DB（手で当ててきた DB）は、`--baseline <番号>`（最後に当てた番号）がないと断る。番号までを `baseline` で記録し、その後を当てる。
 - `003`（一度だけの手作業のテンプレート）は流さずに `skipped` で記録する。当てた後で中身の変わった migration は警告だけ。
 - 同時に動かしても `GET_LOCK('rproxy-ui-migrate')` で 1 つずつになり、2 回目からは当てていないものだけを当てる。
-- 接続は `DB_HOST`・`DB_PORT`・`DB_DATABASE` と、DDL を流す管理者の `DB_ADMIN_USER`・`DB_ADMIN_PASSWORD`（なければ `DB_USER`・`DB_PASSWORD`）。`--create-database` はデータベースがなければ作る。`--wait <秒>` は接続できるまで待つ。
+- 接続は `DB_HOST`・`DB_PORT`・`DB_DATABASE` と、DDL を流す管理者の `DB_ADMIN_USER`・`DB_ADMIN_PASSWORD`（なければ `DB_USER`・`DB_PASSWORD`）。TLS は UI と同じ `DB_SSL`・`DB_SSL_CA`・`DB_SSL_VERIFY`（README の「DB への接続（TLS）」）。`--create-database` はデータベースがなければ作る。`--wait <秒>` は接続できるまで待つ。
 - `DB_APP_USER`・`DB_APP_PASSWORD`（`DB_APP_HOST`、既定 `%`）があれば UI のユーザーを作り（あればパスワードを合わせ）、下の「DB ユーザー」の UI の権限を渡す（ある表だけ）。`DB_BACKUP_USER`・`DB_BACKUP_PASSWORD`（`DB_BACKUP_HOST`）はバックアップ用の読むだけのユーザー（`SELECT, LOCK TABLES, SHOW VIEW`）。
 
 `schema_migrations` の列：`version`（ファイル名から `.sql` を除いたもの）、`applied_at`（UTC）、`checksum`（ファイルの SHA-256）、`method`（`applied`・`schema`・`baseline`・`skipped`）。書くのは `migrate.mjs` だけで、UI と rproxy は使わない。

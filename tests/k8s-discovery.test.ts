@@ -78,7 +78,7 @@ function writeDiscovery(pods: string[]): void {
 }
 
 function call(action: string, body?: unknown, method = 'POST', query: Record<string, string> = {}) {
-  const req = { method, query: { ...query, forward: action }, body, headers: {} } as unknown as NextApiRequest;
+  const req = { method, query: { ...query, forward: action }, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest;
   const res: any = {};
   res.status = vi.fn(() => res);
   res.json = vi.fn(() => res);

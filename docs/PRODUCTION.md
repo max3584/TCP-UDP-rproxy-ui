@@ -72,6 +72,8 @@ CREATE USER 'rproxy'@'10.0.0.10' IDENTIFIED BY '<password>';
 GRANT SELECT ON rproxy.forward_rules TO 'rproxy'@'10.0.0.10';
 ```
 
+DB が別のホストなら、UI と DB の間を TLS にする：MariaDB に証明書を設定し（`ssl_cert`・`ssl_key`・`ssl_ca`）、UI のユーザーに TLS を強いる（`ALTER USER 'rproxy_ui'@'10.0.0.10' REQUIRE SSL;`）。UI の `rproxy-ui.env` に `DB_SSL=true` と、社内の CA なら `DB_SSL_CA=/etc/rproxy-ui/db-ca.pem`（`rproxy-ui` ユーザーが読めること）を書く（5. と README の「DB への接続（TLS）」）。`db/migrate.mjs` も同じ環境変数を読む。
+
 ### 旧環境からルールを移す場合
 
 旧環境のテーブルをそのまま使う場合は、先にバックアップを取ってから `db/migrations/` を順に適用する（詳細は `db/README.md`）。
@@ -90,13 +92,23 @@ mariadb -h db.example.com -u admin -p rproxy < 005_ranges_and_tls.sql
 
 ## 3. Keycloak
 
-1. 管理コンソールの「Create realm」→「Resource file」で `keycloak/realm-rproxy-dev.json`（リポジトリ）を読み込み、レルム名を本番用（例 `rproxy`）に変える。
+1. 管理コンソールの「Create realm」→「Resource file」で `keycloak/realm-rproxy-dev.json`（リポジトリ）を読み込み、レルム名を本番用（例 `rproxy`）に変える。このファイルは開発用なので、下の「本番のレルムに直すこと」も必ず行う。
 2. クライアント `rproxy-ui`（Confidential）の設定を本番の URL に直す。
    - Valid redirect URIs: `https://dashboard.example.com/api/auth/callback/keycloak`
    - Web origins / Root URL: `https://dashboard.example.com`
 3. 「Credentials」のクライアントシークレットを `KEYCLOAK_CLIENT_SECRET` に設定する。
 4. 利用者を作るか、既存の IdP と連携し、管理者には realm ロール `rproxy-admin`（すべてのルール）を付ける。利用者（自分のルールだけ）に使わせるなら、`RPROXY_UI_USER_ROLE=rproxy-user` にして、そのロールを付ける（v0.4.9 から、空なら `rproxy-admin` のない人は使えない。README の「ロール」。ロールの名前・クレームの位置・利用者が使えるポートは `RPROXY_UI_ADMIN_ROLE` / `RPROXY_UI_USER_ROLE` / `RPROXY_UI_ROLES_CLAIM` / `RPROXY_UI_USER_PORTS` で変えられる）。
-   利用者を入れるなら、利用者の転送先の許可リスト `RPROXY_UI_USER_TARGETS`（CIDR とホスト名）も書く（README の「利用者の制限」）。利用者はサーバのファイルのパスを書けないので、利用者の TLS の証明書は rproxy の証明書の API（`PUT /certs/{name}`）に登録し、UI のトークンに `certs:read` を付ける。ダッシュボードの証明書と鍵（`/etc/rproxy/tls/`）は証明書の API に置かない（置くなら `RPROXY_UI_USER_CERTS` で外す）。別のホストの DB など、ほかに守る宛先は `RPROXY_UI_PROTECTED_TARGETS` に書く。
+   利用者を入れるなら、利用者の転送先の許可リスト `RPROXY_UI_USER_TARGETS`（CIDR とホスト名）も書く（README の「利用者の制限」）。利用者はサーバのファイルのパスを書けないので、利用者の TLS の証明書は rproxy の証明書の API（`PUT /certs/{name}`）に登録し、UI のトークンに `certs:read` を付ける。ダッシュボードの証明書と鍵（`/etc/rproxy/tls/`）は証明書の API に置かない（置くなら `RPROXY_UI_USER_CERTS` で外す）。テナント（利用者の組）ごとに証明書を分けるなら、`RPROXY_UI_USER_CERTS_BY_ROLE=tenant-a:tenant-a-,tenant-b:tenant-b-` のように Keycloak のロールごと（`RPROXY_UI_USER_CERTS_BY_SUB` で利用者ごと）に名前の先頭を割り当てる（共通の `RPROXY_UI_USER_CERTS` だけだと、ほかのテナントの証明書を選べる。README の「利用者の制限」）。別のホストの DB など、ほかに守る宛先は `RPROXY_UI_PROTECTED_TARGETS` に書く。
+
+### 本番のレルムに直すこと
+
+`keycloak/realm-rproxy-dev.json` は開発の手間を減らすための設定で、そのまま本番に使わない。読み込んだあと、少なくとも次を直す。
+
+- **パスワードの決まり**（「Authentication」→「Policies」→「Password policy」）：長さ（例 12 文字以上）・使い回しの禁止（Not recently used）・ユーザー名と同じものの禁止（Not username）・ハッシュの回数。開発用のレルムには決まりがない。
+- **OTP（2 段階の認証）**（「Authentication」→「Required actions」の「Configure OTP」を有効にし、管理者に必須にする。またはブラウザのフローで OTP を必須にする）：`rproxy-admin` はすべての利用者のルールを変えられるので、少なくとも管理者には必ず付ける。既存の IdP と連携するなら、IdP 側で 2 段階の認証を強いる。
+- **https の URI**（クライアント `rproxy-ui`）：Valid redirect URIs・Valid post logout redirect URIs・Web origins・Root URL・Home URL を本番の `https://` の URL だけにする（開発用の `http://con0.dev.home:3001` や `*` を残さない）。レルムの「Require SSL」は `all requests`（少なくとも `external requests`）。
+- **セッションの時間**（「Realm settings」→「Sessions」・「Tokens」）：SSO Session Max は `RPROXY_UI_SESSION_MAX_AGE`（既定 8 時間）以下、SSO Session Idle は 30 分前後、Access Token Lifespan は 5 分前後（UI は `RPROXY_UI_ROLE_REFRESH_SECS` ごとに聞き直す）。Offline Session は使わない（UI は offline_access を要らない）。
+- ほか：自分で登録（User registration）とブルートフォースの検知（「Realm settings」→「Security defenses」→「Brute force detection」）は開発用のレルムのまま（登録は無効、検知は有効）にし、試しに作った利用者・クライアントは消す。
 
 レルムの「Realm settings」→「Sessions」の「SSO Session Max」は `RPROXY_UI_SESSION_MAX_AGE`（既定 8 時間）以下にする（UI は認可の要求に `max_age` を付け、8 時間を過ぎたら Keycloak で認証し直させる。`keycloak/realm-rproxy-dev.json` は 8 時間）。
 UI は 5 分ごと（`RPROXY_UI_ROLE_REFRESH_SECS`）に refresh token でロールを確かめ直し、サインアウトで end_session も呼ぶので、UI のホストから Keycloak のトークンのエンドポイントに届くようにしておく（サインインと同じ口）。
@@ -196,6 +208,8 @@ DB_PORT=3306
 DB_DATABASE=rproxy
 DB_USER=rproxy_ui
 DB_PASSWORD=<password>
+# DB_SSL=true                           # DB が別のホストなら TLS（DB の証明書を確かめる）。社内の CA なら DB_SSL_CA も
+# DB_SSL_CA=/etc/rproxy-ui/db-ca.pem
 RPROXY_API_URL=http://127.0.0.1:8080   # Unix ソケットなら unix:/run/rproxy/api.sock（4. を参照）
 RPROXY_API_TOKEN=                       # 前の版でコピーしたトークンはここに残る（あればこちらを使う）
 RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # インストール時に入る（1 行に 1 トークンの書き方のとき。グループ rproxy で読む）
@@ -225,6 +239,11 @@ tokens:
 - セッションは Keycloak で認証してから `RPROXY_UI_SESSION_MAX_AGE`（既定 8 時間）で切れ、そのあとは Keycloak で認証し直す。Keycloak で利用者を無効にする・ロールを外すと、`RPROXY_UI_ROLE_REFRESH_SECS`（既定 5 分）のうちに UI にも反映される（無効にした利用者はサインアウトされる）。`RPROXY_UI_ROLE_REFRESH_SECS=0` にすると、取り消しはセッションが切れるまで反映されない。
 - サインアウトは Keycloak の SSO のセッションも終わらせる。Keycloak に届かないと UI のサインアウトだけになり、SSO のセッションは残る（UI のログに「SSO のセッションを終わらせられませんでした」と出る。`journalctl -u rproxy-ui` で探す）。
 - 確かめ方：`curl -sI https://dashboard.example.com/api/healthz` にヘッダが並ぶこと。
+
+### systemd のユニットの制限
+
+パッケージのユニット（`/usr/lib/systemd/system/rproxy-ui.service`）は、UI に要らない権限を外してある：capability なし（`CapabilityBoundingSet=`）、`NoNewPrivileges`・`ProtectSystem=strict`・`ProtectHome`・`PrivateTmp`・`PrivateDevices`・`ProtectKernelTunables`・`ProtectKernelModules`・`ProtectKernelLogs`・`ProtectControlGroups`・`ProtectClock`・`ProtectHostname`・`ProtectProc=invisible`、使えるアドレスの種類は `AF_UNIX`・`AF_INET`・`AF_INET6`・`AF_NETLINK`（`RestrictAddressFamilies`）、`SystemCallFilter=@system-service`、`RestrictNamespaces`・`RestrictRealtime`・`RestrictSUIDSGID`・`LockPersonality`・`UMask=0077`。`MemoryDenyWriteExecute` は Node.js の JIT と合わないので付けない。
+`systemd-analyze security rproxy-ui` で確かめられる。UI が `/etc/rproxy-ui` 以外のファイル（`NODE_EXTRA_CA_CERTS`・`DB_SSL_CA`・mTLS の鍵）を読むなら、`/home`・`/root`・`/tmp` 以外に置く。変えるときは `systemctl edit rproxy-ui` で上書きする（パッケージのファイルは書き換えない）。
 
 ## 6. 起動と確認
 

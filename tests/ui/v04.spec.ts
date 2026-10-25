@@ -2,6 +2,7 @@
 // rproxy の GET /capabilities の features が対応していないとき（v0.4 の中身がまだの rproxy）は飛ばす
 import net from 'node:net';
 import { expect, test, type Page } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 
 const PORT = Number(process.env.UI_E2E_V04_PORT ?? 19451);
 const BACKEND_PORT = 19461;
@@ -14,7 +15,7 @@ async function features(page: Page): Promise<Record<string, unknown>> {
 }
 
 async function deleteRule(page: Page): Promise<void> {
-  await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT } });
+  await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT } });
 }
 
 // 接続して閉じられるまで（または timeout まで）待つ。閉じられたら true
@@ -77,7 +78,7 @@ test.describe('v0.4 rule settings', () => {
     const f = await features(page);
     test.skip(f.dry_run !== true || f.labels !== true, 'rproxy-api does not answer dry runs yet');
     await deleteRule(page);
-    const res = await page.request.post('/api/forward/add', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT, distAddr: '127.0.0.1', distPort: BACKEND_PORT } });
+    const res = await page.request.post('/api/forward/add', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT, distAddr: '127.0.0.1', distPort: BACKEND_PORT } });
     expect(res.ok(), await res.text()).toBe(true);
     try {
       await page.goto(`/rules/tcp/127.0.0.1/${PORT}/edit`);
