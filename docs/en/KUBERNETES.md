@@ -150,7 +150,43 @@ With `networkPolicy.enabled: true`:
 - The UI pods accept port 3000 only, and with `networkPolicy.ingressFrom` (a list of NetworkPolicyPeers: the Ingress controller's or the Gateway rproxy's namespace, ...) only from there.
 - The bundled MariaDB accepts port 3306 only from this release's UI, migration and backup pods.
 
-Outgoing traffic (DB, Keycloak, rproxy) is not restricted.
+With `networkPolicy.egress.enabled: true` the UI pods' outgoing traffic is restricted too (recommended; if the UI is taken over, it does not spread to other services in the cluster):
+
+- Allowed are DNS (`networkPolicy.egress.allowDns`, default `true`; port 53 UDP and TCP), port 3306 of the bundled MariaDB (with `mariadb.enabled`) and `networkPolicy.egress.egressTo` (a list of NetworkPolicyEgressRules) only.
+- Put in `egressTo` Keycloak (the destination of `keycloak.issuer`; also used to check roles again and to sign out), the rproxy-api control APIs (the VM rproxy URLs, the Gateway rproxy pods' CIDR and control API port) and an external DB.
+
+```yaml
+networkPolicy:
+  enabled: true
+  ingressFrom: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}}]
+  egress:
+    enabled: true
+    egressTo:
+      - to: [{ipBlock: {cidr: 192.0.2.10/32}}]          # Keycloak
+        ports: [{port: 443, protocol: TCP}]
+      - to: [{ipBlock: {cidr: 10.0.0.0/24}}]            # VM rproxy-api, external DB
+        ports: [{port: 8443, protocol: TCP}, {port: 3306, protocol: TCP}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: rproxy-system}}}]  # Gateway rproxy
+        ports: [{port: 9443, protocol: TCP}]
+```
+
+The migration Job and the backup pods are not restricted (the UI pods only).
+
+## TLS to an external DB
+
+With `db.tls.enabled: true` the UI, the migration Job and the backup connect to the external DB over TLS and check its certificate (`DB_SSL`, `DB_SSL_CA`, `DB_SSL_VERIFY`; "TLS to the DB" in the README). For an internal CA, name a Secret with the CA's PEM in `db.tls.caSecret` (key `db.tls.caKey`, default `ca.crt`).
+
+```shell
+kubectl -n rproxy-ui create secret generic rproxy-ui-db-ca --from-file=ca.crt=db-ca.pem
+```
+
+```yaml
+db:
+  host: mariadb.db.example.com
+  tls: {enabled: true, caSecret: rproxy-ui-db-ca}
+```
+
+The bundled MariaDB does not serve TLS, so do not use this with `mariadb.enabled`.
 
 ## Backup and restore
 
@@ -192,8 +228,9 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `url` | (required) | `NEXTAUTH_URL` |
 | `existingSecret` | (required) | `NEXTAUTH_SECRET`, `KEYCLOAK_CLIENT_SECRET`, `DB_PASSWORD` |
 | `keycloak.issuer`, `clientId` | (required), `rproxy-ui` | |
-| `roles.*` | empty | `RPROXY_UI_ROLES_CLAIM`, `_ADMIN_ROLE`, `_USER_ROLE`, `_USER_PORTS`, `_USER_NODES`, `_USER_TARGETS`, `_USER_CERTS`, `RPROXY_UI_PROTECTED_TARGETS` (`protectedTargets`; Pod IPs change, so write the Pod and Service CIDRs; with `userRole` empty, people without `rproxy-admin` cannot use the UI) |
+| `roles.*` | empty | `RPROXY_UI_ROLES_CLAIM`, `_ADMIN_ROLE`, `_USER_ROLE`, `_USER_PORTS`, `_USER_NODES`, `_USER_TARGETS`, `_USER_CERTS`, `_USER_CERTS_BY_SUB` (`userCertsBySub`), `_USER_CERTS_BY_ROLE` (`userCertsByRole`), `RPROXY_UI_PROTECTED_TARGETS` (`protectedTargets`; Pod IPs change, so write the Pod and Service CIDRs; with `userRole` empty, people without `rproxy-admin` cannot use the UI) |
 | `db.host`, `port`, `database`, `user` | empty, 3306, `rproxy`, `rproxy_ui` | |
+| `db.tls.enabled`, `caSecret`, `caKey`, `verify` | `false`, empty, `ca.crt`, `true` | TLS to an external DB ("TLS to an external DB" above) |
 | `migrate.enabled`, `existingSecret`, `baseline`, `createDatabase`, `createUser` | `true`, empty, empty, `false`, `false` | |
 | `mariadb.enabled`, `existingSecret`, `image`, `persistence` | `false`, empty, `mariadb:11.8`, 10Gi | |
 | `rproxyApi.url`, `existingSecret`, `tokenKey` | empty | one rproxy-api on a VM |
@@ -201,7 +238,7 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `rproxy.discovery.enabled`, `secretName` | `false`, `rproxy-ui-discovery` | Gateways' rproxy (read-only) |
 | `usage.intervalSeconds` | `60` | `RPROXY_UI_USAGE_SECS` |
 | `backup.*` | off | |
-| `ingress.*`, `httpRoute.*`, `networkPolicy.*` | off | |
+| `ingress.*`, `httpRoute.*`, `networkPolicy.*` | off | `networkPolicy.egress.*` also restricts outgoing traffic ("NetworkPolicy" above) |
 | `extraEnv`, `extraEnvFrom`, `extraVolumes`, `extraVolumeMounts` | empty | other `RPROXY_UI_*` and so on |
 
 Every value is in `charts/rproxy-ui/values.yaml` of the repository.

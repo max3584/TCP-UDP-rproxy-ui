@@ -23,6 +23,30 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# the UI needs no capabilities, devices or kernel interfaces (#164). Address families: TCP/UDP, the control API's
+# Unix socket, and netlink (os.networkInterfaces() for the addresses users may not forward to).
+# MemoryDenyWriteExecute is left out: Node.js's JIT needs writable and executable memory
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
 # Next.js writes its cache under .next/cache (a symlink to /var/cache/rproxy-ui)
 CacheDirectory=rproxy-ui
 CacheDirectoryMode=0750

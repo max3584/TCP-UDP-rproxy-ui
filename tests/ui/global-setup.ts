@@ -29,3 +29,7 @@ export default async function globalSetup(): Promise<void> {
   await write(E2E_USER, 'session.json');
   await write(E2E_PLAIN_USER, 'user.json');
 }
+
+// page.request（ブラウザでない要求）で状態を変える API を呼ぶときのヘッダ。Sec-Fetch-Site も Origin・Referer もない要求は
+// CSRF の確認が断る（#164）ので、画面からの要求と同じ same-origin を付ける
+export const SAME_ORIGIN = { 'Sec-Fetch-Site': 'same-origin' };

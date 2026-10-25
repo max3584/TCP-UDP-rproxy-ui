@@ -26,7 +26,7 @@ async function call(action: string, body?: unknown, method = 'POST', query: Reco
     status(s: number) { status = s; return res; },
     json(j: unknown) { json = j; return res; },
   } as unknown as NextApiResponse;
-  await handler({ method, query: { ...query, forward: action }, body } as unknown as NextApiRequest, res);
+  await handler({ method, query: { ...query, forward: action }, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest, res);
   return { status, json };
 }
 

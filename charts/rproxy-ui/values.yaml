@@ -34,6 +34,10 @@ roles:
   userNodes: ""    # RPROXY_UI_USER_NODES, e.g. node1,node2
   userTargets: ""  # RPROXY_UI_USER_TARGETS, e.g. 10.0.0.0/8,backend.example.com (destinations users may use)
   userCerts: ""    # RPROXY_UI_USER_CERTS, e.g. tenant- (stored certificate name prefixes users may use; shared by all users, end with a separator)
+  # per-user / per-role stored certificate name prefixes (they replace userCerts for the users they name; when either is set,
+  # users with no assignment fall back to userCerts, or may pick none when it is empty)
+  userCertsBySub: ""   # RPROXY_UI_USER_CERTS_BY_SUB, e.g. 0b6f...-sub:tenant-a- (Keycloak sub:prefix, comma-separated; repeat a sub for more prefixes)
+  userCertsByRole: ""  # RPROXY_UI_USER_CERTS_BY_ROLE, e.g. tenant-a:tenant-a-,tenant-b:tenant-b- (role:prefix, comma-separated)
   protectedTargets: ""  # RPROXY_UI_PROTECTED_TARGETS, e.g. 10.96.0.0/12,10.244.0.0/16 (always refused to users; Pod IPs change, so use CIDRs)
 
 # the database (MariaDB). External by default; mariadb.enabled bundles one
@@ -43,6 +47,15 @@ db:
   port: 3306
   database: rproxy
   user: rproxy_ui
+  # TLS to an external DB (DB_SSL, DB_SSL_CA, DB_SSL_VERIFY) for the UI, the migration Job and the backup.
+  # The bundled MariaDB does not serve TLS: leave this off with it
+  tls:
+    enabled: false
+    # Secret with the CA certificate (PEM) that signed the DB's certificate; empty: the image's CA bundle
+    caSecret: ""
+    caKey: ca.crt
+    # false skips the certificate check (testing only)
+    verify: true
 
 # schema migrations: a Job (Helm hook post-install, pre-upgrade) running `node db/migrate.mjs` with the
 # DB's admin credentials (the UI pods only get DML: db/README.md). Reruns do nothing (schema_migrations)
@@ -159,6 +172,17 @@ networkPolicy:
   # reachable only from this release's UI, migration and backup pods
   ingressFrom: []
   #  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
+  # also restrict the UI pods' outgoing connections (policyTypes Egress; recommended). Allowed: DNS (allowDns),
+  # the bundled MariaDB, and egressTo: Keycloak, the rproxy-api control APIs, an external DB
+  egress:
+    enabled: false
+    allowDns: true
+    # NetworkPolicyEgressRule list
+    egressTo: []
+    #  - to: [{ipBlock: {cidr: 192.0.2.10/32}}]   # Keycloak
+    #    ports: [{port: 443, protocol: TCP}]
+    #  - to: [{ipBlock: {cidr: 10.0.0.0/24}}]     # rproxy-api control APIs, external DB
+    #    ports: [{port: 8443, protocol: TCP}, {port: 3306, protocol: TCP}]
 
 podDisruptionBudget:
   # with replicas >= 2

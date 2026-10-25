@@ -2,6 +2,7 @@
 // ルールの詳細・利用量の画面・CSV に出ること
 import net from 'node:net';
 import { expect, test } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 
 const PORT = Number(process.env.UI_E2E_USAGE_PORT ?? 19491);
 const BACKEND_PORT = 19492;
@@ -25,8 +26,8 @@ test.describe('usage accounting', () => {
 
   test('traffic shows up in the usage after collection', async ({ page }) => {
     test.setTimeout(180_000);
-    await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT } });
-    const add = await page.request.post('/api/forward/add', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT, distAddr: '127.0.0.1', distPort: BACKEND_PORT } });
+    await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT } });
+    const add = await page.request.post('/api/forward/add', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT, distAddr: '127.0.0.1', distPort: BACKEND_PORT } });
     expect(add.ok(), await add.text()).toBe(true);
     try {
       const probe = await page.request.get('/api/forward/usage?range=24h');
@@ -55,7 +56,7 @@ test.describe('usage accounting', () => {
       const csv = await page.request.get(`/api/forward/usage?report=1&period=${month}&group=rule&format=csv`);
       expect(await csv.text()).toContain(`tcp/127.0.0.1:${PORT}`);
     } finally {
-      await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT } });
+      await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT } });
     }
   });
 });

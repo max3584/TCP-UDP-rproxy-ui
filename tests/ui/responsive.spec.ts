@@ -1,6 +1,7 @@
 // スマホ（375px）とタブレット（768px）の幅：ページ全体が横にはみ出さないこと（はみ出すのは表の中だけ）、
 // メニューを開閉できること、狭い幅でもルールを追加できること（#88）
 import { expect, test, type Page } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 
 const DETAIL_PORT = Number(process.env.UI_E2E_RESPONSIVE_PORT ?? 19421);
 const ADD_PORT = DETAIL_PORT + 1;
@@ -22,14 +23,14 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
 const detailHref = (port: number) => `/rules/tcp/127.0.0.1/${port}`;
 
 async function addRuleByApi(page: Page, port: number): Promise<void> {
-  const res = await page.request.post('/api/forward/add', {
+  const res = await page.request.post('/api/forward/add', { headers: SAME_ORIGIN,
     data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port, distAddr: '127.0.0.1', distPort: BACKEND_PORT },
   });
   expect(res.ok(), await res.text()).toBe(true);
 }
 
 async function deleteRuleByApi(page: Page, port: number): Promise<void> {
-  await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
+  await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
 }
 
 for (const vp of VIEWPORTS) {

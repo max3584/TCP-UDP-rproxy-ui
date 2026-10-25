@@ -9,6 +9,14 @@ export async function registerNode(): Promise<void> {
   // RPROXY_UI_NODES の誤り、RPROXY_API_TLS_* を http:// の RPROXY_API_URL で使おうとしている（トークンが平文で流れる）なら止める
   const { checkNodesAtStartup } = await import('./components/nodes');
   checkNodesAtStartup();
+  // DB_SSL・DB_SSL_CA・DB_SSL_VERIFY の誤り（読めない CA など）は起動時に止める（#164）
+  const { dbSslOptions } = await import('./components/dbtls');
+  try {
+    dbSslOptions();
+  } catch (err) {
+    console.error(`rproxy-ui: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
   if (!(process.env.RPROXY_UI_NODES ?? '').trim()) {
     await startUsageCollector();
     return;

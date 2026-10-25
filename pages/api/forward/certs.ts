@@ -1,14 +1,13 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { Logger } from '@/components/lib';
 import { RproxyError, listCerts, withNode } from '@/components/rproxy';
-import { NodesConfigError, loadNodes, probeNode, targetNodes, visibleNodes } from '@/components/nodes';
-import { requireRole, rproxyFailure } from '@/components/apiguard';
-import { accessOf, nodesAllowed, roleConfig } from '@/components/roles';
+import { requireRole, rproxyFailure, viewerProbe } from '@/components/apiguard';
+import { certPrefixesFor } from '@/components/roles';
 import { certAllowed } from '@/components/userlimits';
 import { localizedApi } from '@/i18n/server';
 
 // rproxy の証明書の API に登録した証明書（GET /certs。rproxy-api v0.4.2、#155）。フォームの「登録済みの証明書」の選択肢。
-// 名前・名前の一覧（sans）・期限だけを返す（鍵は rproxy も返さない）。利用者には RPROXY_UI_USER_CERTS の名前だけ。
+// 名前・名前の一覧（sans）・期限だけを返す（鍵は rproxy も返さない）。利用者にはその人が使える先頭（RPROXY_UI_USER_CERTS・RPROXY_UI_USER_CERTS_BY_SUB・RPROXY_UI_USER_CERTS_BY_ROLE）の名前だけ。
 // 読めない（UI のトークンに certs:read がない 403・古い rproxy の 404）ときは 200 の available: false
 export interface CertsInfo {
   available: boolean;
@@ -35,28 +34,15 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   try {
-    const roles = roleConfig();
-    const admin = accessOf(session.user.roles ?? [], roles) === 'admin';
     // ノードを設定していれば ?target= のノード（グループなら先頭のノード）に聞く。利用者は RPROXY_UI_USER_NODES のノードだけ
     // （見るだけの Kubernetes の rproxy も外す）
-    const cfg = visibleNodes(loadNodes(), admin);
-    const target = typeof req.query.target === 'string' && req.query.target !== '' ? req.query.target : undefined;
-    let node;
-    try {
-      node = probeNode(cfg, target);
-    } catch (err) {
-      if (err instanceof NodesConfigError) return res.status(400).json({ error: err.message, code: 'unknown_target' });
-      throw err;
-    }
-    if (!admin && cfg.configured) {
-      const name = target ?? cfg.defaultTarget ?? cfg.nodes[0]?.name ?? '';
-      const members = (targetNodes(cfg, name) ?? []).map((n) => n.name);
-      if (!nodesAllowed('user', roles, members)) {
-        return res.status(403).json({ error: `ノード ${members.join(', ')} は管理者だけが触れます。`, code: 'node_not_allowed' });
-      }
-    }
+    const probe = viewerProbe(session, req.query.target);
+    if (!probe.ok) return res.status(probe.status).json(probe.body);
+    const node = probe.node;
+    // 利用者には、その人の先頭（RPROXY_UI_USER_CERTS か、利用者・ロールごとの割り当て。#160）の名前だけ
+    const prefixes = certPrefixesFor(probe.admin ? 'admin' : 'user', probe.roles, session.user.id, session.user.roles ?? []);
     const raw = node ? await withNode(node, () => listCerts()) : await listCerts();
-    const info: CertsInfo = { available: true, certs: certsFromRproxy(raw, admin ? null : roles.userCerts) };
+    const info: CertsInfo = { available: true, certs: certsFromRproxy(raw, prefixes) };
     return res.status(200).json(info);
   } catch (err) {
     if (err instanceof RproxyError && (err.status === 403 || err.status === 404)) {

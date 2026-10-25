@@ -97,6 +97,9 @@ DB_PORT=3307
 DB_DATABASE="[database]"
 DB_USER="[username]"
 DB_PASSWORD="[password]"
+# DB への接続を TLS にするとき（README の「DB への接続（TLS）」）。DB_SSL_CA を書けば DB_SSL を書かなくても TLS
+# DB_SSL=true
+# DB_SSL_CA="/etc/rproxy-ui/db-ca.pem"
 
 # Keycloak
 KEYCLOAK_CLIENT_ID="[client_id]"
@@ -128,6 +131,7 @@ Unix ソケットは rproxy-api の既定でモード 660 なので、UI を動�
 
 Keycloak のレルムは `keycloak/realm-rproxy-dev.json` から作れる（管理コンソールの「Create realm」→「Resource file」で読み込む）。
 このファイルにはクライアントシークレットとユーザーが入っていないので、読み込んだあと、クライアント `rproxy-ui` の「Credentials」でシークレットを確認して `KEYCLOAK_CLIENT_SECRET` に設定する。URL は con0 の開発環境（`http://con0.dev.home:3001`）向け。
+このファイルは開発用（パスワードの決まり・OTP なし、http の URI）。本番の土台にするなら [docs/PRODUCTION.md](docs/PRODUCTION.md) の「3. Keycloak」のとおりに直す。
 
 Keycloak クライアントの「Valid redirect URIs」には `${NEXTAUTH_URL}/api/auth/callback/keycloak` を登録してください。
 
@@ -153,7 +157,10 @@ Keycloak のロールで、だれが何をできるかを決める（API route �
 `rproxy-user`（`rproxy-admin` でない人）のルールは、API route が次のように確かめる（画面はファイルの欄を読み取り専用にし、注意を出すだけ）。`rproxy-admin` は今までどおり制限されない。
 
 - **サーバのファイルを指す項目は書けない**（403 `file_not_allowed`）：`tls.certificates[]` の `cert_file`・`chain_file`・`key_file`、`tls.client_auth` の `ca_file`・`chain_file`、`tls.upstream` と `tls.routes[].upstream` の `ca_file`・`cert_file`・`chain_file`・`key_file`、L7 のサービスの `tls` のファイル、`basic_auth` の `users_file`、`oidc` の `client_secret_file`・`cookie_secret_file`・`ca_file` など、`*_file` の項目すべて（JSON で書くミドルウェアも同じ）。rproxy は自分が読めるどの鍵でも使えるので、利用者がダッシュボードの鍵で別のポートに TLS を終端すると、管理者の cookie を盗めるため。
-- **TLS の証明書は登録済みの名前から選ぶ**：rproxy-api v0.4.2 の証明書の API（`PUT /certs/{name}`。`features.cert_store`）に管理者が登録した証明書を、`tls.certificates[]` の `{"cert": "<名前>"}` で使う。フォームの「＋ 登録済みの証明書を追加」は `/api/forward/certs`（rproxy の `GET /certs`。UI のトークンに `certs:read` が要る。名前・名前の一覧・期限だけ）から選ばせる。`RPROXY_UI_USER_CERTS=tenant-,shared-` のように名前の先頭を書くと、利用者が選べる名前を絞れる（外は 403 `cert_not_allowed`。空（既定）ならすべての名前）。先頭は利用者みんなで共通（利用者ごとには分けられない）で、区切りを見ずに文字の先頭だけで比べる（`tenant` は `tenantx` にも一致するので、`tenant-` のように区切りの文字で終える）。ダッシュボードの証明書を証明書の API に置くなら、必ずこれで外す。`?target=` で聞くノードも `RPROXY_UI_USER_NODES` の内だけ。
+- **TLS の証明書は登録済みの名前から選ぶ**：rproxy-api v0.4.2 の証明書の API（`PUT /certs/{name}`。`features.cert_store`）に管理者が登録した証明書を、`tls.certificates[]` の `{"cert": "<名前>"}` で使う。フォームの「＋ 登録済みの証明書を追加」は `/api/forward/certs`（rproxy の `GET /certs`。UI のトークンに `certs:read` が要る。名前・名前の一覧・期限だけ）から選ばせる。`RPROXY_UI_USER_CERTS=tenant-,shared-` のように名前の先頭を書くと、利用者が選べる名前を絞れる（外は 403 `cert_not_allowed`。空（既定）ならすべての名前）。先頭は区切りを見ずに文字の先頭だけで比べる（`tenant` は `tenantx` にも一致するので、`tenant-` のように区切りの文字で終える）。ダッシュボードの証明書を証明書の API に置くなら、必ずこれで外す。`?target=` で聞くノードも `RPROXY_UI_USER_NODES` の内だけ。
+  - **利用者・ロールごとの割り当て**（#160）：`RPROXY_UI_USER_CERTS` は利用者みんなで共通なので、tenant-a の利用者が `tenant-b-www` を選び、同じ IP の自分のポートで TLS を終端できてしまう（cookie はポートで分かれない）。テナントを分けるなら、`RPROXY_UI_USER_CERTS_BY_ROLE=tenant-a:tenant-a-,tenant-b:tenant-b-`（Keycloak のロール:先頭）か `RPROXY_UI_USER_CERTS_BY_SUB=<sub>:alice-`（Keycloak の `sub`:先頭）で割り当てる。カンマで区切り、同じロール・`sub` を並べれば先頭を足せる（ロールの名前に `:` があってもよい。最後の `:` の後ろが先頭）。
+  - 割り当てのある利用者は、その `sub` とロールに割り当てた先頭を合わせたものだけを選べ、`RPROXY_UI_USER_CERTS` は使わない。どちらかの割り当てを書いたとき、割り当てのない利用者は `RPROXY_UI_USER_CERTS`（空なら何も選べない）。どちらも空（既定）なら今までどおり。
+  - 割り当ては `/api/forward/certs` の一覧と、証明書の名前を受け取るすべての経路（追加・変更・差分・インポート・巻き戻し・コピー・移動・ノードごとの上書き）で確かめる。自分のルールに前からある名前は、変えなければそのまま残せる。
 - **OIDC のミドルウェアは足せない・変えられない**（403 `middleware_not_allowed`）：rproxy は `issuer` の discovery が返す `token_endpoint`・`jwks_uri` にもつなぐが、UI はその先を確かめられないため。前からある同じ設定はそのまま残せる（秘密のファイルも書けないので、利用者が新しく作ることはもともとできない）。
 - **転送先**（`remote_addr`・`targets`・宛先の死活確認（`health_check.port`）・`tls.routes[]` の宛先・L7 のサービスの `url`・ルートの `to`・`forward_auth` の `address`・`oidc` の `issuer`、ノードごとの上書きの転送先）（403 `target_not_allowed`）：
   - URL は厳しく読む（だれでも）：ホストは名前・IPv4・`[IPv6]`（ゾーン ID は不可）、ポートは 1〜65535 の数字だけ、userinfo（`@`）は不可。読めない URL は保存の前に 400 `invalid`、前から保存してある読めない URL は利用者には 403。
@@ -166,6 +173,7 @@ Keycloak のロールで、だれが何をできるかを決める（API route �
 - **前からある値はそのまま残せる**：自分のルールの変更では、今のルールにあるファイルのパス・証明書の名前・転送先は、変えなければそのまま保存できる（項目の位置と値の組で比べる。配列の順番やサービス・ミドルウェアの名前を変えても同じ値なら残せる）。新しく書いた値・変えた値だけを断る。インポートの置き換えと巻き戻しは今のルールと比べ、新しく作るルール（追加・インポートの追加・ほかのノードへのコピー・移動）は前の値がないので全部を確かめる。上げる前からある利用者のルールは動いたままなので、管理者は利用者のルールのファイルのパスと転送先を見直す。
 - **ほかの人のルールのパスを伏せる**：固定ルール（rproxy の設定ファイルのルール）を利用者に見せるとき（ダッシュボード・詳細）、`*_file` の値・証明書の期限のファイル・誤りの文の中のそのパスを `<hidden>` にする。
 - 状態を変える API（`POST /api/forward/*`）は、ほかのサイトからの要求（`Sec-Fetch-Site` が same-origin でない、`Origin`（なければ `Referer`）の host が要求の `Host`・`X-Forwarded-Host`・`NEXTAUTH_URL` のどれとも違う）を 403 `csrf` で断る（SameSite=Lax の cookie に加えた CSRF の対策）。前に置くリバースプロキシは `Host` か `X-Forwarded-Host` を渡すか、`NEXTAUTH_URL` を利用者が開く URL にしておく。
+  - `Sec-Fetch-Site` も `Origin`・`Referer` もない要求も 403 `csrf`（v0.4.10 から。今のブラウザは画面からの POST に必ずどれかを付ける）。サインインのクッキーを使ってスクリプトから API を呼ぶなら（文書にした使い方ではない）、`Origin: <NEXTAUTH_URL の origin>` を付ける。keepalived の口（`/api/forward/ha/*`。Bearer のトークン）はこの確認を通らないので、そのまま使える。前に置くリバースプロキシは `Origin`・`Referer`・`Sec-Fetch-*` を落とさない。
 - 履歴（`forward_rules_log`）の `auth_id` は操作した利用者（管理者がほかの人のルールを変えたら管理者）。
 
 ## セキュリティ
@@ -189,6 +197,20 @@ UI はすべての応答（画面・API・静的なファイル）に次のヘ�
 - `form-action` の Keycloak の origin は `KEYCLOAK_ISSUER` から作る（サインインのフォームが Keycloak へ移るため）。
 - `next dev`（開発）では `script-src` に `'unsafe-eval'`、`connect-src` に `ws:`・`wss:` を足す。
 - 前に置く rproxy は L4（TCP と TLS の終端）なので HTTP のヘッダを足せない。UI が自分で付けるので、前段でヘッダを足す設定は要らない（HTTP のリバースプロキシを置くなら、同じヘッダを重ねて付けないこと）。
+
+### DB への接続（TLS）
+
+DB が別のホストにあるなら、UI と DB の間を TLS にする（`components/dbtls.ts`。`db/migrate.mjs` も同じ環境変数を読む）。
+
+| 環境変数 | 内容 |
+|---|---|
+| `DB_SSL` | `true` で TLS を使い、DB の証明書を確かめる（OS の CA か `DB_SSL_CA`。名前は `DB_HOST` と比べる）。既定 `false` |
+| `DB_SSL_CA` | DB の証明書を確かめる CA（PEM）のファイル。書けば `DB_SSL` を書かなくても TLS を使う（`rproxy-ui` ユーザーが読めること） |
+| `DB_SSL_VERIFY` | `false` で証明書を確かめない（試験用。勧めない） |
+
+- 値の誤り・読めない CA は起動時に止める（`journalctl -u rproxy-ui` に理由）。
+- MariaDB 側は `require_secure_transport=ON` か、UI のユーザーに `ALTER USER 'rproxy_ui'@'%' REQUIRE SSL` で TLS を強いる。
+- 同じホストの MariaDB（`DB_HOST=127.0.0.1`）なら TLS は要らない。
 
 ### セッション
 
@@ -421,6 +443,7 @@ rproxy の API を直接呼んで作ったルール（CI・スクリプト・Kub
 プロトコル・待ち受けアドレス・ポート・操作・期間（`rproxy-admin` は操作した利用者も）で絞り込めます。ルールの詳細画面にも、そのルールの履歴が出ます。
 
 - 見られる範囲：利用者は、自分が操作した履歴と、今自分が持っているルールの履歴。`rproxy-admin` はすべて。
+  - **前の持ち主の版も見える**：履歴の行には持ち主の列がなく、ルールはキー（プロトコル・待ち受けアドレス・ポート・ノードを設定していればノード／グループ）で結ぶ。ほかの人が消したルールと同じキーのルールを作ると、その人が持っていたときの版（操作した人の ID・転送先・登録済みの証明書の名前・ファイルのパス・接続を許可する送信元・ラベルなど。伏せない）も「今自分が持っているルールの履歴」として見え、「この版に戻す」で同じ内容を作れる（利用者の制限は新しい値と同じように確かめる）。利用者の間で見せたくない古い版は、管理者が DB の管理者のユーザーで `forward_rules_log` から消す（例 `DELETE FROM forward_rules_log WHERE protocol = 'tcp' AND src_addr = '0.0.0.0' AND src_port = 8443 AND updated_at < '2026-10-01'`）。
 - 「この版に戻す」で、その時点の内容に戻せます。変更・追加の行はその操作のあとの内容に、削除の行は削除する直前の内容に戻します。
   ルールが今もあれば置き換え（送信元 IP の扱い・ポート範囲・L4 / L7 が違う版は作り直し）、削除されていれば作り直します。巻き戻しも履歴に残ります。
 - rproxy の固定ルールは DB にないので、履歴にも出ません（同じキーの固定ルールがあるときは巻き戻せません）。
@@ -475,7 +498,7 @@ default_target: ha                   # 追加の画面で最初に選ぶもの�
 - **ノード単位**：ダッシュボードのノードのタブの「すべて一時停止 / すべて再開」で、そのノードのルールをまとめて止める・再開する（そのノードに置いたルールはルールごと、グループのルールはそのノードだけ）。「エクスポート」の横で範囲（ノード／グループ）を選べる。
 - **act / stb の昇格の前に揃える**（#109）：stb が act（= DB の定義）とずれたまま昇格しないように、
   - UI が active_standby のグループを `RPROXY_UI_HA_SYNC_SECS`（既定 30 秒、0 で止める）ごとに調べ、ずれ・未登録のルールを自動で送り直す（履歴は「送り直し」、操作者は `system`）。グループに `auto_resend: false` を書くと、ずれの表示だけにする。続けて 3 回失敗したらダッシュボードに注意を出す。UI を複数動かしても、1 回の見回りは DB のロックで 1 つの UI だけが行う。
-  - keepalived と組む口（Keycloak のセッションの代わりに `RPROXY_UI_HA_TOKEN_FILE` のトークン（1 行に 1 つ）を `Authorization: Bearer` で送る。設定しなければ 404）：`GET /api/forward/ha/ready?node=`（揃っていれば 200、揃っていなければ 503 とその中身）と `POST /api/forward/ha/notify?node=&state=MASTER`（昇格した直後に、そのノードへすぐ送り直す）。
+  - keepalived と組む口（Keycloak のセッションの代わりに `RPROXY_UI_HA_TOKEN_FILE` のトークン（1 行に 1 つ）を `Authorization: Bearer` で送る。設定しなければ 404。Bearer のない要求は 401、ファイルを読めなければ 500 `ha_token_file`（パスと理由は UI のログだけに出す））：`GET /api/forward/ha/ready?node=`（揃っていれば 200、揃っていなければ 503 とその中身）と `POST /api/forward/ha/notify?node=&state=MASTER`（昇格した直後に、そのノードへすぐ送り直す）。
   - スクリプトと設定の例は `contrib/keepalived/`（.deb では `/usr/share/doc/rproxy-ui/examples/keepalived/`）。track_script は 503 のときだけ優先度を下げ、UI に届かないときは何もしない（act が落ちたら、揃っていなくても昇格する）。
   - 画面の「act / stb」（`/ha`。管理者だけ。ダッシュボードのノードの一覧から開く）で、グループの act と、ノードごとに揃っているかを確かめ、「このノードを揃える」で送り直せる。元の act に戻す（failback）手順の案内もここにある。VIP を動かすのは keepalived。
 - **ノードに限ったロール**：`RPROXY_UI_USER_NODES=node1,node2` で、`rproxy-user` が触れるノードを絞れる（グループはそのノードがすべて入っているときだけ。外は 403 `node_not_allowed`。追加の画面の選択肢も絞る）。`rproxy-admin` は制限されない。既定は制限なし。

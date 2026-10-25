@@ -39,7 +39,7 @@ const tcpRule = { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8443, distAddr: 
 const fileTls = { mode: 'terminate', certificates: [{ cert_file: '/etc/rproxy/tls/a.pem', key_file: '/etc/rproxy/tls/a.key' }] };
 
 function call(action: string, body?: unknown, method = 'POST', query: Record<string, string> = {}) {
-  const req = { method, query: { ...query, forward: action }, body } as unknown as NextApiRequest;
+  const req = { method, query: { ...query, forward: action }, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest;
   const res: any = {};
   res.status = vi.fn(() => res);
   res.json = vi.fn(() => res);
@@ -102,6 +102,41 @@ describe('server files (#155)', () => {
     expect((await call('add', { ...tcpRule, tls: { mode: 'terminate', certificates: [{ cert: 'tenant-b' }] } })).status).toBe(200);
     mocks.getServerSession.mockResolvedValue(admin);
     expect((await call('add', { ...tcpRule, tls: { mode: 'terminate', certificates: [{ cert: 'dashboard' }] } })).status).toBe(200);
+  });
+
+  // #160：利用者・ロールごとの割り当て。割り当てのある利用者は RPROXY_UI_USER_CERTS の代わりにその先頭だけ
+  it('RPROXY_UI_USER_CERTS_BY_ROLE / _BY_SUB replace the shared prefixes for the users they name', async () => {
+    vi.stubEnv('RPROXY_UI_USER_CERTS', 'shared-');
+    vi.stubEnv('RPROXY_UI_USER_CERTS_BY_ROLE', 'tenant-a:tenant-a-,tenant-b:tenant-b-');
+    vi.stubEnv('RPROXY_UI_USER_CERTS_BY_SUB', 'user-9:special-');
+    const add = (cert: string) => call('add', { ...tcpRule, tls: { mode: 'terminate', certificates: [{ cert: cert }] } });
+    mocks.getServerSession.mockResolvedValue({ ...user, user: { ...user.user, roles: ['rproxy-user', 'tenant-a'] } });
+    expect((await add('tenant-a-www')).status).toBe(200);
+    const other = await add('tenant-b-www');
+    expect([other.status, other.body.code]).toEqual([403, 'cert_not_allowed']);
+    // 割り当てのある利用者には、共通の先頭は効かない
+    expect((await add('shared-www')).status).toBe(403);
+    // sub の割り当てとロールの割り当ては足し合わせる
+    mocks.getServerSession.mockResolvedValue({ ...user, user: { ...user.user, id: 'user-9', roles: ['rproxy-user', 'tenant-b'] } });
+    expect((await add('special-x')).status).toBe(200);
+    expect((await add('tenant-b-www')).status).toBe(200);
+    // 割り当てのない利用者は共通の先頭（RPROXY_UI_USER_CERTS）
+    mocks.getServerSession.mockResolvedValue(user);
+    expect((await add('shared-www')).status).toBe(200);
+    expect((await add('tenant-a-www')).status).toBe(403);
+    // 共通の先頭もなければ何も選べない
+    vi.stubEnv('RPROXY_UI_USER_CERTS', '');
+    expect((await add('shared-www')).status).toBe(403);
+    mocks.getServerSession.mockResolvedValue(admin);
+    expect((await add('tenant-b-www')).status).toBe(200);
+  });
+
+  it('a user keeps a stored certificate already on the own rule even outside the assignment', async () => {
+    vi.stubEnv('RPROXY_UI_USER_CERTS_BY_ROLE', 'tenant-a:tenant-a-');
+    storedRule({ options: { tls: { mode: 'terminate', certificates: [{ cert: 'legacy' }] } } });
+    expect((await call('modify', { ...tcpRule, distPort: 8081, tls: { mode: 'terminate', certificates: [{ cert: 'legacy' }] } })).status).toBe(200);
+    const swapped = await call('modify', { ...tcpRule, tls: { mode: 'terminate', certificates: [{ cert: 'tenant-b-x' }] } });
+    expect([swapped.status, swapped.body.code]).toEqual([403, 'cert_not_allowed']);
   });
 
   it('on modify, a user keeps the files already on the own rule, but may not change or add one', async () => {

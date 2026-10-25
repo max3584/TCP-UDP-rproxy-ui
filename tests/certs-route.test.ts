@@ -32,7 +32,7 @@ const RAW = [
 ];
 
 const call = (method = 'GET', query: Record<string, string> = {}) => {
-  const req = { method, query: query, headers: {} } as unknown as NextApiRequest;
+  const req = { method, query: query, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest;
   const res: any = {};
   res.status = vi.fn(() => res);
   res.json = vi.fn(() => res);
@@ -62,6 +62,18 @@ describe('/api/forward/certs', () => {
     expect((await call()).body.certs.map((c: { name: string }) => c.name)).toEqual(['tenant-a']);
     mocks.getServerSession.mockResolvedValue(admin);
     expect((await call()).body.certs.map((c: { name: string }) => c.name)).toEqual(['tenant-a', 'dashboard']);
+  });
+
+  it('users with an assignment (RPROXY_UI_USER_CERTS_BY_ROLE) see only their names (#160)', async () => {
+    vi.stubEnv('RPROXY_UI_USER_CERTS', 'dash');
+    vi.stubEnv('RPROXY_UI_USER_CERTS_BY_ROLE', 'tenant-a:tenant-');
+    mocks.listCerts.mockResolvedValue(RAW);
+    mocks.getServerSession.mockResolvedValue({ ...user, user: { ...user.user, roles: ['rproxy-user', 'tenant-a'] } });
+    expect((await call()).body.certs.map((c: { name: string }) => c.name)).toEqual(['tenant-a']);
+    mocks.getServerSession.mockResolvedValue(user);
+    expect((await call()).body.certs.map((c: { name: string }) => c.name)).toEqual(['dashboard']);
+    vi.stubEnv('RPROXY_UI_USER_CERTS', '');
+    expect((await call()).body.certs).toEqual([]);
   });
 
   it('is available: false when rproxy refuses (no certs:read) or is old, 502 when unreachable, and needs a role and GET', async () => {

@@ -40,7 +40,7 @@ DB_HOST=db.example DB_DATABASE=rproxy DB_ADMIN_USER=root DB_ADMIN_PASSWORD=... n
 - An existing database without `schema_migrations` (migrated by hand) is refused without `--baseline <number>` (the last migration applied). Everything up to it is recorded as `baseline`; the rest is applied.
 - `003` (the one-time manual template) is never run; it is recorded as `skipped`. A migration whose content changed after it was applied only gets a warning.
 - Concurrent runs take turns (`GET_LOCK('rproxy-ui-migrate')`); later runs apply only what is missing.
-- It connects with `DB_HOST`, `DB_PORT`, `DB_DATABASE` and the admin that runs DDL, `DB_ADMIN_USER` and `DB_ADMIN_PASSWORD` (else `DB_USER` and `DB_PASSWORD`). `--create-database` creates the database if missing; `--wait <seconds>` waits until it can connect.
+- It connects with `DB_HOST`, `DB_PORT`, `DB_DATABASE` and the admin that runs DDL, `DB_ADMIN_USER` and `DB_ADMIN_PASSWORD` (else `DB_USER` and `DB_PASSWORD`). TLS uses the same `DB_SSL`, `DB_SSL_CA` and `DB_SSL_VERIFY` as the UI ("TLS to the DB" in the README). `--create-database` creates the database if missing; `--wait <seconds>` waits until it can connect.
 - With `DB_APP_USER` and `DB_APP_PASSWORD` (`DB_APP_HOST`, default `%`) it creates the UI's user (or sets its password) and grants it the UI's privileges of "DB users" below (on the tables that exist). `DB_BACKUP_USER` and `DB_BACKUP_PASSWORD` (`DB_BACKUP_HOST`) make a read-only user for backups (`SELECT, LOCK TABLES, SHOW VIEW`).
 
 Columns of `schema_migrations`: `version` (the file name without `.sql`), `applied_at` (UTC), `checksum` (SHA-256 of the file), `method` (`applied`, `schema`, `baseline`, `skipped`). Only `migrate.mjs` writes it; the UI and rproxy do not use it.

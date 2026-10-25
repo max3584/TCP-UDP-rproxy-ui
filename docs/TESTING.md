@@ -259,9 +259,19 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 | API（add・modify・plan） | 利用者はファイルのパスで 403 `file_not_allowed`、許可の外の登録済みの証明書で 403 `cert_not_allowed`、断る転送先で 403 `target_not_allowed`（rproxy にも DB にも何もしない）。管理者は通る。自分のルールの変更では前からあるファイルのパス・転送先はそのまま通り、変えた値だけを断る。`GET /interfaces` の予約済みのアドレスを断る |
 | ダッシュボード・詳細 | 利用者には固定ルールのパスを伏せ、管理者には出す |
 | /api/forward/certs | 名前・名前の一覧・期限だけ、利用者には `RPROXY_UI_USER_CERTS` の名前だけ、`?target=` は `RPROXY_UI_USER_NODES` の内だけ、403・404 は `available: false` |
+| 証明書の割り当て（#160） | `RPROXY_UI_USER_CERTS_BY_SUB`・`_BY_ROLE` の読み方と誤り（`tests/roles.test.ts`）、割り当てのある利用者はその先頭だけ（共通の先頭は効かない）・sub とロールの足し合わせ・割り当てのない利用者は共通の先頭（なければ選べない）、前からある名前は残せる（API の add・modify と /api/forward/certs の一覧） |
 | レビューの指摘 | 読めない URL（`:65536`・`:8a`・`[fe80::1%25eth0]`）はだれでも 400、保存済みなら利用者は 403。L4 の死活確認のポート、上書きの転送先の置き場所、oidc の変更は 403、`RPROXY_UI_PROTECTED_TARGETS` |
 
 テストの名前解決は `tests/setup.ts` が決める（`localhost` は 127.0.0.1、`*.invalid` は解決できない、ほかは 192.0.2.10）。利用者のロールは `vitest.config.mts` の `RPROXY_UI_USER_ROLE=rproxy-user`。
+
+## 単体テスト：UI の低い指摘（#164）
+
+| テスト | 確かめること |
+|---|---|
+| ノードの制限（`tests/node-restrict.test.ts`・`tests/forward-nodes.test.ts`） | `/api/forward/acme`・`capabilities`・`interfaces`・`certs` は利用者には `RPROXY_UI_USER_NODES` の内のノードだけ（外は 403 `node_not_allowed`、見るだけのノードは 400 `unknown_target`、既定に触れなければ触れる最初のノード、触れるノードがなければ聞かずに 403）。ダッシュボードは触れないノードに聞かず、その状態・固定ルール・誤りの文・グループの act を返さない。1 件のルールは触れないノードを 403 |
+| DB の TLS（`tests/dbtls.test.ts`） | `DB_SSL`・`DB_SSL_CA`・`DB_SSL_VERIFY` の読み方と誤り。UI（`components/dbtls.ts`）と `db/migrate.mjs` が同じ結果 |
+| HA の口（`tests/hasync.test.ts`） | Bearer のない要求はファイルを読む前に 401、読めないトークンファイルのパスと理由を返さない |
+| CSRF（`tests/csrf.test.ts`・`tests/ui/security.spec.ts`） | `Sec-Fetch-Site` も `Origin`・`Referer` もない状態を変える要求は 403 `csrf`。`Sec-Fetch-Site: same-origin` だけ・同じ origin の `Origin` だけなら通す（Playwright の `page.request` は `SAME_ORIGIN` を付ける） |
 
 ## まだテストしていないこと
 

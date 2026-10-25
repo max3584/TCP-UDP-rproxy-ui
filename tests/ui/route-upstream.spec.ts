@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { expect, test, type Page } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 
 const RULE_PORT = 19571;
 const TLS_BACKEND = 19572;
@@ -23,7 +24,7 @@ async function features(page: Page): Promise<Record<string, unknown>> {
 }
 
 async function deleteRule(page: Page): Promise<void> {
-  await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: RULE_PORT } });
+  await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: RULE_PORT } });
 }
 
 async function storedRule(page: Page): Promise<Record<string, any>> {

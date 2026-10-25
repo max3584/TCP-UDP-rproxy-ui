@@ -6,6 +6,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { expect, test, type Page } from '@playwright/test';
+import { SAME_ORIGIN } from './global-setup';
 
 const PP_PORT = 19561;
 const PP_BACKEND = 19562;
@@ -21,7 +22,7 @@ async function features(page: Page): Promise<Record<string, unknown>> {
 }
 
 async function deleteRule(page: Page, port: number): Promise<void> {
-  await page.request.post('/api/forward/delete', { data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
+  await page.request.post('/api/forward/delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port } });
 }
 
 async function storedRule(page: Page, port: number): Promise<Record<string, any>> {

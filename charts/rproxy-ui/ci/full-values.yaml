@@ -8,6 +8,9 @@ backup: {enabled: true, existingSecret: rproxy-ui-backup}
 networkPolicy:
   enabled: true
   ingressFrom: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress}}}]
+  egress:
+    enabled: true
+    egressTo: [{to: [{ipBlock: {cidr: 192.0.2.0/24}}], ports: [{port: 443, protocol: TCP}, {port: 8443, protocol: TCP}]}]
 ingress:
   enabled: true
   className: nginx

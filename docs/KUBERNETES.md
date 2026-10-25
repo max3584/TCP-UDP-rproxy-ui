@@ -150,7 +150,43 @@ rproxy-gateway が動かす rproxy の Pod を、**読むだけ**で画面に出
 - UI の Pod は 3000 番だけを受ける。`networkPolicy.ingressFrom`（NetworkPolicyPeer の並び。Ingress のコントローラ・Gateway の rproxy の namespace など）があればそこからだけ。
 - 同梱の MariaDB は、このリリースの UI・migration・バックアップの Pod からの 3306 番だけを受ける。
 
-出ていく通信（DB・Keycloak・rproxy）は絞らない。
+`networkPolicy.egress.enabled: true` で、UI の Pod から出ていく通信も絞る（勧める。UI が乗っ取られたときに、クラスタの中のほかのサービスへ広がらないようにする）：
+
+- 通すのは DNS（`networkPolicy.egress.allowDns`、既定 `true`。53 番の UDP・TCP）、同梱の MariaDB の 3306 番（`mariadb.enabled` のとき）と、`networkPolicy.egress.egressTo`（NetworkPolicyEgressRule の並び）だけ。
+- `egressTo` には Keycloak（`keycloak.issuer` の宛先。トークンの聞き直し・サインアウトにも使う）、rproxy-api の制御 API（VM の rproxy の URL・Gateway の rproxy の Pod の CIDR と制御 API のポート）、外の DB を書く。
+
+```yaml
+networkPolicy:
+  enabled: true
+  ingressFrom: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}}]
+  egress:
+    enabled: true
+    egressTo:
+      - to: [{ipBlock: {cidr: 192.0.2.10/32}}]          # Keycloak
+        ports: [{port: 443, protocol: TCP}]
+      - to: [{ipBlock: {cidr: 10.0.0.0/24}}]            # VM の rproxy-api・外の DB
+        ports: [{port: 8443, protocol: TCP}, {port: 3306, protocol: TCP}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: rproxy-system}}}]  # Gateway の rproxy
+        ports: [{port: 9443, protocol: TCP}]
+```
+
+migration の Job とバックアップの Pod は絞らない（UI の Pod だけ）。
+
+## 外の DB への TLS
+
+`db.tls.enabled: true` で、UI・migration の Job・バックアップが外の DB に TLS でつなぎ、DB の証明書を確かめる（`DB_SSL`・`DB_SSL_CA`・`DB_SSL_VERIFY`。README の「DB への接続（TLS）」）。社内の CA なら、CA の PEM を入れた Secret を `db.tls.caSecret`（キーは `db.tls.caKey`、既定 `ca.crt`）に書く。
+
+```shell
+kubectl -n rproxy-ui create secret generic rproxy-ui-db-ca --from-file=ca.crt=db-ca.pem
+```
+
+```yaml
+db:
+  host: mariadb.db.example.com
+  tls: {enabled: true, caSecret: rproxy-ui-db-ca}
+```
+
+同梱の MariaDB は TLS を出さないので、`mariadb.enabled` では使わない。
 
 ## バックアップと戻し方
 
@@ -192,8 +228,9 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `url` | （必須） | `NEXTAUTH_URL` |
 | `existingSecret` | （必須） | `NEXTAUTH_SECRET`・`KEYCLOAK_CLIENT_SECRET`・`DB_PASSWORD` |
 | `keycloak.issuer`・`clientId` | （必須）・`rproxy-ui` | |
-| `roles.*` | 空 | `RPROXY_UI_ROLES_CLAIM`・`_ADMIN_ROLE`・`_USER_ROLE`・`_USER_PORTS`・`_USER_NODES`・`_USER_TARGETS`・`_USER_CERTS`・`RPROXY_UI_PROTECTED_TARGETS`（`protectedTargets`。Pod の IP は変わるので Pod と Service の CIDR を書く。`userRole` が空なら `rproxy-admin` のない人は使えない） |
+| `roles.*` | 空 | `RPROXY_UI_ROLES_CLAIM`・`_ADMIN_ROLE`・`_USER_ROLE`・`_USER_PORTS`・`_USER_NODES`・`_USER_TARGETS`・`_USER_CERTS`・`_USER_CERTS_BY_SUB`（`userCertsBySub`）・`_USER_CERTS_BY_ROLE`（`userCertsByRole`）・`RPROXY_UI_PROTECTED_TARGETS`（`protectedTargets`。Pod の IP は変わるので Pod と Service の CIDR を書く。`userRole` が空なら `rproxy-admin` のない人は使えない） |
 | `db.host`・`port`・`database`・`user` | 空・3306・`rproxy`・`rproxy_ui` | |
+| `db.tls.enabled`・`caSecret`・`caKey`・`verify` | `false`・空・`ca.crt`・`true` | 外の DB への TLS（上の「外の DB への TLS」） |
 | `migrate.enabled`・`existingSecret`・`baseline`・`createDatabase`・`createUser` | `true`・空・空・`false`・`false` | |
 | `mariadb.enabled`・`existingSecret`・`image`・`persistence` | `false`・空・`mariadb:11.8`・10Gi | |
 | `rproxyApi.url`・`existingSecret`・`tokenKey` | 空 | VM の rproxy-api 1 台 |
@@ -201,7 +238,7 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `rproxy.discovery.enabled`・`secretName` | `false`・`rproxy-ui-discovery` | Gateway の rproxy（読むだけ） |
 | `usage.intervalSeconds` | `60` | `RPROXY_UI_USAGE_SECS` |
 | `backup.*` | 無効 | |
-| `ingress.*`・`httpRoute.*`・`networkPolicy.*` | 無効 | |
+| `ingress.*`・`httpRoute.*`・`networkPolicy.*` | 無効 | `networkPolicy.egress.*` で出ていく通信も絞る（上の「NetworkPolicy」） |
 | `extraEnv`・`extraEnvFrom`・`extraVolumes`・`extraVolumeMounts` | 空 | ほかの `RPROXY_UI_*` など |
 
 すべての値はリポジトリの `charts/rproxy-ui/values.yaml`。

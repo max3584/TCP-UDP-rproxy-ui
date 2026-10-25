@@ -17,6 +17,18 @@ test.describe('security review fixes', () => {
     expect(rule.status()).toBe(404);
   });
 
+  // #164：Sec-Fetch-Site も Origin・Referer もない要求（page.request はどれも付けない）も断る。画面のフォームからの保存は通る（rules.spec.ts など）
+  test('a POST with neither Sec-Fetch-Site nor Origin / Referer is refused (403 csrf)', async ({ page }) => {
+    const port = 19492;
+    const res = await page.request.post('/api/forward/add', {
+      data: { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: port, distAddr: '127.0.0.1', distPort: 9 },
+    });
+    expect(res.status()).toBe(403);
+    expect((await res.json()).code).toBe('csrf');
+    const rule = await page.request.get(`/api/forward/rule?protocol=tcp&addr=127.0.0.1&port=${port}`);
+    expect(rule.status()).toBe(404);
+  });
+
   test('users do not get rproxy config paths, errors or build hashes', async ({ page }) => {
     const system = await page.request.get('/api/forward/system');
     expect(system.status()).toBe(200);

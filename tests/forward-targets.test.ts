@@ -50,7 +50,7 @@ const { conn, pool } = mocks;
 const session = { user: { id: 'user-1', name: 'n', email: 'e', image: '', role: 'rproxy-user', roles: ['rproxy-user'] }, expires: '' };
 
 function call(action: string, body?: unknown, method = 'POST') {
-  const req = { method, query: { forward: action }, body } as unknown as NextApiRequest;
+  const req = { method, query: { forward: action }, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest;
   const res: any = {};
   res.status = vi.fn(() => res);
   res.json = vi.fn(() => res);

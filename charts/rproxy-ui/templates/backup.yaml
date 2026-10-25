@@ -59,7 +59,7 @@ spec:
                   printf '[client]\nuser=%s\npassword=%s\n' "$DB_BACKUP_USER" "$DB_BACKUP_PASSWORD" > /tmp/my.cnf
                   out="/backup/rproxy-ui-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
                   mariadb-dump --defaults-extra-file=/tmp/my.cnf -h "$DB_HOST" -P "$DB_PORT" \
-                    --single-transaction --routines --no-tablespaces --databases "$DB_DATABASE" | gzip > "$out.part"
+                    {{ include "rproxy-ui.dbDumpTls" . }} --single-transaction --routines --no-tablespaces --databases "$DB_DATABASE" | gzip > "$out.part"
                   mv "$out.part" "$out"
                   find /backup -name 'rproxy-ui-*.sql.gz' -mtime +"$KEEP" -delete
                   ls -l /backup
@@ -84,8 +84,10 @@ spec:
               volumeMounts:
                 - {name: backup, mountPath: /backup}
                 - {name: tmp, mountPath: /tmp}
+                {{- include "rproxy-ui.dbTlsMount" . | nindent 16 }}
           volumes:
             - name: backup
               persistentVolumeClaim: {claimName: {{ $claim }}}
             - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+            {{- include "rproxy-ui.dbTlsVolume" . | nindent 12 }}
 {{- end }}
