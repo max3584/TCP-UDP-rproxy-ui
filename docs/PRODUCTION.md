@@ -17,7 +17,7 @@ rproxy-api ──起動時にルールを復元──▶ MariaDB（読み取り�
 
 ## 1. インストール
 
-rproxy-ui は Node.js 22.19.0 以上が要る。Debian 13（標準は 20）と Ubuntu 24.04（標準は 18）では足りないので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs をメジャー版を指定して入れる（下は 24）。apt の pin で、ディストリの nodejs は選ばれないようにする。
+rproxy-ui は Node.js 22.23.4 以上（24 なら 24.22.1 以上、26 なら 26.12.1 以上。組み込みの Brotli の脆弱性 CVE-2026-111497 の直った版。23・25 は直らない）が要る（古い版では起動時に警告を出す）。Debian 13（標準は 20）と Ubuntu 24.04（標準は 18）では足りないので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs をメジャー版を指定して入れる（下は 24）。apt の pin で、ディストリの nodejs は選ばれないようにする。
 
 ```shell
 NODE_MAJOR=24
@@ -32,7 +32,7 @@ node --version      # v24.x.x
 apt policy nodejs   # 候補（Candidate）が deb.nodesource.com のものになっていること
 ```
 
-- Debian 13・Ubuntu 24.04 とも同じ手順（NodeSource の `nodistro` は配布物を問わない）。22 にするなら `NODE_MAJOR=22`（22.19.0 以上）
+- Debian 13・Ubuntu 24.04 とも同じ手順（NodeSource の `nodistro` は配布物を問わない）。22 にするなら `NODE_MAJOR=22`（22.23.4 以上）
 - `/etc/apt/preferences.d/nodejs` の pin（優先度 600）で、ディストリの nodejs をすでに入れていても `apt install nodejs` が NodeSource のものに置き換え、`apt upgrade` でもディストリの nodejs には戻らない。NodeSource の nodejs は npm を含む（ディストリの `npm` パッケージは要らない）
 - `apt upgrade` で上がるのは同じメジャー版の中だけ。メジャー版を変えるときは `NODE_MAJOR` を変えて `nodesource.list` を書き直し、`sudo apt update && sudo apt install nodejs`
 

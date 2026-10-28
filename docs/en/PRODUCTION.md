@@ -17,7 +17,7 @@ rproxy-api ──restores rules at startup──▶ MariaDB (read-only user)
 
 ## 1. Installation
 
-rproxy-ui requires Node.js 22.19.0 or later. Debian 13 (standard: 20) and Ubuntu 24.04 (standard: 18) do not have it, so first install nodejs from [NodeSource](https://github.com/nodesource/distributions) with a fixed major version (24 below). An apt pin keeps the distribution's nodejs from being chosen.
+rproxy-ui requires Node.js 22.23.4 or later (24.22.1 or later on 24, 26.12.1 or later on 26: the releases with the fix for the bundled Brotli flaw CVE-2026-111497; 23 and 25 get no fix); older releases get a warning at startup. Debian 13 (standard: 20) and Ubuntu 24.04 (standard: 18) do not have it, so first install nodejs from [NodeSource](https://github.com/nodesource/distributions) with a fixed major version (24 below). An apt pin keeps the distribution's nodejs from being chosen.
 
 ```shell
 NODE_MAJOR=24
@@ -32,7 +32,7 @@ node --version      # v24.x.x
 apt policy nodejs   # the Candidate must come from deb.nodesource.com
 ```
 
-- The steps are the same on Debian 13 and Ubuntu 24.04 (NodeSource's `nodistro` does not depend on the distribution). For 22, use `NODE_MAJOR=22` (22.19.0 or later)
+- The steps are the same on Debian 13 and Ubuntu 24.04 (NodeSource's `nodistro` does not depend on the distribution). For 22, use `NODE_MAJOR=22` (22.23.4 or later)
 - With the pin in `/etc/apt/preferences.d/nodejs` (priority 600), `apt install nodejs` replaces an already installed distribution nodejs with NodeSource's, and `apt upgrade` never goes back to the distribution's. NodeSource's nodejs includes npm (the distribution's `npm` package is not needed)
 - `apt upgrade` only moves within the same major version. To change the major version, change `NODE_MAJOR`, rewrite `nodesource.list`, and run `sudo apt update && sudo apt install nodejs`
 

@@ -3,7 +3,7 @@
 [![CI](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/max3584/TCP-UDP-rproxy-ui)](https://github.com/max3584/TCP-UDP-rproxy-ui/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D22.19.0-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.23.4-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://github.com/max3584/TCP-UDP-rproxy-ui/issues?q=is%3Aissue+is%3Aopen+%22Dependency+Dashboard%22)
 
 日本語: [README.md](README.md)
@@ -26,7 +26,7 @@ The data is documentation sample data (192.0.2.0/24, 198.51.100.0/24, 2001:db8::
 ## Installation (Debian / Ubuntu)
 
 It can be installed from the same apt repository as rproxy-api (`rproxy-ui`, a single package for any CPU).
-Node.js 22.19.0 or later is required (Next.js 16 needs 20.9, and undici 8, used for Unix sockets, needs 22.19.0). Debian 13's standard nodejs is 20 and Ubuntu 24.04's is 18, which is not enough, so first install nodejs from [NodeSource](https://github.com/nodesource/distributions) with a fixed major version (24 below). An apt pin keeps the distribution's nodejs from being chosen.
+Node.js 22.23.4 or later is required (24.22.1 or later on 24, 26.12.1 or later on 26: the releases with the fix for the bundled Brotli flaw CVE-2026-111497; 23 and 25 get no fix). Next.js 16 needs 20.9, and undici 8, used for Unix sockets, needs 22.19.0. Older releases get a warning at startup. Debian 13's standard nodejs is 20 and Ubuntu 24.04's is 18, which is not enough, so first install nodejs from [NodeSource](https://github.com/nodesource/distributions) with a fixed major version (24 below). An apt pin keeps the distribution's nodejs from being chosen.
 
 ```shell
 NODE_MAJOR=24
@@ -41,7 +41,7 @@ node --version      # v24.x.x
 apt policy nodejs   # the Candidate must come from deb.nodesource.com
 ```
 
-- The steps are the same on Debian 13 and Ubuntu 24.04 (NodeSource's `nodistro` does not depend on the distribution). For 22, use `NODE_MAJOR=22` (22.19.0 or later)
+- The steps are the same on Debian 13 and Ubuntu 24.04 (NodeSource's `nodistro` does not depend on the distribution). For 22, use `NODE_MAJOR=22` (22.23.4 or later)
 - With the pin in `/etc/apt/preferences.d/nodejs` (priority 600), `apt install nodejs` replaces an already installed distribution nodejs with NodeSource's, and `apt upgrade` never goes back to the distribution's. NodeSource's nodejs includes npm (the distribution's `npm` package is not needed)
 - `apt upgrade` only moves within the same major version. To change the major version, change `NODE_MAJOR`, rewrite `nodesource.list`, and run `sudo apt update && sudo apt install nodejs`
 
