@@ -4,6 +4,9 @@
 // active_standby のグループがあれば、stb を DB の定義に揃える自動の送り直しを始める（components/hasync.ts。#109）。
 // 利用量の集計を始める（components/usagecollect.ts。#101）
 export async function registerNode(): Promise<void> {
+  // Brotli の脆弱性（CVE-2026-111497）の直っていない Node.js なら警告する。起動は止めない
+  const { warnNodeVersion } = await import('./components/nodeversion');
+  warnNodeVersion();
   // 各ノードの rproxy-api の版を確かめてログに出す（#106）。待たない・失敗しても起動を止めない
   void import('./components/versioncheck').then((m) => m.logVersions()).catch(() => undefined);
   // RPROXY_UI_NODES の誤り、RPROXY_API_TLS_* を http:// の RPROXY_API_URL で使おうとしている（トークンが平文で流れる）なら止める

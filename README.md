@@ -3,7 +3,7 @@
 [![CI](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/max3584/TCP-UDP-rproxy-ui/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/max3584/TCP-UDP-rproxy-ui)](https://github.com/max3584/TCP-UDP-rproxy-ui/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D22.19.0-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.23.4-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://github.com/max3584/TCP-UDP-rproxy-ui/issues?q=is%3Aissue+is%3Aopen+%22Dependency+Dashboard%22)
 
 English: [README.en.md](README.en.md)
@@ -26,7 +26,7 @@ English: [README.en.md](README.en.md)
 ## インストール（Debian / Ubuntu）
 
 rproxy-api と同じ apt リポジトリから入れられる（`rproxy-ui`、CPU を問わない 1 つのパッケージ）。
-Node.js 22.19.0 以上が要る（Next.js 16 は 20.9、Unix ソケットに使う undici 8 は 22.19.0 から）。Debian 13 の標準の nodejs は 20、Ubuntu 24.04 は 18 で足りないので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs をメジャー版を指定して入れる（下は 24）。apt の pin で、ディストリの nodejs は選ばれないようにする。
+Node.js 22.23.4 以上（24 なら 24.22.1 以上、26 なら 26.12.1 以上。組み込みの Brotli の脆弱性 CVE-2026-111497 の直った版。23・25 は直らない）が要る（Next.js 16 は 20.9、Unix ソケットに使う undici 8 は 22.19.0 から）。古い版で動かすと起動時に警告を出す。Debian 13 の標準の nodejs は 20、Ubuntu 24.04 は 18 で足りないので、先に [NodeSource](https://github.com/nodesource/distributions) の nodejs をメジャー版を指定して入れる（下は 24）。apt の pin で、ディストリの nodejs は選ばれないようにする。
 
 ```shell
 NODE_MAJOR=24
@@ -41,7 +41,7 @@ node --version      # v24.x.x
 apt policy nodejs   # 候補（Candidate）が deb.nodesource.com のものになっていること
 ```
 
-- Debian 13・Ubuntu 24.04 とも同じ手順（NodeSource の `nodistro` は配布物を問わない）。22 にするなら `NODE_MAJOR=22`（22.19.0 以上）
+- Debian 13・Ubuntu 24.04 とも同じ手順（NodeSource の `nodistro` は配布物を問わない）。22 にするなら `NODE_MAJOR=22`（22.23.4 以上）
 - `/etc/apt/preferences.d/nodejs` の pin（優先度 600）で、ディストリの nodejs をすでに入れていても `apt install nodejs` が NodeSource のものに置き換え、`apt upgrade` でもディストリの nodejs には戻らない。NodeSource の nodejs は npm を含む（ディストリの `npm` パッケージは要らない）
 - `apt upgrade` で上がるのは同じメジャー版の中だけ。メジャー版を変えるときは `NODE_MAJOR` を変えて `nodesource.list` を書き直し、`sudo apt update && sudo apt install nodejs`
 

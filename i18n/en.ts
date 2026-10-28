@@ -1,6 +1,7 @@
 // 英語の辞書。キーは画面の日本語の文言（i18n/extract.mjs が取り出す形。空白はまとめ、{0} {1}… は差し込む値）。
 // 文言を足したら npm run i18n:check で足りない訳を確かめる（tests/i18n.test.ts も同じことを確かめる）。
 export const en: Record<string, string> = {
+  "Node.js {0} は Brotli の脆弱性（CVE-2026-111497）が直っていない。{1} 以上に上げる": "Node.js {0} does not have the fix for the Brotli flaw (CVE-2026-111497). Upgrade to {1} or later",
   "作り直しました": "Recreated",
   "変更しました": "Updated",
   "削除して作り直しました（送信元 IP の扱い・ポート範囲・L4 / L7 が違うため）": "Deleted and recreated (the source IP handling, port range or L4 / L7 differ)",
