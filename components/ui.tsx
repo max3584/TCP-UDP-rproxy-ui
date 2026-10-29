@@ -7,7 +7,7 @@ import type { AcmeState } from './acme';
 import { DRIFT_LABELS } from './drift';
 import { RuleKey, STATE_LABELS, ruleApiUrl, tlsLabel } from './dashboard';
 import { explainError } from './messages';
-import { joinList, localeTag } from '@/i18n/core';
+import { joinList, localeTag, translate } from '@/i18n/core';
 
 const STATE_BADGE: Record<RuleState, string> = {
   running: 'bg-green-100 text-green-800 border border-green-300',
@@ -120,7 +120,7 @@ export const HaWarning: React.FC<{ ha: HaStatus | undefined }> = ({ ha }) => (
 // nodes：ノードが 2 つ以上のルールの「全体」で、いっぱいのノード（上限はノードごと）
 export const TargetFullBadge: React.FC<{ nodes?: string[] }> = ({ nodes }) => (
   <span className="badge ml-1 bg-amber-100 text-amber-900" data-testid="target-full" title="同時接続の上限に達しているので、新しい接続はほかの宛先へ回します">
-    上限{nodes && nodes.length > 0 ? `（${nodes.join(', ')}）` : ''}
+    上限{nodes && nodes.length > 0 ? translate(`（${joinList(nodes, ', ')}）`) : ''}
   </span>
 );
 

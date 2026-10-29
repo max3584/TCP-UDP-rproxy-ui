@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { routeNames } from '@/components/lib';
 import type { CacheCounts, CertStatus, ForwardRules, HttpStats } from '@/components/lib';
-import { capText, fullNodes, healthCheckLabel, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
+import { capText, fullNodes, healthCheckLabel, nodeTargetStatus, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
 import {
   BALANCE_LABELS,
   CERT_ROLE_LABELS,
@@ -95,7 +95,8 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
               {(capped ? capText(s?.connections, t.max_connections ?? s?.max_connections, aggregate) : null) ?? (s?.connections !== undefined ? formatCount(s.connections) : '-')}
               {aggregate
                 ? (() => {
-                  const on = fullNodes(rule.nodes, (st) => targetStatus(rule.targets, st?.targets, i));
+                  const replaced = (node: string) => { const ov = rule.overrides?.[node]; return ov?.targets !== undefined || ov?.distAddr !== undefined; };
+                  const on = fullNodes(rule.nodes, (st, node) => nodeTargetStatus(rule.targets, replaced(node), st?.targets, i));
                   return on.length > 0 && <TargetFullBadge nodes={on} />;
                 })()
                 : s?.full === true && <TargetFullBadge />}

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ForwardRule, ForwardRules, RuleStats } from '@/components/lib';
 import type { RproxyRuleStatus } from '@/components/rproxy';
 import { normalizeTargets, normalizeTls, optionsJson, parseOptions } from '@/components/tls';
-import { buildBalancing, capText, capUsageLabel, firstRow, fullNodes, fullTargetCount, reportsTargetHealth, rowToTarget, targetCapsOf, targetsAllFull, tlsRouteStatus, toHealthCheckRow, toRows, withoutTargetCaps } from '@/components/targets';
+import { buildBalancing, capText, capUsageLabel, firstRow, fullNodes, nodeTargetStatus, fullTargetCount, reportsTargetHealth, rowToTarget, targetCapsOf, targetsAllFull, tlsRouteStatus, toHealthCheckRow, toRows, withoutTargetCaps } from '@/components/targets';
 import { buildRouteSpec, routeRow } from '@/components/RuleForm';
 import TargetsEditor, { RouteTargetsEditor } from '@/components/TargetsEditor';
 import HttpEditor from '@/components/HttpEditor';
@@ -17,6 +17,7 @@ import { formatTargetsText, normalizeOverride, parseTargetsText } from '@/compon
 import { exportDoc, parseDoc, settingsRuleToBody, toRproxyRule, toSettingsRule } from '@/components/settingsdoc';
 import { needsAttention, sumStats, targetFullNodes, targetFullProblem } from '@/components/dashboard';
 import { TargetFullBadge } from '@/components/ui';
+import { setLocale } from '@/i18n/core';
 
 const message = (f: () => unknown): string => {
   try {
@@ -244,6 +245,30 @@ describe('state: full targets', () => {
     expect(fullNodes(refusing.nodes, (st) => st?.targets?.[0])).toEqual(['a', 'b']);
     expect(fullNodes([node('a', a)], (st) => st?.targets?.[0])).toEqual([]);
     expect(renderToStaticMarkup(createElement(TargetFullBadge, { nodes: ['a', 'b'] }))).toContain('上限（a, b）');
+  });
+
+  it('the node names are localized (half-width brackets in English)', () => {
+    setLocale('en');
+    try {
+      expect(renderToStaticMarkup(createElement(TargetFullBadge, { nodes: ['a', 'b'] }))).toContain(' (a, b)');
+      expect(renderToStaticMarkup(createElement(TargetFullBadge, { nodes: ['a', 'b'] }))).not.toContain('（');
+    } finally {
+      setLocale('ja');
+    }
+  });
+
+  it('nodes whose override replaces the targets are matched by address, not by position', () => {
+    const targets = [{ addr: 'x', port: 1 }, { addr: 'y', port: 1 }];
+    // the override puts z first: position 0 is not target x
+    const overridden = [{ addr: 'z', port: 1, up: true, full: true }, { addr: 'x', port: 1, up: true, full: false }];
+    expect(nodeTargetStatus(targets, true, overridden, 0)?.full).toBe(false);
+    expect(nodeTargetStatus(targets, true, overridden, 1)).toBeNull();
+    // without addresses (positional stats) an overridden node is not matched at all
+    expect(nodeTargetStatus(targets, true, [{ up: true, full: true }, { up: true, full: true }], 0)).toBeNull();
+    expect(nodeTargetStatus(targets, false, [{ up: true, full: true }, { up: true, full: false }], 0)?.full).toBe(true);
+    const node = (name: string, t: RuleStats['targets']) => ({ node: name, stats: { total_connections: 0, rx_bytes: 0, tx_bytes: 0, tls_failures: 0, targets: t } as RuleStats });
+    const nodes = [node('a', [{ addr: 'x', port: 1, up: true, full: true }, { addr: 'y', port: 1, up: true, full: false }]), node('b', overridden)];
+    expect(fullNodes(nodes, (st, n) => nodeTargetStatus(targets, n === 'b', st?.targets, 0))).toEqual(['a']);
   });
 
   it('a single target without a health check reports only its cap state', () => {

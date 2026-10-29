@@ -149,9 +149,17 @@ export function targetsAllFull(stats: Pick<RuleStats, 'targets' | 'tls_routes' |
 }
 
 // 同じ宛先の、ノードごとのいっぱいのノード（ノードが 2 つ以上のルールの「全体」の表示。#341）
-export function fullNodes(nodes: { node: string; stats: RuleStats | null }[] | undefined, find: (stats: RuleStats | null) => { full?: boolean } | null | undefined): string[] {
+export function fullNodes(nodes: { node: string; stats: RuleStats | null }[] | undefined, find: (stats: RuleStats | null, node: string) => { full?: boolean } | null | undefined): string[] {
   if (!nodes || nodes.length < 2) return [];
-  return nodes.filter((n) => find(n.stats)?.full === true).map((n) => n.node);
+  return nodes.filter((n) => find(n.stats, n.node)?.full === true).map((n) => n.node);
+}
+
+// ノードの stats.targets からルールの index 番目の宛先を探す。ノードごとの上書きで宛先が変わるノード（distAddr・targets）は
+// 並びがルールと違うので、アドレスとポートが同じものだけ（位置では合わせない。上限のバッジを別の宛先に付けないように）
+export function nodeTargetStatus(targets: Target[], overridden: boolean, stats: TargetStats[] | undefined, index: number): TargetStats | null {
+  if (!overridden) return targetStatus(targets, stats, index);
+  const t = targets[index];
+  return stats?.find((s) => s.addr !== undefined && s.port !== undefined && s.addr === t.addr && s.port === t.port) ?? null;
 }
 
 // サーバ名ごとの転送先の宛先の状態を stats.tls_routes から探す（名前の組が同じもの。なければ同じ位置で名前のないもの）
