@@ -32,6 +32,8 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }): Promise<sessionUser> {
       const roles = Array.isArray(token.roles) ? (token.roles as string[]) : [];
+      const cfg = roleConfig();
+      const access = accessOf(roles, cfg);
       // NextAuth の expires は使うたびに延びるので、サインインからの期限のほうが早ければそちらを出す
       const deadline = sessionDeadline(token as SessionToken, sessionCfg);
       const sliding = session.expires ? Date.parse(session.expires) : NaN;
@@ -45,7 +47,8 @@ export const authOptions: NextAuthOptions = {
           role: roles.join(','),
           roles: roles,
           // 画面の表示用。API route はリクエストごとに roles から決め直す
-          access: accessOf(roles, roleConfig()),
+          access: access,
+          ...(access === 'admin' ? {} : { cacheCaps: { maxMemory: cfg.userCacheMaxMemory, maxEntries: cfg.userCacheMaxEntries } }),
         },
         expires: expires || ''
       };

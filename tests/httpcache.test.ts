@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { HttpRules, MIDDLEWARE_KINDS, MIDDLEWARE_TEMPLATES, cleanHttp, toHttpRules, validateHttp } from '@/components/httpspec';
-import HttpEditor from '@/components/HttpEditor';
+import HttpEditor, { newMiddlewareConfig } from '@/components/HttpEditor';
 import HttpSummary from '@/components/HttpSummary';
 import { cacheCountsLabel, cacheHitPercent, httpRouteRows, sumStats } from '@/components/dashboard';
 import type { HttpStats, RuleStats } from '@/components/lib';
@@ -152,6 +152,14 @@ describe('HttpEditor: cache is edited only when features.middlewares lists it', 
 
   it('says saving is blocked while an unavailable cache stays', () => {
     expect(render(spec, ['compress'])).toContain('このミドルウェアがある間は保存できません');
+  });
+
+  it('fills the user caps into a new cache for users', () => {
+    expect(newMiddlewareConfig('cache', true, { maxMemory: 8388608, maxEntries: 256 })).toEqual({ ...MIDDLEWARE_TEMPLATES.cache, max_memory: 8388608, max_entries: 256 });
+    expect(newMiddlewareConfig('cache', true)).toEqual({ ...MIDDLEWARE_TEMPLATES.cache, max_memory: 16 * 1024 * 1024, max_entries: 1024 });
+    expect(newMiddlewareConfig('cache', false, { maxMemory: 8388608, maxEntries: 256 })).toEqual(MIDDLEWARE_TEMPLATES.cache);
+    expect(newMiddlewareConfig('compress', true)).toEqual(MIDDLEWARE_TEMPLATES.compress ?? {});
+    expect(validateHttp(example(newMiddlewareConfig('cache', true)))).toEqual([]);
   });
 
   it('shows the user limits to users', () => {

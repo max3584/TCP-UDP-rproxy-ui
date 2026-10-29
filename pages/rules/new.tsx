@@ -38,7 +38,7 @@ const NewRulePage: React.FC = () => {
       </nav>
       <h1 className="text-2xl font-bold text-gray-900">新規ルール</h1>
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
-      <RuleForm restricted={restricted} submitting={submitting} onSubmit={handleSubmit} onPlan={(r) => postPlan('add', r)} onCancel={() => goBack(router, '/')} />
+      <RuleForm restricted={restricted} cacheCaps={(session as sessionUser | null)?.user?.cacheCaps} submitting={submitting} onSubmit={handleSubmit} onPlan={(r) => postPlan('add', r)} onCancel={() => goBack(router, '/')} />
     </div>
   );
 };

@@ -8,6 +8,7 @@ import { BALANCE_LABELS } from './dashboard';
 import { BALANCE_HELP } from './targets';
 import { FILE_OWNER_NOTE } from './messages';
 import { USER_CACHE_NOTE, USER_FILES_NOTE } from './userlimits';
+import { USER_CACHE_MAX_ENTRIES_DEFAULT, USER_CACHE_MAX_MEMORY_DEFAULT } from './roles';
 import {
   CACHE_STATUSES,
   HttpOption,
@@ -44,6 +45,8 @@ export interface HttpEditorProps {
   targetCaps?: boolean;
   // 管理者でない人（#155）：ファイルのパスの欄（*_file）を読み取り専用にする（前からある値はそのまま送る。確かめるのは API）
   filesLocked?: boolean;
+  // 利用者の cache の上限（filesLocked のとき、新しい cache の欄に max_memory・max_entries として入れる。#175）
+  cacheCaps?: { maxMemory: number; maxEntries: number };
 }
 
 // ファイルのパスの欄を読み取り専用にするか（HttpEditor の filesLocked）
@@ -585,7 +588,18 @@ const ServiceOutlierFields: React.FC<{ id: string; name: string; value: HttpOutl
 
 // ---- 本体 ----
 
-const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, targetCaps = false, filesLocked = false }) => {
+// 新しいミドルウェアの欄。利用者（filesLocked）の cache には上限を入れておく（書かないと rproxy の既定の 64 MiB になり、保存で断られるため。#175）
+export function newMiddlewareConfig(kind: string, filesLocked: boolean, cacheCaps?: { maxMemory: number; maxEntries: number }): Record<string, unknown> {
+  return {
+    ...(MIDDLEWARE_TEMPLATES[kind] ?? {}),
+    ...(kind === 'cache' && filesLocked
+      ? { max_memory: cacheCaps?.maxMemory ?? USER_CACHE_MAX_MEMORY_DEFAULT, max_entries: cacheCaps?.maxEntries ?? USER_CACHE_MAX_ENTRIES_DEFAULT }
+      : {}),
+  };
+}
+
+const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, targetCaps = false, filesLocked = false, cacheCaps }) => {
+  const template = (kind: string) => newMiddlewareConfig(kind, filesLocked, cacheCaps);
   const services = value.services ?? {};
   const mws = value.middlewares ?? {};
   const serviceNames = Object.keys(services);
@@ -970,7 +984,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     id={`${id}-kind`}
                     className={inputClass}
                     value={kind}
-                    onChange={(e) => setMiddlewares({ ...mws, [name]: { [e.target.value]: { ...(MIDDLEWARE_TEMPLATES[e.target.value] ?? {}) } } })}
+                    onChange={(e) => setMiddlewares({ ...mws, [name]: { [e.target.value]: template(e.target.value) } })}
                   >
                     {(kinds.includes(kind) ? kinds : [kind, ...kinds]).map((k) => <option key={k} value={k}>{MIDDLEWARE_KINDS[k] ?? k}（{k}）</option>)}
                   </select>
@@ -1010,7 +1024,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
             onChange={(e) => {
               const kind = e.target.value;
               if (!kind) return;
-              setMiddlewares({ ...mws, [uniqueName(kind.replace(/_/g, '-'), mws)]: { [kind]: { ...(MIDDLEWARE_TEMPLATES[kind] ?? {}) } } });
+              setMiddlewares({ ...mws, [uniqueName(kind.replace(/_/g, '-'), mws)]: { [kind]: template(kind) } });
             }}
           >
             <option value="">ミドルウェアを追加…</option>

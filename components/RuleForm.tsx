@@ -68,6 +68,8 @@ export interface RuleFormProps {
   // 管理者でない人（#155）：ファイルのパスの欄を読み取り専用にし（前からある値はそのまま送る）、転送先の制限を知らせる。
   // 確かめるのは API（画面は案内だけ）
   restricted?: boolean;
+  // 利用者の cache の上限（session の cacheCaps。HttpEditor の新しい cache の欄に入れる）
+  cacheCaps?: { maxMemory: number; maxEntries: number };
 }
 
 // rproxy の証明書の API に登録した証明書（/api/forward/certs。鍵は含まない）
@@ -368,7 +370,7 @@ export const UDP_SNI_VERSION_NOTE =
 
 const NO_V04: Record<V04Key, boolean> = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false };
 
-const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan, restricted = false }) => {
+const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan, restricted = false, cacheCaps }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
   const [profileId, setProfileId] = useState('');
   const [protocol, setProtocol] = useState<Protocol>(initialData?.protocol || 'tcp');
@@ -1289,6 +1291,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               http3={caps.features?.http3 === true || httpRules.http3 === true}
               targetCaps={targetCapsEditable}
               filesLocked={restricted}
+              cacheCaps={cacheCaps}
             />
             {errors.http && (
               <ul className="mt-2 text-red-700 text-xs list-disc pl-5" role="alert">
