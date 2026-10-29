@@ -342,7 +342,7 @@ const CacheConfig: React.FC<{ id: string; value: Record<string, unknown>; onChan
         </label>
       </div>
       <p className="text-xs text-gray-600 mt-1">
-        GET の応答をメモリに持ち、持つ時間のあいだは転送先へ送らずに答えます（HEAD は GET の答えから）。キーはホスト・パス・クエリと vary のヘッダです。Set-Cookie や Cache-Control: no-store・private・no-cache のある応答は持ちません。
+        GET の応答をメモリに持ち、持つ時間のあいだは転送先へ送らずに答えます（HEAD は GET の答えから）。キーはルート・受けた方式とポート・ホスト・パス・クエリと vary のヘッダです。Set-Cookie や Cache-Control: no-store・private・no-cache のある応答は持ちません。
       </p>
       <p className="text-xs text-gray-600 mt-1">
         IP の許可リスト・GeoIP・CrowdSec・Basic 認証・ForwardAuth・OIDC は、ルートで cache より前に置いてください（キャッシュから答えたリクエストは後ろのミドルウェアを通りません）。

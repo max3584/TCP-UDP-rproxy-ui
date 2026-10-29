@@ -275,9 +275,9 @@ GET の応答をメモリに持ち、持つ時間（`ttl`、100ms〜24h。必須
 | 持つ状態コード（200・203・204・300・301・308・404・410） | `status` | `[200]` |
 | Cookie・Authorization のあるリクエストも共有する | `share_credentials` | false |
 | 認証の後でも答えを共有する | `share_after_auth` | false |
-| 結果（HIT・MISS・STALE・BYPASS）を知らせる応答のヘッダ（付けないこともできる） | `header` | `X-Cache` |
+| 結果（HIT・MISS・STALE・BYPASS）を知らせる応答のヘッダ（付けないこともできる。`Connection`・`Content-Length`・`Transfer-Encoding`・`Age`・`Vary`・`Set-Cookie` などは不可） | `header` | `X-Cache` |
 
-保存の前に rproxy と同じ規則で確かめます：ルートで `cache` より後ろに `ip_allow`・`geoip`・`crowdsec`・`basic_auth`・`forward_auth`・`oidc` を置けない（キャッシュから答えると通らない）、前に `basic_auth`・`forward_auth`・`oidc` があれば `share_after_auth` が要る（`oidc` はセッションの Cookie が付くので `share_credentials` も）、1 つのルートに `cache` は 1 つ。
+保存の前に rproxy と同じ規則で確かめます：ルートで `cache` より後ろに `ip_allow`・`geoip`・`crowdsec`・`basic_auth`・`forward_auth`・`oidc` を置けない（キャッシュから答えると通らない）、前に `basic_auth`・`forward_auth`・`oidc` があれば `share_after_auth` が要る（`oidc` はセッションの Cookie が付くので `share_credentials` も。rproxy は `--check-config` で警告するだけだが、ないとどのリクエストもキャッシュを使わないので UI は保存の前に止める）、1 つのルートに `cache` は 1 つ。
 使えない rproxy では種類を選べず、すでにある `cache` の設定は読み取り専用で残します。
 詳細画面の「HTTP のリクエスト」に、ヒット・ミス・古い値・対象外の数とキャッシュから答えた割合（ルートごとにはミドルウェアごとの数）を出します。
 

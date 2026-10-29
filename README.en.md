@@ -275,9 +275,9 @@ It keeps GET responses in memory and answers from there without asking the backe
 | Statuses kept (200, 203, 204, 300, 301, 308, 404, 410) | `status` | `[200]` |
 | Share answers for requests with Cookie or Authorization too | `share_credentials` | false |
 | Share answers after sign-in too | `share_after_auth` | false |
-| Response header with the result (HIT, MISS, STALE, BYPASS; can be left out) | `header` | `X-Cache` |
+| Response header with the result (HIT, MISS, STALE, BYPASS; can be left out; not `Connection`, `Content-Length`, `Transfer-Encoding`, `Age`, `Vary`, `Set-Cookie` and the like) | `header` | `X-Cache` |
 
-Before saving, the form checks the same rules as rproxy: in a route, `ip_allow`, `geoip`, `crowdsec`, `basic_auth`, `forward_auth` and `oidc` cannot come after `cache` (answers from the cache would not pass them), `basic_auth`, `forward_auth` or `oidc` before it needs `share_after_auth` (`oidc` also needs `share_credentials`, as the session cookie comes with every request), and a route takes one `cache`.
+Before saving, the form checks the same rules as rproxy: in a route, `ip_allow`, `geoip`, `crowdsec`, `basic_auth`, `forward_auth` and `oidc` cannot come after `cache` (answers from the cache would not pass them), `basic_auth`, `forward_auth` or `oidc` before it needs `share_after_auth` (`oidc` also needs `share_credentials`, as the session cookie comes with every request; rproxy only warns in `--check-config`, but without it no request uses the cache, so the UI stops before saving), and a route takes one `cache`.
 With an rproxy that cannot use it, the kind cannot be chosen, and existing `cache` settings are kept read-only.
 "HTTP requests" on the details page shows the hits, misses, stale answers and bypasses, and the share answered from the cache (per route, the counts per middleware).
 

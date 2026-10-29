@@ -214,7 +214,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 
 | テスト | 確かめること |
 |---|---|
-| validateHttp | docs/API.md の例とひな形が通り、`ttl`（100ms〜24h）・`stale_on_error`・`max_body`・`max_entries`・`max_memory`（`max_body` 以上）・`vary`・`status`・`header`・知らない項目の誤り（rproxy の `cache.rs` と同じ規則）。ルートの置き場所（後ろの ip_allow などの通すかを決めるもの、前の認証と `share_after_auth`、oidc と `share_credentials`、1 つのルートに 1 つ、転送先ごとには不可）と、`features.middlewares` にないときの種類の誤り |
+| validateHttp | docs/API.md の例とひな形が通り、`ttl`（100ms〜24h）・`stale_on_error`・`max_body`・`max_entries`・`max_memory`（`max_body` 以上）・`vary`・`status`・`header`（ホップごと・本文の形・キャッシュのヘッダの名前は不可）・知らない項目の誤り（rproxy の `cache.rs` と同じ規則）。ルートの置き場所（後ろの ip_allow などの通すかを決めるもの、前の認証と `share_after_auth`、oidc と `share_credentials`、1 つのルートに 1 つ、転送先ごとには不可）と、`features.middlewares` にないときの種類の誤り |
 | HttpEditor | `features.middlewares` に `cache` があるときだけ欄（状態コードのチェックボックス・結果のヘッダを付けない）を出し、ないとき・features がないときは選べず読み取り専用で残すこと |
 | HttpSummary・stats | 詳細画面の設定、`stats.http.cache` の表示と割合、ルートごとの数、グループのノードの合計 |
 

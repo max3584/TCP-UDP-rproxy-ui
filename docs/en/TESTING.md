@@ -214,7 +214,7 @@ That exporting and importing again gives the same rules is checked in `tests/exp
 
 | Test | What it checks |
 |---|---|
-| validateHttp | The docs/API.md example and the template pass; errors for `ttl` (100ms to 24h), `stale_on_error`, `max_body`, `max_entries`, `max_memory` (at least `max_body`), `vary`, `status`, `header` and unknown settings (the same rules as rproxy's `cache.rs`). Where it sits in a route (gates such as ip_allow after it, sign-in before it and `share_after_auth`, oidc and `share_credentials`, one per route, not per backend), and the kind error without it in `features.middlewares` |
+| validateHttp | The docs/API.md example and the template pass; errors for `ttl` (100ms to 24h), `stale_on_error`, `max_body`, `max_entries`, `max_memory` (at least `max_body`), `vary`, `status`, `header` (no hop-by-hop, framing or caching header names) and unknown settings (the same rules as rproxy's `cache.rs`). Where it sits in a route (gates such as ip_allow after it, sign-in before it and `share_after_auth`, oidc and `share_credentials`, one per route, not per backend), and the kind error without it in `features.middlewares` |
 | HttpEditor | The fields (status checkboxes, no result header) appear only when `features.middlewares` has `cache`; otherwise, and without features, the kind cannot be chosen and the settings are kept read-only |
 | HttpSummary, stats | The settings on the details page, how `stats.http.cache` and its share are shown, the counts per route, the sum over the nodes of a group |
 

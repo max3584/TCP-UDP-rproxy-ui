@@ -166,6 +166,12 @@ export const CACHE_STATUSES = [200, 203, 204, 300, 301, 308, 404, 410];
 export const CACHE_GATES = ['ip_allow', 'geoip', 'crowdsec', 'basic_auth', 'forward_auth', 'oidc'];
 // cache より前にあれば share_after_auth が要る、利用者を確かめるミドルウェア（rproxy の SIGN_IN）
 export const CACHE_SIGN_IN = ['basic_auth', 'forward_auth', 'oidc'];
+// header に使えない名前（rproxy の RESERVED_HEADERS：ホップごと・本文の形・キャッシュが付ける・読むもの）
+export const CACHE_RESERVED_HEADERS = [
+  'connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade',
+  'content-length', 'content-encoding', 'content-range', 'content-type', 'host',
+  'age', 'vary', 'set-cookie', 'etag', 'cache-control', 'date',
+];
 const CACHE_KEYS = ['ttl', 'stale_on_error', 'max_body', 'max_entries', 'max_memory', 'vary', 'status', 'share_credentials', 'share_after_auth', 'header'];
 const MIB = 1 << 20;
 export const CACHE_MAX_BODY = 64 * MIB;
@@ -544,6 +550,8 @@ function checkCacheConfig(label: string, c: Record<string, unknown>, errors: str
   }
   if (c.header !== undefined && !(typeof c.header === 'string' && (c.header === '' || HEADER_NAME.test(c.header)))) {
     errors.push(`${label}の結果を知らせるヘッダ（header）はヘッダの名前にしてください（付けないときは空）。`);
+  } else if (typeof c.header === 'string' && CACHE_RESERVED_HEADERS.includes(c.header.toLowerCase())) {
+    errors.push(`${label}の結果を知らせるヘッダ「${c.header}」は、HTTP の接続・本文の形やキャッシュに使うヘッダなので使えません（${joinList(['Connection', 'Transfer-Encoding', 'Content-Length', 'Age', 'Vary', 'Set-Cookie'], '・')} など）。X-Cache のような別の名前にしてください。`);
   }
 }
 
@@ -569,7 +577,7 @@ function checkCacheRoute(label: string, names: string[], middlewares: Record<str
       errors.push(`${label}の cache「${name}」より前に利用者を確かめるミドルウェア「${n}」（${kind}）があります。転送先は利用者ごとに違う答えを返せますが、キャッシュは区別しません。通った利用者のだれにでも同じ答えを見せてよいときだけ、cache の「認証の後でも答えを共有する」（share_after_auth）を有効にしてください。`);
     }
     if (kind === 'oidc' && c.share_credentials !== true) {
-      errors.push(`${label}の cache「${name}」より前に OIDC の「${n}」があります。OIDC を通ったリクエストにはセッションの Cookie が付き、そのままではキャッシュされないので、cache の「Cookie・Authorization のあるリクエストも共有する」（share_credentials）も有効にしてください。`);
+      errors.push(`${label}の cache「${name}」より前に OIDC の「${n}」があります。OIDC を通ったリクエストにはすべてセッションの Cookie が付くので、このままではどのリクエストもキャッシュを使わず（BYPASS）、cache を置く意味がありません。cache の「Cookie・Authorization のあるリクエストも共有する」（share_credentials）を必ず有効にしてください（rproxy は保存を断らず、--check-config が警告するだけですが、UI では保存の前に止めます）。`);
     }
   }
 }

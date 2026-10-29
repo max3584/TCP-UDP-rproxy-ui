@@ -47,6 +47,10 @@ describe('cache settings are checked as rproxy does', () => {
     expect(errorsOf(example({ ttl: '1s', vary: ['Accept Language'] }))).toContain('ヘッダの名前');
     expect(errorsOf(example({ ttl: '1s', status: [200, 302] }))).toContain('状態コード「302」は持てません');
     expect(errorsOf(example({ ttl: '1s', header: 'X Cache' }))).toContain('header');
+    for (const h of ['Connection', 'content-length', 'Transfer-Encoding', 'Age', 'VARY', 'Set-Cookie', 'ETag', 'Cache-Control', 'Date', 'Host', 'TE']) {
+      expect(errorsOf(example({ ttl: '1s', header: h }))).toContain(`ヘッダ「${h}」は、HTTP の接続・本文の形やキャッシュに使うヘッダなので使えません`);
+    }
+    expect(validateHttp(example({ ttl: '1s', header: 'X-Edge-Cache' }))).toEqual([]);
     expect(errorsOf(example({ ttl: '1s', share_after_auth: 'yes' }))).toContain('true か false');
     expect(errorsOf(example({ ttl: '1s', max_age: 5 }))).toContain('「max_age」は cache の項目ではありません');
   });
@@ -72,6 +76,7 @@ describe('where cache sits in a route', () => {
     expect(validateHttp(example({ ttl: '1s', share_after_auth: true }, ['basic', 'micro'], auth))).toEqual([]);
     const oidc = errorsOf(example({ ttl: '1s', share_after_auth: true }, ['sso', 'micro'], auth));
     expect(oidc).toContain('share_credentials');
+    expect(oidc).toContain('必ず有効にしてください');
     expect(oidc).not.toContain('share_after_auth）を有効');
     expect(validateHttp(example({ ttl: '1s', share_after_auth: true, share_credentials: true }, ['sso', 'micro'], auth))).toEqual([]);
   });
