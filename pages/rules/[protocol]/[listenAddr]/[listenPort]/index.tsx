@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { routeNames } from '@/components/lib';
-import type { CertStatus, ForwardRules, HttpStats } from '@/components/lib';
+import type { CacheCounts, CertStatus, ForwardRules, HttpStats } from '@/components/lib';
 import { healthCheckLabel, targetStatus } from '@/components/targets';
 import {
   BALANCE_LABELS,
@@ -18,6 +18,8 @@ import {
   hostPort,
   NO_ROUTE,
   httpRouteCount,
+  cacheCountsLabel,
+  cacheHitPercent,
   httpRouteRows,
   serverErrorPercent,
   statusCountsLabel,
@@ -119,6 +121,10 @@ const path = (p: string | undefined) => (p ? <Mono>{p}</Mono> : null);
 const byMiddleware = (counts: Record<string, number>) =>
   Object.entries(counts).map(([name, n]) => `${name} ${formatCount(n)}`).join(', ');
 
+// ルートの cache の数（ミドルウェアの名前ごと。#340）
+const cacheByMiddleware = (counts: Record<string, CacheCounts>) =>
+  Object.entries(counts).map(([name, c]) => `${name}: ${cacheCountsLabel(c)}`).join(', ');
+
 // L7（http）のルールのリクエストの数（rproxy の stats.http）
 // 証明書の期限（rproxy の cert_status）。expiring は琥珀、expired は赤
 const CERT_STATE_CLASS = { ok: 'bg-green-100 text-green-900', expiring: 'bg-amber-100 text-amber-900', expired: 'bg-red-100 text-red-900' } as const;
@@ -154,6 +160,8 @@ const CertStatusSection: React.FC<{ certs: CertStatus[] }> = ({ certs }) => (
 const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
   const rows = httpRouteRows(http);
   const pct = serverErrorPercent(http.requests, http.by_status['5xx'] ?? 0);
+  const hitPct = http.cache ? cacheHitPercent(http.cache) : null;
+  const withCache = rows.some((r) => Object.keys(r.cacheBy).length > 0);
   return (
     <Section id="section-http-stats" title="HTTP のリクエスト（開始してからの累計）">
       <Fields items={[
@@ -162,6 +170,10 @@ const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
         ['5xx の割合', pct === null ? null : `${pct}%`],
         ['制限で断った数', formatCount(http.limited ?? 0)],
         ['CrowdSec で断った数', formatCount(http.blocked ?? 0)],
+        ...(http.cache ? [
+          ['キャッシュ', <span key="cache" data-testid="http-cache-stats">{cacheCountsLabel(http.cache)}</span>] as [string, React.ReactNode],
+          ['キャッシュから答えた割合', hitPct === null ? null : translate(`${hitPct}%（対象外を除く）`)] as [string, React.ReactNode],
+        ] : []),
       ]} />
       {rows.length > 0 && (
         <div className="mt-4 table-scroll">
@@ -174,6 +186,7 @@ const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
                 <th scope="col">状態コード</th>
                 <th scope="col">制限（rate_limit / in_flight）</th>
                 <th scope="col">遮断（crowdsec）</th>
+                {withCache && <th scope="col">キャッシュ（cache）</th>}
               </tr>
             </thead>
             <tbody>
@@ -184,6 +197,7 @@ const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
                   <td className="tabular-nums whitespace-nowrap">{statusCountsLabel(r.byStatus)}</td>
                   <td className="tabular-nums">{r.limited > 0 ? byMiddleware(r.limitedBy) : '-'}</td>
                   <td className="tabular-nums">{r.blocked > 0 ? byMiddleware(r.blockedBy) : '-'}</td>
+                  {withCache && <td className="tabular-nums" data-testid="http-route-cache">{Object.keys(r.cacheBy).length > 0 ? cacheByMiddleware(r.cacheBy) : '-'}</td>}
                 </tr>
               ))}
             </tbody>
@@ -192,6 +206,7 @@ const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
       )}
       <p className="mt-2 text-xs text-gray-600">
         応答を送り終えた（またはクライアントが切断した）ときに数えます。制限・遮断で断ったリクエストは 4xx にも含まれます。
+        {http.cache && 'キャッシュの「古い値」は、転送先が落ちたので期限切れの答えを返した数、「対象外」は GET・HEAD 以外や Cookie のあるリクエストなどキャッシュを使わなかった数です。'}
       </p>
     </Section>
   );

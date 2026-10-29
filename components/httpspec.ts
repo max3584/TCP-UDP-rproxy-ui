@@ -116,6 +116,7 @@ export const MIDDLEWARE_KINDS: Record<string, string> = {
   cors: 'CORS（オリジンの許可）',
   mirror: 'ミラー（リクエストの写しを送る）',
   replace_host: 'Host の書き換え',
+  cache: '応答のキャッシュ',
 };
 
 // 新しいミドルウェアの設定のひな形（必須の項目を埋める）
@@ -144,6 +145,7 @@ export const MIDDLEWARE_TEMPLATES: Record<string, Record<string, unknown>> = {
   cors: { allow_origins: ['https://www.example.com'], allow_methods: ['GET', 'POST'] },
   mirror: { service: '', percent: 100 },
   replace_host: { host: 'app.example.com' },
+  cache: { ttl: '1s' },
 };
 
 // 転送先ごと（servers[].middlewares）に使えるミドルウェアの種類（rproxy の SERVER_MIDDLEWARES。書き換えるだけのもの）
@@ -155,6 +157,28 @@ export const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 // features.http_options の名前（rproxy の Features::http_options）
 export const HTTP_OPTIONS = ['headers_add', 'redirect_status', 'route_timeouts', 'server_middlewares', 'server_status', 'retry_status'] as const;
 export type HttpOption = typeof HTTP_OPTIONS[number];
+
+// ---- cache（rproxy-api #340、src/l7/middleware/cache.rs）----
+
+// 持てる状態コード（rproxy の STATUSES）
+export const CACHE_STATUSES = [200, 203, 204, 300, 301, 308, 404, 410];
+// cache より後ろに置けない、通すかを決めるミドルウェア（rproxy の GATES）
+export const CACHE_GATES = ['ip_allow', 'geoip', 'crowdsec', 'basic_auth', 'forward_auth', 'oidc'];
+// cache より前にあれば share_after_auth が要る、利用者を確かめるミドルウェア（rproxy の SIGN_IN）
+export const CACHE_SIGN_IN = ['basic_auth', 'forward_auth', 'oidc'];
+// header に使えない名前（rproxy の RESERVED_HEADERS：ホップごと・本文の形・キャッシュが付ける・読むもの）
+export const CACHE_RESERVED_HEADERS = [
+  'connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade',
+  'content-length', 'content-encoding', 'content-range', 'content-type', 'host',
+  'age', 'vary', 'set-cookie', 'etag', 'cache-control', 'date',
+];
+const CACHE_KEYS = ['ttl', 'stale_on_error', 'max_body', 'max_entries', 'max_memory', 'vary', 'status', 'share_credentials', 'share_after_auth', 'header'];
+const MIB = 1 << 20;
+export const CACHE_MAX_BODY = 64 * MIB;
+const CACHE_MAX_ENTRIES = 1_000_000;
+const CACHE_MAX_MEMORY = 16 * 1024 * MIB;
+const CACHE_DEFAULT_MAX_BODY = MIB;
+const DAY_MS = 24 * 3_600_000;
 
 // 応答を自分で返すミドルウェア（service のないルートでも使える）
 export const ANSWERING_KINDS = ['redirect_scheme', 'redirect_regex', 'respond'];
@@ -389,6 +413,9 @@ export function isStatusRange(v: string): boolean {
 // ヘッダの値に使える文字（hyper の HeaderValue::from_str：表示できる ASCII・空白・タブ）
 const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
 
+// ヘッダの名前（HTTP の token。hyper の HeaderName::from_bytes が受け付けるもの）
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
 // サーバ名か IP アドレス（rustls の ServerName と同じく、ラベルは英数字・- ・_ で 63 文字まで）
 function isServerName(v: string): boolean {
   if (v.includes(':')) return /^[0-9A-Fa-f:.]+$/.test(v);
@@ -457,6 +484,7 @@ function checkMiddlewareConfig(name: string, kind: string, c: Record<string, unk
       if (Array.isArray(c[key]) && (c[key] as unknown[]).length > MAX_GEOIP_ITEMS) errors.push(`${label}の ${key} は ${MAX_GEOIP_ITEMS} 件までです。`);
     }
   }
+  if (kind === 'cache') checkCacheConfig(label, c, errors);
   if (kind === 'cors') {
     const origins = strings(c.allow_origins);
     if (origins === null || origins.length === 0) errors.push(`${label}に許可するオリジン（allow_origins）を 1 つ以上書いてください。`);
@@ -477,6 +505,80 @@ function checkMiddlewareConfig(name: string, kind: string, c: Record<string, unk
       for (const v of list) if (!HEADER_VALUE.test(v) || v.includes(',')) errors.push(`${label}の「${v}」はヘッダの値に使えません（カンマや制御文字を含めない）。`);
     }
     if (c.max_age !== undefined && !(Number.isInteger(c.max_age) && (c.max_age as number) >= 0)) errors.push(`${label}の max_age は 0 以上の整数（秒）にしてください。`);
+  }
+}
+
+// cache の設定（rproxy の cache::Settings::of と同じ規則）
+function checkCacheConfig(label: string, c: Record<string, unknown>, errors: string[]): void {
+  for (const k of Object.keys(c)) if (!CACHE_KEYS.includes(k)) errors.push(`${label}の「${k}」は cache の項目ではありません。`);
+  const int = (v: unknown) => typeof v === 'number' && Number.isInteger(v);
+  const ttl = typeof c.ttl === 'string' ? parseDurationMs(c.ttl) : null;
+  if (c.ttl === undefined || c.ttl === '') errors.push(`${label}に持つ時間（ttl）を書いてください（100ms〜24h。例 1s）。`);
+  else if (ttl === null) errors.push(`${label}の持つ時間（ttl）は 1s・500ms・5m のように数と単位（ms・s・m・h）で書いてください。`);
+  else if (ttl < 100 || ttl > DAY_MS) errors.push(`${label}の持つ時間（ttl）は 100ms〜24h にしてください。`);
+  if (c.stale_on_error !== undefined) {
+    const stale = typeof c.stale_on_error === 'string' ? parseDurationMs(c.stale_on_error) : null;
+    if (stale === null) errors.push(`${label}の古い答えを返す時間（stale_on_error）は 30s・5m のように数と単位（ms・s・m・h）で書いてください。`);
+    else if (stale > DAY_MS) errors.push(`${label}の古い答えを返す時間（stale_on_error）は 24h までにしてください。`);
+  }
+  const maxBody = c.max_body ?? CACHE_DEFAULT_MAX_BODY;
+  const bodyOk = int(maxBody) && (maxBody as number) >= 1 && (maxBody as number) <= CACHE_MAX_BODY;
+  if (!bodyOk) errors.push(`${label}の本文の上限（max_body）は 1〜67108864 バイト（64 MiB）の整数にしてください。`);
+  if (c.max_entries !== undefined && !(int(c.max_entries) && (c.max_entries as number) >= 1 && (c.max_entries as number) <= CACHE_MAX_ENTRIES)) {
+    errors.push(`${label}の持つ数の上限（max_entries）は 1〜1000000 の整数にしてください。`);
+  }
+  if (c.max_memory !== undefined) {
+    if (!int(c.max_memory) || (c.max_memory as number) > CACHE_MAX_MEMORY || (c.max_memory as number) < 1) {
+      errors.push(`${label}のメモリの上限（max_memory）は 17179869184 バイト（16 GiB）までの整数にしてください。`);
+    } else if (bodyOk && (c.max_memory as number) < (maxBody as number)) {
+      errors.push(`${label}のメモリの上限（max_memory）は本文の上限（max_body）以上にしてください。`);
+    }
+  }
+  if (c.vary !== undefined) {
+    const list = strings(c.vary);
+    if (list === null) errors.push(`${label}のキーに入れるヘッダ（vary）は文字列の一覧にしてください。`);
+    else for (const v of list) if (!HEADER_NAME.test(v)) errors.push(`${label}のキーに入れるヘッダ「${v}」はヘッダの名前にしてください。`);
+  }
+  if (c.status !== undefined) {
+    if (!Array.isArray(c.status)) errors.push(`${label}の持つ状態コード（status）は数の一覧にしてください。`);
+    else for (const st of c.status) {
+      if (!CACHE_STATUSES.includes(st as number)) errors.push(`${label}の状態コード「${String(st)}」は持てません（持てるのは ${joinList(CACHE_STATUSES.map(String), '・')}）。`);
+    }
+  }
+  for (const k of ['share_credentials', 'share_after_auth']) {
+    if (c[k] !== undefined && typeof c[k] !== 'boolean') errors.push(`${label}の ${k} は true か false にしてください。`);
+  }
+  if (c.header !== undefined && !(typeof c.header === 'string' && (c.header === '' || HEADER_NAME.test(c.header)))) {
+    errors.push(`${label}の結果を知らせるヘッダ（header）はヘッダの名前にしてください（付けないときは空）。`);
+  } else if (typeof c.header === 'string' && CACHE_RESERVED_HEADERS.includes(c.header.toLowerCase())) {
+    errors.push(`${label}の結果を知らせるヘッダ「${c.header}」は、HTTP の接続・本文の形やキャッシュに使うヘッダなので使えません（${joinList(['Connection', 'Transfer-Encoding', 'Content-Length', 'Age', 'Vary', 'Set-Cookie'], '・')} など）。X-Cache のような別の名前にしてください。`);
+  }
+}
+
+// ルートの cache の置き場所（rproxy の HttpSpec::check_cache_route と同じ規則）。
+// メモリから答えると cache より後ろのミドルウェアを通らないので、通すかを決めるものは前に置き、
+// 前で利用者を確かめるなら答えを共有してよいと明示させる
+function checkCacheRoute(label: string, names: string[], middlewares: Record<string, MiddlewareSpec>, errors: string[]): void {
+  const kindOf = (n: string) => (n in middlewares ? middlewareKind(middlewares[n]) : '');
+  const at = names.findIndex((n) => kindOf(n) === 'cache');
+  if (at < 0) return;
+  const name = names[at];
+  if (names.slice(at + 1).some((n) => kindOf(n) === 'cache')) errors.push(`${label}に cache のミドルウェアが 2 つ以上あります（1 つのルートに 1 つだけ）。`);
+  for (const n of names.slice(at + 1)) {
+    if (CACHE_GATES.includes(kindOf(n))) {
+      errors.push(`${label}のミドルウェア「${n}」（${kindOf(n)}）が cache「${name}」より後ろにあります。キャッシュから答えたリクエストはこれを通らないので、cache より前に置いてください。`);
+    }
+  }
+  const c = (middlewares[name].cache ?? {}) as Record<string, unknown>;
+  for (const n of names.slice(0, at)) {
+    const kind = kindOf(n);
+    if (!CACHE_SIGN_IN.includes(kind)) continue;
+    if (c.share_after_auth !== true) {
+      errors.push(`${label}の cache「${name}」より前に利用者を確かめるミドルウェア「${n}」（${kind}）があります。転送先は利用者ごとに違う答えを返せますが、キャッシュは区別しません。通った利用者のだれにでも同じ答えを見せてよいときだけ、cache の「認証の後でも答えを共有する」（share_after_auth）を有効にしてください。`);
+    }
+    if (kind === 'oidc' && c.share_credentials !== true) {
+      errors.push(`${label}の cache「${name}」より前に OIDC の「${n}」があります。OIDC を通ったリクエストにはすべてセッションの Cookie が付くので、このままではどのリクエストもキャッシュを使わず（BYPASS）、cache を置く意味がありません。cache の「Cookie・Authorization のあるリクエストも共有する」（share_credentials）を必ず有効にしてください（rproxy は保存を断らず、--check-config が警告するだけですが、UI では保存の前に止めます）。`);
+    }
   }
 }
 
@@ -590,6 +692,7 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
     for (const mw of r.middlewares ?? []) {
       if (!(mw in middlewares)) errors.push(`${label}のミドルウェア「${mw}」がありません。`);
     }
+    checkCacheRoute(label, r.middlewares ?? [], middlewares, errors);
     for (const d of [r.timeouts?.request, r.timeouts?.backend_request]) {
       if (d !== undefined && !isDuration(d)) errors.push(`${label}の時間の上限「${d}」は 10s・500ms・1m のように書いてください。`);
     }
