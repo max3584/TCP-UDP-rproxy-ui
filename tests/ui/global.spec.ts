@@ -95,14 +95,16 @@ test.describe('global settings', () => {
     }
   });
 
-  test.describe('as a user', () => {
-    test.use({ storageState: USER_STATE });
-    test('is for administrators only', async ({ page }) => {
-      const res = await page.request.get('/api/forward/global');
-      expect(res.status()).toBe(403);
-      expect((await res.json()).code).toBe('forbidden_admin');
-      const post = await page.request.post('/api/forward/global', { headers: SAME_ORIGIN, data: { values: { udp_max_sessions: 1 } } });
-      expect(post.status()).toBe(403);
-    });
+});
+
+// 利用者のセッション（上の afterEach は管理者の API を使うので別の describe にする）
+test.describe('global settings as a user', () => {
+  test.use({ storageState: USER_STATE });
+  test('is for administrators only', async ({ page }) => {
+    const res = await page.request.get('/api/forward/global');
+    expect(res.status()).toBe(403);
+    expect((await res.json()).code).toBe('forbidden_admin');
+    const post = await page.request.post('/api/forward/global', { headers: SAME_ORIGIN, data: { values: { udp_max_sessions: 1 } } });
+    expect(post.status()).toBe(403);
   });
 });
