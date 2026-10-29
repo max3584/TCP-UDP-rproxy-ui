@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RPROXY_COLUMNS, RPROXY_RULES_COLUMNS, RPROXY_RULE_SETS_COLUMNS, nodeViewSql, parseArgs } from '../db/node-view.mjs';
+import { RPROXY_COLUMNS, RPROXY_GLOBAL_COLUMNS, RPROXY_RULES_COLUMNS, RPROXY_RULE_SETS_COLUMNS, nodeViewSql, parseArgs } from '../db/node-view.mjs';
 import { NAME_PATTERN } from '@/components/nodes';
 import { NAME_PATTERN as VIEW_NAME_PATTERN } from '../db/node-view.mjs';
 
@@ -53,6 +53,23 @@ describe('db/node-view.mjs', () => {
     // without 009 there is no 012 either
     expect(nodeViewSql({ node: 'n1', withoutRproxyRules: true })).not.toContain('rproxy_rule_sets');
     expect(parseArgs(['n1', '--without-rproxy-rule-sets'])).toEqual({ node: 'n1', withoutRproxyRuleSets: true });
+  });
+
+  it('adds a writable rproxy_global view of this node only (rproxy-api v0.4.19, migration 013) unless asked not to', () => {
+    const sql = nodeViewSql({ node: 'n1' });
+    expect(sql).toContain('CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_n1`.`rproxy_global` AS');
+    expect(sql).toContain('FROM `rproxy`.`rproxy_global`');
+    // rproxy only upserts the row (INSERT ... ON DUPLICATE KEY UPDATE), never deletes it
+    expect(sql).toContain("GRANT SELECT, INSERT, UPDATE ON `rproxy_node_n1`.`rproxy_global` TO 'rproxy_n1'@'127.0.0.1';");
+    const view = sql.slice(sql.indexOf('`rproxy_global` AS'));
+    expect(view).toContain("WHERE `node` = 'n1'");
+    expect(view).toContain('WITH CHECK OPTION;');
+    for (const c of RPROXY_GLOBAL_COLUMNS) expect(view).toContain(`\`${c}\``);
+    const without = nodeViewSql({ node: 'n1', withoutRproxyGlobal: true });
+    expect(without).not.toContain('rproxy_global');
+    expect(without).toContain('`rproxy_rule_sets`');
+    expect(nodeViewSql({ node: 'n1', withoutRproxyRules: true })).not.toContain('rproxy_global');
+    expect(parseArgs(['n1', '--without-rproxy-global'])).toEqual({ node: 'n1', withoutRproxyGlobal: true });
   });
 
   it('takes the database, user and host; omits CREATE USER without a password', () => {

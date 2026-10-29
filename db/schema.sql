@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS rproxy_rule_sets (
   PRIMARY KEY (node, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- rproxy-api が制御 API（PATCH /config/global）で入れた global の値（rproxy-api v0.4.19 の #342。migration 013）。書くのは rproxy だけで、
+-- ノードごとに 1 行（spec は API で入れた値だけ）。列は rproxy-api の docs/API.md の「global の設定の API」と同じ
+CREATE TABLE IF NOT EXISTS rproxy_global (
+  node         VARCHAR(255) NOT NULL,   -- どの rproxy の値か（RPROXY_NODE_NAME、既定はホスト名）
+  spec         JSON         NOT NULL,   -- API で入れた値（設定ファイルの global と同じ形）
+  spec_version INT UNSIGNED NOT NULL DEFAULT 1,
+  updated_by   VARCHAR(255) NOT NULL,   -- トークンの名前
+  updated_at   DATETIME(3)  NOT NULL,
+  PRIMARY KEY (node)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 利用量の集計（UI #101。migration 010）。UI が rproxy の統計の差分を貯める（時刻は UTC）
 -- ルール・ノードごとの最後に見た数（差分を取るため。counters_since・started_at が変われば数え直したとみなす）
 CREATE TABLE IF NOT EXISTS usage_counters (
