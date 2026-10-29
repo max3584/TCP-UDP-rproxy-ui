@@ -274,14 +274,26 @@ export interface HttpStats {
   routes: Record<string, HttpRouteStats>;
   limited?: number;
   blocked?: number;
+  // cache のミドルウェアのあるルールだけ（rproxy-api #340、v0.4.19）
+  cache?: CacheCounts;
 }
 
-// limited / blocked はミドルウェアの名前ごと
+// cache のミドルウェアを通ったリクエスト：メモリから（hit）、転送先から（miss）、
+// 転送先が落ちたので期限切れのものを（stale）、キャッシュの対象でない（bypass）
+export interface CacheCounts {
+  hit: number;
+  miss: number;
+  stale: number;
+  bypass: number;
+}
+
+// limited / blocked / cache はミドルウェアの名前ごと
 export interface HttpRouteStats {
   requests: number;
   by_status: StatusCounts;
   limited?: Record<string, number>;
   blocked?: Record<string, number>;
+  cache?: Record<string, CacheCounts>;
 }
 
 // 稼働情報は rproxy に問い合わせできない（unknown）か rproxy にない（missing）ときは null / 空

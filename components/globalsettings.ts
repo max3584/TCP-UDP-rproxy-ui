@@ -19,7 +19,8 @@ export interface GlobalItem {
   shadowed?: boolean;
   // crowdsec：設定ファイルから消えたが、使うルールがあるので残している（source は file）
   kept?: boolean;
-  // 保存した API の値を効かせられなかった理由（api_value は保存したまま。読めない値のこともある）
+  // 値を効かせられなかった理由。API の値なら api_value は保存したまま（読めない値のこともある）。
+  // 設定ファイルの crowdsec（新しい LAPI が答えない）なら value は今効いている前の値
   error?: string;
 }
 
@@ -80,7 +81,7 @@ export interface GlobalNodeResult {
 // 項目の画面の名前と説明（知らない項目は名前をそのまま出す）
 export const GLOBAL_ITEM_LABELS: Record<string, { label: string; help: string }> = {
   trusted_proxies: { label: '信頼する前段のプロキシ', help: 'この範囲から来た接続の X-Forwarded-For などを信じます（1 行に 1 つの CIDR か IP）。新しいリクエストから効きます。' },
-  access_log: { label: 'アクセスログのファイル', help: 'http のルールのアクセスログ（JSON Lines）を書くファイルの絶対パス。空にするとメインのログに出します。次の行から効きます。' },
+  access_log: { label: 'アクセスログのファイル', help: 'http のルールのアクセスログ（JSON Lines）を書くファイルの絶対パス。rproxy-api の RPROXY_API_ACCESS_LOG_DIR（rproxy のアクセスログだけのディレクトリ）のすぐ下だけです。空にするとメインのログに出します。次の行から効きます。' },
   crowdsec: { label: 'CrowdSec', help: 'LAPI の URL と API キーのファイル（絶対パス）。新しい接続・リクエストから効きます。' },
   'http.timeouts': { label: 'HTTP の接続の時間の上限', help: 'http のルールのクライアントの接続の時間の上限（10s・5m などの時間、0s は上限なし。空の欄は既定）。新しい接続から効きます。' },
   udp_max_sessions: { label: 'UDP のセッションの上限', help: 'UDP のルールごとのセッションの数の上限（既定の値）。新しいセッションから効き、今のセッションは切りません。' },

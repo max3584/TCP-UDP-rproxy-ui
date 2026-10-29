@@ -149,7 +149,7 @@ describe('/api/forward/global', () => {
   });
 
   it('explains a secret item refused over TCP (Unix socket only)', async () => {
-    mocks.patchGlobalSettings.mockRejectedValue(new RproxyError('PATCH /config/global of crowdsec is accepted only over the Unix socket (RPROXY_API_SOCKET); set RPROXY_API_RELOAD_UNIX_ONLY=false to allow it over TCP', 'forbidden', 403));
+    mocks.patchGlobalSettings.mockRejectedValue(new RproxyError('crowdsec can be changed only over the Unix socket (RPROXY_API_SOCKET)', 'forbidden', 403));
     const { status, body } = await call('POST', { body: { target: 'a', values: { crowdsec: null }, dryRun: true } });
     expect(status).toBe(200);
     expect(body.nodes[0]).toMatchObject({ ok: false, code: 'global_unix_only' });

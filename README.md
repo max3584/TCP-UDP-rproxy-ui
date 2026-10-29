@@ -259,6 +259,28 @@ rproxy-api の Gateway API 向けの項目（rproxy-api #237。`GET /capabilitie
 
 保存の前に rproxy と同じ規則で確かめます（URL と状態コードはどちらか一方、`h2` は https:// の転送先・`h2c` は http:// の転送先、転送先ごとのミドルウェアの種類、ミラーの送り先のサービス、CORS のオリジン、サービスの TLS の組み合わせ、サーバ名ごとの転送先への TLS を書ける名前とクライアント証明書・秘密鍵・中間 CA の組み合わせなど）。
 
+## 応答のキャッシュ（cache）
+
+rproxy-api の `cache` ミドルウェア（rproxy-api #340。`GET /capabilities` の `features.middlewares` に `cache` があるときだけ）は、L7 タブのミドルウェアの種類「応答のキャッシュ」で作成・編集できます。
+GET の応答をメモリに持ち、持つ時間（`ttl`、100ms〜24h。必須）のあいだは転送先へ送らずに答えます。多くのクライアントが同じ JSON を数秒おきに取りに来る構成で、転送先へのリクエストを減らすためのものです。
+
+| 欄 | 項目 | 既定 |
+|---|---|---|
+| 持つ時間 | `ttl` | （必須） |
+| 転送先が落ちたときに古い答えを返す時間 | `stale_on_error` | `0s` |
+| 持つ本文の上限（バイト。64 MiB まで） | `max_body` | 1 MiB |
+| 持つ答えの数の上限 | `max_entries` | 1024 |
+| メモリの上限（バイト） | `max_memory` | 64 MiB |
+| キーに入れるリクエストのヘッダ | `vary` | なし |
+| 持つ状態コード（200・203・204・300・301・308・404・410） | `status` | `[200]` |
+| Cookie・Authorization のあるリクエストも共有する | `share_credentials` | false |
+| 認証の後でも答えを共有する | `share_after_auth` | false |
+| 結果（HIT・MISS・STALE・BYPASS）を知らせる応答のヘッダ（付けないこともできる。`Connection`・`Content-Length`・`Transfer-Encoding`・`Age`・`Vary`・`Set-Cookie` などは不可） | `header` | `X-Cache` |
+
+保存の前に rproxy と同じ規則で確かめます：ルートで `cache` より後ろに `ip_allow`・`geoip`・`crowdsec`・`basic_auth`・`forward_auth`・`oidc` を置けない（キャッシュから答えると通らない）、前に `basic_auth`・`forward_auth`・`oidc` があれば `share_after_auth` が要る（`oidc` はセッションの Cookie が付くので `share_credentials` も。rproxy は `--check-config` で警告するだけだが、ないとどのリクエストもキャッシュを使わないので UI は保存の前に止める）、1 つのルートに `cache` は 1 つ。
+使えない rproxy では種類を選べず、すでにある `cache` の設定は読み取り専用で残します。
+詳細画面の「HTTP のリクエスト」に、ヒット・ミス・古い値・対象外の数とキャッシュから答えた割合（ルートごとにはミドルウェアごとの数）を出します。
+
 ## 宛先を複数にする
 
 「基本」タブの「宛先を追加」で宛先を複数にでき、振り分け方を選べる（rproxy-api v0.3.3 以降。L4 の TCP / UDP のルール）。
@@ -345,7 +367,7 @@ rproxy-api v0.4 の項目（`../rproxy-api/docs/API.md` の「v0.4 の設定」�
 - rproxy が `features.dry_run` を返すときは、追加・変更の画面に「差分を見る」が出ます。保存する前に、ノードごとに rproxy で何が変わるか（作成・変更、接続を切らずに変わるか・待ち受けを作り直すか、項目ごとの前と後）を rproxy の `?dry_run=true` で確かめます（DB も rproxy も変えません）。
 - 詳細画面に、設定した項目、制限で断った数、数え始めの時刻（`counters_since`）、宛先ごとの外している状態と回数、rproxy の `conditions`（Gateway API の形の状態）を出します（rproxy が返すとき）。
 - 「rproxy の機能と設定」（`/system`）に、ノードごとの rproxy-api の版、v0.4 の機能の印、設定ファイルの `global.performance` で効く項目、設定ファイルの状態を読み取り専用で出します。performance・GeoIP のデータベース・制御 API の守りは rproxy の設定ファイルと引数で変えます（画面からは変えません）。設定ファイルのパスと誤りの中身・バイナリの SHA-256・問い合わせの失敗の理由は管理者だけに出し（利用者には誤り・失敗があることだけ）、`RPROXY_UI_USER_NODES` の利用者には触れるノードだけを出します（ダッシュボードの設定ファイルの注意も同じ）。
-- 「global の設定」（`/global`。管理者だけ。`/system` から開く）に、rproxy-api v0.4.19 の `GET /config/global` で、プロセス全体の設定の項目ごとに今の値・出どころ（設定ファイル / 環境変数 / API / 既定）・変え方（すぐ効く / 再起動が要る）を出します。設定ファイル・環境変数に書いた項目は読み取り専用（「設定ファイルで固定」。API の値があっても効かないときはその旨）、起動のときだけ読む項目は表示だけです。書いていない、すぐ効く項目（`udp_max_sessions`・`http.timeouts` など。どれを変えられるかは rproxy が返す `settable`・`unix_only` と、ノードへの道（Unix ソケットか TCP か）で決めます）は、「差分を確かめる」（`?dry_run=true`）で変わる値を見てから「適用する」で `PATCH /config/global` を送ります（「API の値を消す」で既定に戻せます）。複数の rproxy ではノードごとに出し、グループを選ぶと全ノードに送ります（1 台でも断れば、適用したノードを前の値に戻します）。rproxy は値を DB の `rproxy_global`（migration 013）に保存し、再起動しても残します。守りに関わる項目（`trusted_proxies`・`access_log`・`crowdsec`。rproxy の `unix_only`）は rproxy の Unix ソケットからだけ受け付けるので、TCP で聞いているノードでは変えられません（変えるときは、UI のそのノードの url を rproxy-api の `RPROXY_API_SOCKET` のソケット（`unix:/…`）にします）。API で入れるアクセスログは rproxy の `RPROXY_API_ACCESS_LOG_DIR`（なければ `RPROXY_LOG_FILE` のディレクトリ）のすぐ下のファイルだけです。rproxy が起動のときに保存した値を DB から読めていない間（`loaded: false`）は警告を出し、適用できません。UI のトークンに rproxy の `admin` のスコープが要ります。`features.global_api` のない rproxy では項目を出しません。
+- 「global の設定」（`/global`。管理者だけ。`/system` から開く）に、rproxy-api v0.4.19 の `GET /config/global` で、プロセス全体の設定の項目ごとに今の値・出どころ（設定ファイル / 環境変数 / API / 既定）・変え方（すぐ効く / 再起動が要る）を出します。設定ファイル・環境変数に書いた項目は読み取り専用（「設定ファイルで固定」。API の値があっても効かないときはその旨）、起動のときだけ読む項目は表示だけです。書いていない、すぐ効く項目（`udp_max_sessions`・`http.timeouts` など。どれを変えられるかは rproxy が返す `settable`・`unix_only` と、ノードへの道（Unix ソケットか TCP か）で決めます）は、「差分を確かめる」（`?dry_run=true`）で変わる値を見てから「適用する」で `PATCH /config/global` を送ります（「API の値を消す」で既定に戻せます）。複数の rproxy ではノードごとに出し、グループを選ぶと全ノードに送ります（1 台でも断れば、適用したノードを前の値に戻します）。rproxy は値を DB の `rproxy_global`（migration 013）に保存し、再起動しても残します。守りに関わる項目（`trusted_proxies`・`access_log`・`crowdsec`。rproxy の `unix_only`）は rproxy の Unix ソケットからだけ受け付けるので、TCP で聞いているノードでは変えられません（変えるときは、UI のそのノードの url を rproxy-api の `RPROXY_API_SOCKET` のソケット（`unix:/…`）にします）。API で入れるアクセスログは、そのノードの rproxy-api の `RPROXY_API_ACCESS_LOG_DIR` のすぐ下のファイルだけです（既定はなく、設定しなければ API では入れられません。rproxy のアクセスログだけのディレクトリにします）。rproxy が起動のときに保存した値を 読めていない間（`loaded: false`。DB に届かない・行が読めない形）は警告を出し、適用できません。UI のトークンに rproxy の `admin` のスコープが要ります。`features.global_api` のない rproxy では項目を出しません。
 - 制御 API をクライアント証明書（mTLS）で守るときは、`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`（と、rproxy の証明書を確かめる `RPROXY_API_TLS_CA`）、複数の rproxy では `nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca` を書きます（`https://` の URL だけ。トークンファイルのエントリが `client_cert` だけならトークンは要りません）。`RPROXY_API_TLS_*` を `http://`・`unix:` の `RPROXY_API_URL` と一緒に書くと、トークンが平文で流れるので UI は起動しません（問い合わせもしません）。
 - UI の認証が続けて失敗して rproxy が UI を一時的に止めた（`429 locked_out`）ときは、トークン・証明書を確かめるように画面とログに出します（止める時間が過ぎると自動で解けます）。
 

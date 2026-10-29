@@ -61,7 +61,9 @@ const ItemRow: React.FC<{ name: string; item: GlobalItem; transport: 'unix' | 't
         {item.kept && <span className="block text-amber-900" data-testid="global-kept">設定ファイルから消えたが、使うルールがあるので残しています。</span>}
         {item.error && (
           <span className="block text-red-800" data-testid="global-item-error">
-            {`保存した API の値を効かせられませんでした（効いていません）: ${item.error}`}
+            {item.api_value !== undefined
+              ? `保存した API の値を効かせられませんでした（効いていません）: ${item.error}`
+              : `新しい値を効かせられませんでした（今の値の欄は前から効いている値です）: ${item.error}`}
             {item.api_value !== undefined && <span className="block font-mono break-all">{`保存した値: ${formatGlobalValue(item.api_value)}`}</span>}
           </span>
         )}
@@ -99,7 +101,7 @@ const NodeCard: React.FC<{ n: GlobalNodeView; many: boolean }> = ({ n, many }) =
           </dl>
           {!s.loaded && (
             <p role="alert" className="rounded-sm border border-red-300 bg-red-50 p-2 text-red-800 text-xs" data-testid="global-not-loaded">
-              rproxy が起動のときに保存した値（rproxy_global）を DB から読めていません。読めるまで変えられません（DB に届くようになれば rproxy が読み直します）。
+              rproxy が起動のときに保存した値（rproxy_global）を読めていません（DB に届かないか、行が読めない形）。読めるまで変えられません（rproxy が定期に読み直します。読めない形の行は直すまで）。
             </p>
           )}
           {s.warnings.length > 0 && (
