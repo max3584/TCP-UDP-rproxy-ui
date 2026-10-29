@@ -1,7 +1,9 @@
 // L7（ルールの http）の読み取り専用の表示。ルールの詳細画面で使う（tests/httpspec.test.ts）
 
 import React from 'react';
-import type { HttpSpec } from './lib';
+import type { HttpServerStats, HttpSpec } from './lib';
+import { capUsageLabel } from './targets';
+import { TargetFullBadge } from './ui';
 import { MIDDLEWARE_KINDS, UPSTREAM_PROTOCOL_LABELS, defaultPriority, middlewareKind, toHttpRules } from './httpspec';
 import type { ServerSpec, ServiceTlsSpec } from './httpspec';
 import { joinList, translate } from '@/i18n/core';
@@ -23,6 +25,30 @@ function serverLabel(srv: ServerSpec): string {
   return `${head}${weight}${mws}`;
 }
 
+// 転送先の状態（rproxy の stats.http.services.<名前>[]）を探す。rproxy は状態コードの転送先を出さないので、
+// 状態コードの転送先を除いた位置で引く（同じ URL の転送先が複数あっても取り違えない）。数が合わなければ null
+export function serverStatus(servers: ServerSpec[], stats: HttpServerStats[] | undefined, index: number): HttpServerStats | null {
+  if (!stats || stats.length === 0 || servers[index] === undefined || servers[index].status !== undefined) return null;
+  const urlServers = servers.filter((x) => x.status === undefined);
+  if (stats.length !== urlServers.length) return null;
+  return stats[servers.slice(0, index).filter((x) => x.status === undefined).length] ?? null;
+}
+
+// 転送先の同時に処理する上限と今の数（#341。上限がなければ何も出さない）
+// aggregate（ノードが 2 つ以上のルールの「全体」）では上限はノードごとなので、合計の処理中の数とは並べず上限だけ出す
+const ServerCap: React.FC<{ srv: ServerSpec; live: HttpServerStats | null; aggregate: boolean }> = ({ srv, live, aggregate }) => {
+  const max = srv.max_connections ?? live?.max_connections;
+  if (max === undefined) return null;
+  return (
+    <span className="font-sans text-gray-700" data-testid="http-server-cap">
+      {!aggregate && live?.in_flight !== undefined
+        ? translate(`（処理中 ${capUsageLabel(live.in_flight, max)}）`)
+        : aggregate ? translate(`（上限 ${max.toLocaleString('en-US')}・ノードごと）`) : translate(`（上限 ${max.toLocaleString('en-US')}）`)}
+      {!aggregate && live?.full === true && <TargetFullBadge />}
+    </span>
+  );
+};
+
 // サービスの転送先の TLS の要約
 function serviceTlsLabel(t: ServiceTlsSpec): string {
   const parts: string[] = [];
@@ -35,7 +61,8 @@ function serviceTlsLabel(t: ServiceTlsSpec): string {
   return parts.length > 0 ? joinList(parts) : translate('既定');
 }
 
-const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
+// services：rproxy の stats.http.services（転送先の状態。動いているときだけ）
+const HttpSummary: React.FC<{ http: HttpSpec; services?: Record<string, HttpServerStats[]>; aggregate?: boolean }> = ({ http, services: liveServices, aggregate = false }) => {
   const rules = toHttpRules(http);
   const services = rules.services ?? {};
   const mws = rules.middlewares ?? {};
@@ -91,7 +118,15 @@ const HttpSummary: React.FC<{ http: HttpSpec }> = ({ http }) => {
             {Object.entries(services).map(([name, s]) => (
               <li key={name} className="break-all">
                 <Mono>{name}</Mono>:{' '}
-                <span className="font-mono text-xs break-all">{s.servers.map(serverLabel).join(', ')}</span>
+                <span className="font-mono text-xs break-all">
+                  {s.servers.map((srv, k) => (
+                    <React.Fragment key={k}>
+                      {k > 0 && ', '}
+                      {serverLabel(srv)}
+                      <ServerCap srv={srv} live={serverStatus(s.servers, liveServices?.[name], k)} aggregate={aggregate} />
+                    </React.Fragment>
+                  ))}
+                </span>
                 {s.protocol !== undefined && s.protocol !== 'http1' && <span className="text-xs text-gray-700" data-testid="http-service-protocol">（{UPSTREAM_PROTOCOL_LABELS[s.protocol] ?? s.protocol}）</span>}
                 {s.tls && <span className="text-xs text-gray-700 break-all" data-testid="http-service-tls">（転送先の TLS: {serviceTlsLabel(s.tls)}）</span>}
                 {s.pass_host_header === false && <span className="text-xs text-gray-700">（Host は転送先の URL）</span>}

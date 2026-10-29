@@ -146,6 +146,9 @@ export interface Target {
   weight?: number;
   // 通常の宛先がすべて落ちたときだけ使う
   backup?: boolean;
+  // この宛先へ同時に張る接続（UDP はセッション）の上限（rproxy v0.4.19、#341。features.target_max_connections）。
+  // いっぱいの宛先は落ちた宛先と同じく飛ばし、すべていっぱいなら断る。省略は上限なし
+  max_connections?: number;
 }
 
 // 宛先の死活確認（TCP の接続で確かめる）。port を省くと各宛先のポート（UDP のルールでは必須）
@@ -225,6 +228,8 @@ export interface RuleStats {
   http?: HttpStats;
   // 宛先ごとの状態（宛先を複数にしたルール。rproxy v0.3.3 以降。古い rproxy は返さない）
   targets?: TargetStats[];
+  // サーバ名ごとの転送先（tls.routes[]）の宛先の状態（宛先が 2 つ以上か max_connections のある route だけ。tls.routes の順。rproxy v0.4.19、#341）
+  tls_routes?: TlsRouteStats[];
   // L4 の制限（limits）で断った数（rproxy v0.4。#165）
   limited?: number;
   // この数え始めの時刻（Unix 秒。rproxy v0.4。#166）。ルールを作り直すと変わり、引き継ぎ（handoff）では変わらない
@@ -244,6 +249,12 @@ export interface CertStatus {
   state: CertState;
 }
 
+// サーバ名ごとの転送先 1 件の宛先の状態（rproxy の stats.tls_routes[]）
+export interface TlsRouteStats {
+  server_names: string[];
+  targets: TargetStats[];
+}
+
 // 宛先ごとの状態。rproxy の版によって項目が欠けることがあるので、どれも省略できる
 export interface TargetStats {
   addr?: string;
@@ -259,6 +270,9 @@ export interface TargetStats {
   ejected_until?: number | null;
   // 外した回数（rproxy v0.4）
   ejections?: number;
+  // 宛先ごとの上限（rproxy v0.4.19、#341。上限のある宛先だけ）と、いま上限か（connections が上限に達している）
+  max_connections?: number;
+  full?: boolean;
 }
 
 // 状態コードの百の位ごとの区分。0 件の区分は省かれる
@@ -274,8 +288,20 @@ export interface HttpStats {
   routes: Record<string, HttpRouteStats>;
   limited?: number;
   blocked?: number;
+  // サービスごとの転送先の状態（health_check か転送先の max_connections のあるサービスだけ）
+  services?: Record<string, HttpServerStats[]>;
   // cache のミドルウェアのあるルールだけ（rproxy-api #340、v0.4.19）
   cache?: CacheCounts;
+}
+
+// L7 のサービスの転送先 1 件の状態。max_connections・in_flight・full は上限のある転送先だけ（rproxy v0.4.19、#341）
+export interface HttpServerStats {
+  url?: string;
+  up?: boolean;
+  ejected?: boolean;
+  max_connections?: number;
+  in_flight?: number;
+  full?: boolean;
 }
 
 // cache のミドルウェアを通ったリクエスト：メモリから（hit）、転送先から（miss）、
@@ -356,7 +382,7 @@ export interface NodeLiveState {
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
 export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled'
-  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol';
+  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'target_max_connections';
 
 export type NodeRole = 'active' | 'standby';
 

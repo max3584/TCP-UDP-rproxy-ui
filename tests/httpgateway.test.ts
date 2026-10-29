@@ -225,8 +225,8 @@ describe('tls.routes[] targets and balance (#234)', () => {
   });
 
   it('edits the destinations when rproxy lists tls_route_targets and keeps them read-only otherwise', () => {
-    const rows = [{ addr: '10.0.0.1', port: 443 as const, weight: '' as const, backup: false }];
-    const props = { index: 0, rows, balance: 'failover' as const, onChange: () => undefined, onSingle: () => undefined };
+    const rows = [{ addr: '10.0.0.1', port: 443 as const, weight: '' as const, backup: false, maxConnections: '' as const }];
+    const props = { index: 0, rows, balance: 'failover' as const, capsEditable: false, onChange: () => undefined, onSingle: () => undefined };
     const editable = renderToStaticMarkup(createElement(RouteTargetsEditor, { ...props, editable: true }));
     expect(editable).toContain('aria-label="転送先 1 の宛先 1 のアドレス"');
     expect(editable).toMatch(/<option value="failover" selected="">/);

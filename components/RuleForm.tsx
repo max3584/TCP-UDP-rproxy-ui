@@ -42,7 +42,7 @@ import AcmeCertificateEditor, { acmeRowProblem } from './AcmeCertificateEditor';
 import HttpEditor from './HttpEditor';
 import { HttpRules, cleanHttp, emptyHttp, redirectHttp, toHttpRules, validateHttp } from './httpspec';
 import TargetsEditor, { RouteTargetsEditor } from './TargetsEditor';
-import { EMPTY_ROW, HealthCheckRow, TargetRow, buildBalancing, toHealthCheckRow, toRows } from './targets';
+import { EMPTY_ROW, HealthCheckRow, TargetRow, buildBalancing, firstRow, rowToTarget, toHealthCheckRow, toRows } from './targets';
 import { Balancing, NO_BALANCING } from './tls';
 import { hostPort, http3PortConflicts, multiNode, targetChoices } from './dashboard';
 import { useNodes } from './ui';
@@ -229,12 +229,7 @@ export function buildRouteSpec(r: RouteRow, ctx: RouteContext): Record<string, u
     ...(names.length > 1 ? { server_names: names } : { server_name: names[0] ?? '' }),
     ...(r.targets.length > 0
       ? {
-        targets: r.targets.map((t) => ({
-          addr: t.addr.trim(),
-          port: t.port === '' ? undefined : t.port,
-          ...(t.weight === '' ? {} : { weight: t.weight }),
-          ...(t.backup ? { backup: true } : {}),
-        })),
+        targets: r.targets.map(rowToTarget),
         ...(r.balance !== DEFAULT_BALANCE ? { balance: r.balance } : {}),
       }
       : { remote_addr: r.remote_addr, remote_port: r.remote_port === '' ? 0 : r.remote_port }),
@@ -280,6 +275,8 @@ interface Caps {
     dryRun: boolean;
     // 登録済みの証明書（tls.certificates[].cert。features.cert_store、rproxy-api v0.4.2）
     certStore: boolean;
+    // 宛先ごとの上限（targets[]・tls.routes[].targets[]・L7 の servers[] の max_connections。features.target_max_connections、rproxy-api v0.4.19）
+    targetMaxConnections: boolean;
   } | null;
 }
 
@@ -471,6 +468,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             v04: Object.fromEntries(V04_KEYS.map((k) => [k, data.features[V04_FEATURE[k]] === true])) as Record<V04Key, boolean>,
             dryRun: data.features.dry_run === true,
             certStore: data.features.cert_store === true,
+            targetMaxConnections: data.features.target_max_connections === true,
           } : null,
         });
       } catch (err) {
@@ -632,6 +630,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const tlsOptionsEditable = protocol === 'tcp' && tlsMode === 'terminate' && caps.features?.tlsOptions === true;
   // サーバ名ごとの複数の宛先（rproxy の #234）は features.tls_route_targets のときだけ編集できる（使っていれば読み取り専用で残す）
   const routeTargetsEditable = caps.features?.tlsRouteTargets === true;
+  // 宛先ごとの上限（rproxy-api #341）は features.target_max_connections のときだけ編集できる（使っていれば読み取り専用で残す）
+  const targetCapsEditable = caps.features?.targetMaxConnections === true;
   // サーバ名ごとの送信元 IP の渡し方は features.route_source_ip のときだけ編集できる（使っていれば読み取り専用で残して送る）
   const routeSourceIpEditable = caps.features?.routeSourceIp === true;
   // サーバ名ごとの転送先への TLS は features.tls_route_upstream のときだけ編集できる（使っていれば読み取り専用で残して送る）
@@ -1215,6 +1215,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             onBalanceChange={setBalance}
             healthCheck={healthCheck}
             onHealthCheckChange={setHealthCheck}
+            capsEditable={targetCapsEditable}
             range={srcPortEnd !== '' || (initialData?.srcPortEnd ?? null) !== null}
             onSingle={() => {
               // 1 件目を単一の宛先として残す
@@ -1261,7 +1262,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             <button
               type="button"
               className={smallButtonClass}
-              onClick={() => setTargetRows([{ addr: distAddr, port: distPort, weight: '', backup: false }, { ...EMPTY_ROW }])}
+              onClick={() => setTargetRows([firstRow(distAddr, distPort), { ...EMPTY_ROW }])}
             >
               宛先を追加
             </button>
@@ -1286,6 +1287,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               httpOptions={caps.features?.httpOptions ?? null}
               serviceOptions={caps.features?.services ?? null}
               http3={caps.features?.http3 === true || httpRules.http3 === true}
+              targetCaps={targetCapsEditable}
               filesLocked={restricted}
             />
             {errors.http && (
@@ -1350,7 +1352,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                       className="border border-gray-300 rounded-sm px-2 py-1 sm:w-28 max-lg:min-h-11" placeholder="ポート" min="1" max="65535" aria-label={`転送先ポート ${i + 1}`} />
                     {routeTargetsEditable && (
                       <button type="button" className={`${smallButtonClass} whitespace-nowrap`} aria-label={`転送先 ${i + 1} を複数の宛先にする`}
-                        onClick={() => updateRoute(i, { targets: [{ addr: r.remote_addr, port: r.remote_port, weight: '', backup: false }, { ...EMPTY_ROW }] })}>
+                        onClick={() => updateRoute(i, { targets: [firstRow(r.remote_addr, r.remote_port), { ...EMPTY_ROW }] })}>
                         複数の宛先
                       </button>
                     )}
@@ -1415,7 +1417,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                   </p>
                 )}
                 {r.targets.length > 0 && (
-                  <RouteTargetsEditor index={i} rows={r.targets} balance={r.balance} editable={routeTargetsEditable}
+                  <RouteTargetsEditor index={i} rows={r.targets} balance={r.balance} editable={routeTargetsEditable} capsEditable={targetCapsEditable}
                     onChange={(rows, balance) => updateRoute(i, { targets: rows, balance: balance })}
                     onSingle={() => updateRoute(i, { targets: [], balance: DEFAULT_BALANCE, remote_addr: r.targets[0]?.addr ?? '', remote_port: r.targets[0]?.port ?? '' })} />
                 )}

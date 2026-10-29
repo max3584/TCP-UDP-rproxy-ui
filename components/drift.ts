@@ -5,6 +5,7 @@ import type { DriftField, ForwardRule } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { ruleFromStatus } from './dashboard';
 import { V04_KEYS, v04Fields } from './v04';
+import { targetCapsOf, withoutTargetCaps } from './targets';
 
 export const DRIFT_LABELS: Record<DriftField, string> = {
   remote: '転送先',
@@ -25,6 +26,7 @@ export const DRIFT_LABELS: Record<DriftField, string> = {
   geoip: 'GeoIP',
   outlier_detection: '受け身のヘルスチェック',
   proxy_protocol: 'PROXY protocol の受け取り',
+  target_max_connections: '宛先ごとの上限',
 };
 
 // 比べるための形：null / undefined / false / 空の配列・オブジェクトを省き、キーを並べ替える
@@ -52,9 +54,12 @@ function same(a: unknown, b: unknown): boolean {
 const sorted = (list: string[] | undefined) => [...(list ?? [])].map((s) => s.toLowerCase()).sort();
 
 // stored（DB の定義）と live（そのノードの GET /rules/{key} の 1 件）の違う項目。停止中のルールが動いていれば enabled
-export function ruleDrift(stored: ForwardRule, live: RproxyRuleStatus): DriftField[] {
-  if (stored.enabled === false) return ['enabled'];
-  const actual = ruleFromStatus(live, 0);
+export function ruleDrift(storedRule: ForwardRule, live: RproxyRuleStatus): DriftField[] {
+  if (storedRule.enabled === false) return ['enabled'];
+  const actualRule = ruleFromStatus(live, 0);
+  // 宛先ごとの上限は別の項目で比べる（最後）
+  const stored = withoutTargetCaps(storedRule);
+  const actual = withoutTargetCaps(actualRule);
   const out: DriftField[] = [];
   const multiStored = stored.targets.length > 0;
   const multiLive = actual.targets.length > 0;
@@ -82,6 +87,7 @@ export function ruleDrift(stored: ForwardRule, live: RproxyRuleStatus): DriftFie
   const sv = v04Fields(stored);
   const av = v04Fields(actual);
   for (const key of V04_KEYS) if (!same(sv[key], av[key])) out.push(key);
+  if (JSON.stringify(targetCapsOf(storedRule)) !== JSON.stringify(targetCapsOf(actualRule))) out.push('target_max_connections');
   return out;
 }
 
