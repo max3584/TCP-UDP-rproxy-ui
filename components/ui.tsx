@@ -116,6 +116,11 @@ export const HaWarning: React.FC<{ ha: HaStatus | undefined }> = ({ ha }) => (
 );
 
 // UI の定義とノードの実際のルールのずれ
+// 宛先・転送先がいま上限（max_connections）に達している（新しい接続・リクエストはほかへ回す。rproxy-api #341）
+export const TargetFullBadge: React.FC = () => (
+  <span className="badge ml-1 bg-amber-100 text-amber-900" data-testid="target-full" title="同時接続の上限に達しているので、新しい接続はほかの宛先へ回します">上限</span>
+);
+
 export const DriftBadge: React.FC<{ drift: DriftField[] | undefined }> = ({ drift }) => (
   !drift || drift.length === 0 ? null : (
     <span className="badge bg-amber-100 text-amber-900 border border-amber-300" data-testid="drift-badge"

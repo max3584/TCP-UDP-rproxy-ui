@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { routeNames } from '@/components/lib';
 import type { CertStatus, ForwardRules, HttpStats } from '@/components/lib';
-import { healthCheckLabel, targetStatus } from '@/components/targets';
+import { capUsageLabel, healthCheckLabel, targetStatus } from '@/components/targets';
 import {
   BALANCE_LABELS,
   CERT_ROLE_LABELS,
@@ -34,7 +34,7 @@ import {
   targetChoices,
 } from '@/components/dashboard';
 import OverrideEditor from '@/components/OverrideEditor';
-import { AllowFromBadge, ApiBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, K8sBadge, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
+import { AllowFromBadge, ApiBadge, TargetFullBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, K8sBadge, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
 import Tabs, { tabPanelProps } from '@/components/Tabs';
 import { DRIFT_LABELS } from '@/components/drift';
 import type { NodeLiveState } from '@/components/lib';
@@ -49,7 +49,10 @@ import { CONDITION_LABELS, asnLabel, conditionProblem, rateLabel, v04Fields } fr
 import type { Condition } from '@/components/v04';
 
 // 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
-const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
+const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
+  // 宛先ごとの上限（#341）の欄は、どれかの宛先に上限があるときだけ
+  const capped = rule.targets.some((t) => t.max_connections !== undefined) || (rule.stats?.targets ?? []).some((t) => t.max_connections !== undefined);
+  return (
   <div className="mt-3 table-scroll">
   <table className="data-table w-full text-sm" data-testid="targets-table">
     <thead>
@@ -59,7 +62,7 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
         <th scope="col">重み</th>
         <th scope="col">予備</th>
         <th scope="col">状態</th>
-        <th scope="col">接続数</th>
+        <th scope="col">{capped ? '接続数 / 上限' : '接続数'}</th>
         {rule.stats?.targets?.some((t) => t.ejections !== undefined) && <th scope="col">外した回数</th>}
       </tr>
     </thead>
@@ -82,15 +85,22 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
                 <span className="badge ml-1 bg-amber-100 text-amber-900" title={`受け身のヘルスチェックで ${formatTimestamp(s.ejected_until)} まで外しています`}>外している</span>
               )}
             </td>
-            <td>{s?.connections !== undefined ? formatCount(s.connections) : '-'}</td>
+            <td className="tabular-nums" data-testid="target-connections">
+              {(capped ? capUsageLabel(s?.connections, t.max_connections ?? s?.max_connections) : null) ?? (s?.connections !== undefined ? formatCount(s.connections) : '-')}
+              {s?.full === true && <TargetFullBadge />}
+            </td>
             {rule.stats?.targets?.some((x) => x.ejections !== undefined) && <td>{s?.ejections !== undefined ? formatCount(s.ejections) : '-'}</td>}
           </tr>
         );
       })}
     </tbody>
   </table>
+  {capped && (
+    <p className="mt-1 text-xs text-gray-600">上限に達した宛先は飛ばし、すべての宛先が上限なら新しい接続を断ります（断った数は「制限で断った接続」に数えます）。</p>
+  )}
   </div>
-);
+  );
+};
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
   <section className="card p-4" aria-labelledby={id}>
@@ -223,6 +233,7 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                             {targetHostPort(t, rule)}
                             {t.weight !== undefined && <span className="font-sans text-xs text-gray-700">{`（重み ${t.weight}）`}</span>}
                             {t.backup && <span className="font-sans text-xs text-gray-700">（予備）</span>}
+                            {t.max_connections !== undefined && <span className="font-sans text-xs text-gray-700" data-testid="tls-route-target-max">{`（上限 ${formatCount(t.max_connections)}）`}</span>}
                           </div>
                         ))}
                         <div className="font-sans text-xs text-gray-700">振り分け方: {BALANCE_LABELS[r.balance ?? 'round_robin']}</div>
@@ -837,7 +848,7 @@ const RuleDetailPage: React.FC = () => {
 
           {view.http !== null && (
             <Section id="section-http" title="L7 (HTTP)">
-              <HttpSummary http={view.http} />
+              <HttpSummary http={view.http} services={view.stats?.http?.services} />
             </Section>
           )}
 

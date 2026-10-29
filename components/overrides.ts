@@ -210,7 +210,7 @@ export function sameOverrides(a: Overrides | undefined, b: Overrides | undefined
   return norm(a) === norm(b);
 }
 
-// 画面の宛先の欄（1 行に「アドレス:ポート [重み] [backup]」。IPv6 は [::1]:80）
+// 画面の宛先の欄（1 行に「アドレス:ポート [重み] [backup] [max=上限]」。IPv6 は [::1]:80。上限は宛先ごとの max_connections）
 export function parseTargetsText(text: string): Target[] {
   return text.split('\n').map((l) => l.trim()).filter((l) => l !== '').map((line) => {
     const [hostPort, ...rest] = line.split(/\s+/);
@@ -218,9 +218,11 @@ export function parseTargetsText(text: string): Target[] {
     if (!m) throw invalid(`宛先は「アドレス:ポート」で書いてください: ${line}`);
     const t: Target = { addr: m[1], port: Number(m[2]) };
     for (const r of rest) {
+      const max = /^max=(\d+)$/.exec(r);
       if (r === 'backup') t.backup = true;
       else if (/^\d+$/.test(r)) t.weight = Number(r);
-      else throw invalid(`宛先の後ろには重み（数）か backup を書いてください: ${line}`);
+      else if (max) t.max_connections = Number(max[1]);
+      else throw invalid(`宛先の後ろには重み（数）・backup・max=上限を書いてください: ${line}`);
     }
     return t;
   });
@@ -231,5 +233,6 @@ export function formatTargetsText(targets: Target[]): string {
     t.addr.includes(':') ? `[${t.addr}]:${t.port}` : `${t.addr}:${t.port}`,
     ...(t.weight !== undefined && t.weight !== 1 ? [String(t.weight)] : []),
     ...(t.backup ? ['backup'] : []),
+    ...(t.max_connections !== undefined ? [`max=${t.max_connections}`] : []),
   ].join(' ')).join('\n');
 }

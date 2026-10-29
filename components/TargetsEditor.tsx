@@ -2,7 +2,7 @@
 import React from 'react';
 import { BALANCES, Balance, Protocol } from './lib';
 import { BALANCE_LABELS } from './dashboard';
-import { BALANCE_HELP, EMPTY_ROW, HealthCheckRow, TargetRow, moveRow } from './targets';
+import { BALANCE_HELP, EMPTY_ROW, HealthCheckRow, TARGET_CAP_HELP, TARGET_CAP_PRESERVED, TargetRow, moveRow } from './targets';
 
 interface Props {
   protocol: Protocol;
@@ -12,6 +12,8 @@ interface Props {
   onBalanceChange: (balance: Balance) => void;
   healthCheck: HealthCheckRow;
   onHealthCheckChange: (hc: HealthCheckRow) => void;
+  // 宛先ごとの上限（max_connections）を編集できる（features.target_max_connections）。できなければ値は読み取り専用で残す
+  capsEditable: boolean;
   // ポート範囲のルールでは各宛先のポートも範囲の分ずれる
   range: boolean;
   // 単一の宛先に戻す（1 件目を残す）
@@ -30,8 +32,9 @@ const helpClass = 'mt-1 text-xs text-gray-600';
 const toNumber = (value: string): number | '' => (value === '' ? '' : Number(value));
 
 const TargetsEditor: React.FC<Props> = ({
-  protocol, rows, onRowsChange, balance, onBalanceChange, healthCheck, onHealthCheckChange, range, onSingle, error,
+  protocol, rows, onRowsChange, balance, onBalanceChange, healthCheck, onHealthCheckChange, capsEditable, range, onSingle, error,
 }) => {
+  const capsPreserved = !capsEditable && rows.some((r) => r.maxConnections !== '');
   const update = (index: number, patch: Partial<TargetRow>) => onRowsChange(rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   const hc = (patch: Partial<HealthCheckRow>) => onHealthCheckChange({ ...healthCheck, ...patch });
 
@@ -85,6 +88,23 @@ const TargetsEditor: React.FC<Props> = ({
                     />
                   </div>
                 )}
+                {capsEditable ? (
+                  <div className="w-28">
+                    <label htmlFor={`rule-target-max-${i}`} className="text-xs text-gray-700">上限</label>
+                    <input
+                      id={`rule-target-max-${i}`}
+                      type="number"
+                      min="1"
+                      className={inputClass}
+                      value={r.maxConnections}
+                      placeholder="なし"
+                      aria-label={`宛先 ${i + 1} の同時接続の上限`}
+                      onChange={(e) => update(i, { maxConnections: toNumber(e.target.value) })}
+                    />
+                  </div>
+                ) : r.maxConnections !== '' && (
+                  <span className="text-sm text-amber-900 pb-1" data-testid="target-max-preserved">上限 {r.maxConnections}</span>
+                )}
                 <label className="flex items-center gap-1 text-sm text-gray-900 pb-1">
                   <input
                     type="checkbox"
@@ -117,6 +137,8 @@ const TargetsEditor: React.FC<Props> = ({
         <p className={helpClass}>
           予備の宛先は、予備でない宛先がすべて落ちたときだけ使います。フェイルオーバーでは上の宛先ほど優先します。
         </p>
+        {capsEditable && <p className={helpClass}>{TARGET_CAP_HELP}</p>}
+        {capsPreserved && <p className="mt-1 text-xs text-amber-900">{TARGET_CAP_PRESERVED}</p>}
       </fieldset>
 
       <div className="mb-3">
@@ -170,9 +192,11 @@ export const RouteTargetsEditor: React.FC<{
   rows: TargetRow[];
   balance: Balance;
   editable: boolean;
+  // 宛先ごとの上限（max_connections）を編集できる（features.target_max_connections）
+  capsEditable: boolean;
   onChange: (rows: TargetRow[], balance: Balance) => void;
   onSingle: () => void;
-}> = ({ index, rows, balance, editable, onChange, onSingle }) => {
+}> = ({ index, rows, balance, editable, capsEditable, onChange, onSingle }) => {
   const n = index + 1;
   const update = (i: number, patch: Partial<TargetRow>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)), balance);
   if (!editable) {
@@ -195,6 +219,12 @@ export const RouteTargetsEditor: React.FC<{
             <input type="number" min="1" max="1000" className={`${routeInputClass} w-20`} value={r.weight} placeholder="重み 1" aria-label={`転送先 ${n} の宛先 ${i + 1} の重み`}
               onChange={(e) => update(i, { weight: toNumber(e.target.value) })} />
           )}
+          {capsEditable ? (
+            <input type="number" min="1" className={`${routeInputClass} w-24`} value={r.maxConnections} placeholder="上限なし" aria-label={`転送先 ${n} の宛先 ${i + 1} の同時接続の上限`}
+              onChange={(e) => update(i, { maxConnections: toNumber(e.target.value) })} />
+          ) : r.maxConnections !== '' && (
+            <span className="text-sm text-amber-900" data-testid="route-target-max-preserved">上限 {r.maxConnections}</span>
+          )}
           <label className="flex items-center gap-1 text-sm text-gray-900">
             <input type="checkbox" checked={r.backup} aria-label={`転送先 ${n} の宛先 ${i + 1} を予備にする`} onChange={(e) => update(i, { backup: e.target.checked })} />
             予備
@@ -212,12 +242,14 @@ export const RouteTargetsEditor: React.FC<{
         <button type="button" className={smallButtonClass} onClick={onSingle}>単一の宛先に戻す</button>
       </div>
       <p className={helpClass}>{BALANCE_HELP[balance]} つながらない宛先は次の宛先へ移り、しばらく外します。</p>
+      {capsEditable && <p className={helpClass}>{TARGET_CAP_HELP}</p>}
+      {!capsEditable && rows.some((r) => r.maxConnections !== '') && <p className="mt-1 text-xs text-amber-900">{TARGET_CAP_PRESERVED}</p>}
     </div>
   );
 };
 
 function joinTargets(rows: TargetRow[]): string {
-  return rows.map((r) => `${r.addr}:${r.port}${r.weight !== '' ? `×${r.weight}` : ''}${r.backup ? '(backup)' : ''}`).join(', ');
+  return rows.map((r) => `${r.addr}:${r.port}${r.weight !== '' ? `×${r.weight}` : ''}${r.backup ? '(backup)' : ''}${r.maxConnections !== '' ? ` max=${r.maxConnections}` : ''}`).join(', ');
 }
 
 export default TargetsEditor;

@@ -86,8 +86,8 @@ describe('targets / balance / health_check', () => {
 describe('form rows', () => {
   it('builds rproxy targets from rows and reports mistakes', () => {
     const rows = [
-      { addr: ' 10.0.0.11 ', port: 5432 as const, weight: 3 as const, backup: false },
-      { addr: 'db2.internal', port: 5432 as const, weight: '' as const, backup: true },
+      { addr: ' 10.0.0.11 ', port: 5432 as const, weight: 3 as const, backup: false, maxConnections: '' as const },
+      { addr: 'db2.internal', port: 5432 as const, weight: '' as const, backup: true, maxConnections: '' as const },
     ];
     expect(buildBalancing(rows, 'least_conn', { enabled: true, interval: '10s', timeout: '', port: '' }, 'tcp', 1)).toEqual({
       targets: [{ addr: '10.0.0.11', port: 5432, weight: 3 }, { addr: 'db2.internal', port: 5432, backup: true }],
@@ -95,15 +95,15 @@ describe('form rows', () => {
       healthCheck: { interval: '10s' },
     });
     expect(buildBalancing(rows, 'round_robin', { enabled: false, interval: '10s', timeout: '', port: '' }, 'tcp', 1).healthCheck).toBeNull();
-    expect(code(() => buildBalancing([{ addr: '', port: 1, weight: '', backup: false }], 'round_robin', toHealthCheckRow(null), 'tcp', 1)))
+    expect(code(() => buildBalancing([{ addr: '', port: 1, weight: '', backup: false, maxConnections: '' }], 'round_robin', toHealthCheckRow(null), 'tcp', 1)))
       .toMatch(/宛先 1 のアドレス を指定/);
-    expect(code(() => buildBalancing([{ addr: '10.0.0.1', port: '', weight: '', backup: false }], 'round_robin', toHealthCheckRow(null), 'tcp', 1)))
+    expect(code(() => buildBalancing([{ addr: '10.0.0.1', port: '', weight: '', backup: false, maxConnections: '' }], 'round_robin', toHealthCheckRow(null), 'tcp', 1)))
       .toMatch(/宛先 1 のポート番号/);
   });
 
   it('round-trips rows and moves them (order matters for failover)', () => {
     const targets = [{ addr: 'a', port: 1, weight: 2 }, { addr: 'b', port: 2, backup: true }];
-    expect(toRows(targets)).toEqual([{ addr: 'a', port: 1, weight: 2, backup: false }, { addr: 'b', port: 2, weight: '', backup: true }]);
+    expect(toRows(targets)).toEqual([{ addr: 'a', port: 1, weight: 2, backup: false, maxConnections: '' }, { addr: 'b', port: 2, weight: '', backup: true, maxConnections: '' }]);
     expect(moveRow(['a', 'b', 'c'], 0, 1)).toEqual(['b', 'a', 'c']);
     expect(moveRow(['a', 'b'], 0, -1)).toEqual(['a', 'b']);
     expect(toHealthCheckRow({ port: 22 })).toEqual({ enabled: true, interval: '', timeout: '', port: 22 });

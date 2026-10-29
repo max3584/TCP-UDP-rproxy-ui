@@ -11,6 +11,7 @@ import type { AcmeCertStatus } from './acme';
 import { normalizeV04, v04Of } from './v04';
 import type { Condition, V04Settings } from './v04';
 import { joinList, joinSentences, t, translate } from '@/i18n/core';
+import { targetsAllFull } from './targets';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
 
@@ -284,15 +285,22 @@ export function certProblem(rule: Pick<ForwardRules, 'certStatus'>): string | nu
   }));
 }
 
-// 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール。それぞれ元の順番のまま）
+// 宛先ごとの上限（rproxy-api #341）：上限に達していない宛先が残っていない（新しい接続・リクエストを断っている）。問題がなければ null
+export function targetFullProblem(rule: Pick<ForwardRules, 'stats'>): string | null {
+  return targetsAllFull(rule.stats) ? translate('すべての宛先が同時接続の上限に達していて、新しい接続を断っています。') : null;
+}
+
+// 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール、次に宛先がすべて上限のルール。それぞれ元の順番のまま）
 // （ACME の証明書を取れない・更新できないルールは証明書の期限と同じ扱い。acmeProblem）
 export function needsAttention(rules: ForwardRules[]): ForwardRules[] {
   const certIssue = (r: ForwardRules) => certProblem(r) !== null || acmeProblem(r) !== null;
   const certs = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certIssue(r));
+  const full = (r: ForwardRules) => r.state === 'running' && targetFullProblem(r) !== null;
+  const fulls = rules.filter((r) => !certIssue(r) && full(r));
   // 複数のノード：UI の定義とずれているノードがある・act の判定に警告があるルール（#98）
-  const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && !certIssue(r)
+  const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && !certIssue(r) && !full(r)
     && (driftedNodes(r).length > 0 || (r.ha?.warning ?? null) !== null));
-  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs, ...nodeIssues];
+  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs, ...fulls, ...nodeIssues];
 }
 
 export interface RuleFilter {

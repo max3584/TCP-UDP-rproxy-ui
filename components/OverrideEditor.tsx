@@ -109,8 +109,8 @@ const OverrideEditor: React.FC<{ rule: ForwardRules; node: string; onSaved: (mes
             )}
             {destMode === 'multi' && (
               <div className="mt-2 space-y-2">
-                <textarea aria-label="宛先（1 行に「アドレス:ポート [重み] [backup]」）" className={`${inputClass} h-20 font-mono text-xs`} value={targetsText}
-                  placeholder={'192.0.2.11:443\n192.0.2.12:443 2\n192.0.2.13:443 backup'} onChange={(e) => setTargetsText(e.target.value)} />
+                <textarea aria-label="宛先（1 行に「アドレス:ポート [重み] [backup] [max=上限]」）" className={`${inputClass} h-20 font-mono text-xs`} value={targetsText}
+                  placeholder={'192.0.2.11:443\n192.0.2.12:443 2 max=200\n192.0.2.13:443 backup'} onChange={(e) => setTargetsText(e.target.value)} />
                 <select aria-label="振り分け方" className={`${inputClass} sm:w-64`} value={balance} onChange={(e) => setBalance(e.target.value as Balance)}>
                   {BALANCES.map((b) => <option key={b} value={b}>{BALANCE_LABELS[b]}</option>)}
                 </select>

@@ -1,7 +1,7 @@
 // 宛先を複数にしたとき（rproxy v0.3.3 の targets / balance / health_check）のフォームの行と組み立て。
 // React に依存しない（tests/targets.test.ts）。形の検証は components/tls.ts の normalizeTargets / checkBalancing
 
-import { Balance, DEFAULT_BALANCE, HealthCheck, Protocol, Target, TargetStats } from './lib';
+import { Balance, DEFAULT_BALANCE, ForwardRule, HealthCheck, Protocol, RuleStats, Target, TargetStats } from './lib';
 import { Balancing, checkBalancing, normalizeHealthCheck, normalizeTargets } from './tls';
 import { joinList } from '@/i18n/core';
 
@@ -17,6 +17,8 @@ export interface TargetRow {
   port: number | '';
   weight: number | '';
   backup: boolean;
+  // 宛先ごとの同時接続の上限（max_connections。空欄は上限なし）
+  maxConnections: number | '';
 }
 
 export interface HealthCheckRow {
@@ -26,11 +28,32 @@ export interface HealthCheckRow {
   port: number | '';
 }
 
-export const EMPTY_ROW: TargetRow = { addr: '', port: '', weight: '', backup: false };
+export const EMPTY_ROW: TargetRow = { addr: '', port: '', weight: '', backup: false, maxConnections: '' };
+
+// 単一の宛先の欄から作る 1 行目（「宛先を追加」で複数にしたとき）
+export function firstRow(addr: string, port: number | ''): TargetRow {
+  return { ...EMPTY_ROW, addr: addr, port: port };
+}
+
+// 宛先ごとの上限の説明（rproxy v0.4.19、#341）
+export const TARGET_CAP_HELP = '同時接続の上限（空欄は上限なし）：いっぱいの宛先は落ちた宛先と同じく飛ばし、すべていっぱいなら新しい接続を断ります。フェイルオーバーと組むと上から順に上限まで使います。';
+// 宛先ごとの上限を使えない rproxy で、値があるとき
+export const TARGET_CAP_PRESERVED = 'この rproxy では宛先ごとの上限を使えないので編集できません。そのまま残して送ります。';
 export const EMPTY_HEALTH_CHECK: HealthCheckRow = { enabled: false, interval: '', timeout: '', port: '' };
 
 export function toRows(targets: Target[]): TargetRow[] {
-  return targets.map((t) => ({ addr: t.addr, port: t.port, weight: t.weight ?? '', backup: t.backup ?? false }));
+  return targets.map((t) => ({ addr: t.addr, port: t.port, weight: t.weight ?? '', backup: t.backup ?? false, maxConnections: t.max_connections ?? '' }));
+}
+
+// 1 行を rproxy の形の宛先にする（normalizeTargets で確かめる前の形）
+export function rowToTarget(r: TargetRow): Record<string, unknown> {
+  return {
+    addr: r.addr.trim(),
+    port: r.port === '' ? undefined : r.port,
+    ...(r.weight === '' ? {} : { weight: r.weight }),
+    ...(r.backup ? { backup: true } : {}),
+    ...(r.maxConnections === '' ? {} : { max_connections: r.maxConnections }),
+  };
 }
 
 export function toHealthCheckRow(hc: HealthCheck | null): HealthCheckRow {
@@ -55,12 +78,7 @@ export function buildBalancing(
   protocol: Protocol,
   portCount: number,
 ): Balancing {
-  const targets = normalizeTargets(rows.map((r) => ({
-    addr: r.addr.trim(),
-    port: r.port === '' ? undefined : r.port,
-    ...(r.weight === '' ? {} : { weight: r.weight }),
-    ...(r.backup ? { backup: true } : {}),
-  })));
+  const targets = normalizeTargets(rows.map(rowToTarget));
   const healthCheck = hc.enabled
     ? normalizeHealthCheck({
       ...(hc.interval.trim() ? { interval: hc.interval.trim() } : {}),
@@ -92,4 +110,57 @@ export function healthCheckLabel(hc: HealthCheck | null): string {
     hc.timeout !== undefined ? `タイムアウト ${hc.timeout}` : 'タイムアウト 既定',
     hc.port !== undefined ? `ポート ${hc.port}` : '各宛先のポート',
   ]);
+}
+
+// 宛先の上限と今の数（「12 / 200」。上限がなければ数だけ、どちらもなければ null）
+export function capUsageLabel(current: number | undefined, max: number | undefined): string | null {
+  if (max === undefined) return current === undefined ? null : formatNumber(current);
+  return `${current === undefined ? '-' : formatNumber(current)} / ${formatNumber(max)}`;
+}
+
+const formatNumber = (n: number) => n.toLocaleString('en-US');
+
+// 上限のある宛先がすべていっぱいか、ほかが落ちている（新しい接続を断っている）。上限のある宛先がなければ false。
+// L4 は stats.targets、L7 はサービスごとの stats.http.services（どれか 1 つのサービスでも）
+export function targetsAllFull(stats: Pick<RuleStats, 'targets' | 'http'> | null | undefined): boolean {
+  const allFull = (list: { up?: boolean; full?: boolean }[]) => list.length > 0 && list.some((t) => t.full === true) && list.every((t) => t.full === true || t.up === false);
+  if (allFull(stats?.targets ?? [])) return true;
+  return Object.values(stats?.http?.services ?? {}).some((servers) => allFull(servers));
+}
+
+// いま上限に達している宛先の数（L4 の宛先と L7 の転送先）
+export function fullTargetCount(stats: Pick<RuleStats, 'targets' | 'http'> | null | undefined): number {
+  const l4 = (stats?.targets ?? []).filter((t) => t.full === true).length;
+  const l7 = Object.values(stats?.http?.services ?? {}).flat().filter((s) => s.full === true).length;
+  return l4 + l7;
+}
+
+type CapsPart = Pick<ForwardRule, 'targets' | 'tls' | 'http'>;
+
+// 宛先ごとの上限（targets[]・tls.routes[].targets[]・L7 の servers[] の max_connections。#341）を外した形
+// （ずれ（drift.ts）・履歴（history.ts）は上限の違いを target_max_connections として別に出すので、targets・tls・http の比べ方からは外す）
+export function withoutTargetCaps<T extends CapsPart>(rule: T): T {
+  const strip = <U extends object>(t: U): U => Object.fromEntries(Object.entries(t).filter(([k]) => k !== 'max_connections')) as U;
+  const services = (rule.http as { services?: Record<string, { servers?: object[] }> } | null)?.services;
+  return {
+    ...rule,
+    targets: rule.targets.map(strip),
+    tls: rule.tls.routes ? { ...rule.tls, routes: rule.tls.routes.map((r) => (r.targets ? { ...r, targets: r.targets.map(strip) } : r)) } : rule.tls,
+    http: rule.http !== null && services
+      ? { ...rule.http, services: Object.fromEntries(Object.entries(services).map(([n, s]) => [n, Array.isArray(s?.servers) ? { ...s, servers: s.servers.map(strip) } : s])) }
+      : rule.http,
+  };
+}
+
+// 宛先ごとの上限だけを並べた形（上限のない宛先は 0）。どこにも上限がなければ null
+export function targetCapsOf(rule: CapsPart): unknown {
+  const cap = (t: { max_connections?: unknown }) => (typeof t.max_connections === 'number' ? t.max_connections : 0);
+  const services = (rule.http as { services?: Record<string, { servers?: { max_connections?: unknown }[] }> } | null)?.services ?? {};
+  const out = {
+    targets: rule.targets.map(cap),
+    routes: (rule.tls.routes ?? []).map((r) => (r.targets ?? []).map(cap)),
+    servers: Object.fromEntries(Object.keys(services).sort().map((n) => [n, (Array.isArray(services[n]?.servers) ? services[n].servers! : []).map(cap)])),
+  };
+  const any = out.targets.some((n) => n > 0) || out.routes.flat().some((n) => n > 0) || Object.values(out.servers).flat().some((n) => n > 0);
+  return any ? out : null;
 }

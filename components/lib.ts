@@ -146,6 +146,9 @@ export interface Target {
   weight?: number;
   // 通常の宛先がすべて落ちたときだけ使う
   backup?: boolean;
+  // この宛先へ同時に張る接続（UDP はセッション）の上限（rproxy v0.4.19、#341。features.target_max_connections）。
+  // いっぱいの宛先は落ちた宛先と同じく飛ばし、すべていっぱいなら断る。省略は上限なし
+  max_connections?: number;
 }
 
 // 宛先の死活確認（TCP の接続で確かめる）。port を省くと各宛先のポート（UDP のルールでは必須）
@@ -259,6 +262,9 @@ export interface TargetStats {
   ejected_until?: number | null;
   // 外した回数（rproxy v0.4）
   ejections?: number;
+  // 宛先ごとの上限（rproxy v0.4.19、#341。上限のある宛先だけ）と、いま上限か（connections が上限に達している）
+  max_connections?: number;
+  full?: boolean;
 }
 
 // 状態コードの百の位ごとの区分。0 件の区分は省かれる
@@ -274,6 +280,18 @@ export interface HttpStats {
   routes: Record<string, HttpRouteStats>;
   limited?: number;
   blocked?: number;
+  // サービスごとの転送先の状態（health_check か転送先の max_connections のあるサービスだけ）
+  services?: Record<string, HttpServerStats[]>;
+}
+
+// L7 のサービスの転送先 1 件の状態。max_connections・in_flight・full は上限のある転送先だけ（rproxy v0.4.19、#341）
+export interface HttpServerStats {
+  url?: string;
+  up?: boolean;
+  ejected?: boolean;
+  max_connections?: number;
+  in_flight?: number;
+  full?: boolean;
 }
 
 // limited / blocked はミドルウェアの名前ごと
@@ -344,7 +362,7 @@ export interface NodeLiveState {
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
 export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled'
-  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol';
+  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'target_max_connections';
 
 export type NodeRole = 'active' | 'standby';
 

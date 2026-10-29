@@ -38,6 +38,9 @@ export interface HttpEditorProps {
   // features.http_options（Gateway API 向けの項目。features を取得できなかったときは null。そのときはすべて出す）
   httpOptions: readonly string[] | null;
   http3: boolean;
+  // 転送先ごとの同時に処理する上限（servers[].max_connections。features.target_max_connections）を編集できる。
+  // できなければ値は読み取り専用で残して送る
+  targetCaps?: boolean;
   // 管理者でない人（#155）：ファイルのパスの欄（*_file）を読み取り専用にする（前からある値はそのまま送る。確かめるのは API）
   filesLocked?: boolean;
 }
@@ -496,7 +499,7 @@ const ServiceOutlierFields: React.FC<{ id: string; name: string; value: HttpOutl
 
 // ---- 本体 ----
 
-const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, filesLocked = false }) => {
+const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, targetCaps = false, filesLocked = false }) => {
   const services = value.services ?? {};
   const mws = value.middlewares ?? {};
   const serviceNames = Object.keys(services);
@@ -738,7 +741,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
                       {(statusAvailable || isStatus) && (
                         <select aria-label={`サービス ${name} の転送先 ${k + 1} の種類`} className={`${inputClass} sm:w-auto shrink-0`} value={isStatus ? 'status' : 'url'} disabled={!statusAvailable}
-                          onChange={(e) => setServer(e.target.value === 'status' ? { url: undefined, status: 500, middlewares: undefined } : { status: undefined, url: 'http://' })}>
+                          onChange={(e) => setServer(e.target.value === 'status' ? { url: undefined, status: 500, middlewares: undefined, max_connections: undefined } : { status: undefined, url: 'http://' })}>
                           <option value="url">URL</option>
                           <option value="status">状態コードで答える</option>
                         </select>
@@ -752,6 +755,11 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                       )}
                       <input aria-label={`サービス ${name} の転送先 ${k + 1} の重み`} type="number" min="1" className={`${inputClass} max-w-20 shrink-0`} value={srv.weight ?? 1}
                         onChange={(e) => setServer({ weight: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                      {targetCaps && !isStatus && (
+                        <input aria-label={`サービス ${name} の転送先 ${k + 1} の同時に処理する上限`} type="number" min="1" className={`${inputClass} max-w-24 shrink-0`}
+                          value={srv.max_connections ?? ''} placeholder="上限なし" title="同時に処理するリクエストの上限（空欄は上限なし）"
+                          onChange={(e) => setServer({ max_connections: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                      )}
                       <button type="button" className={`${removeButton} whitespace-nowrap`} onClick={() => updateService(name, { servers: s.servers.filter((_, j) => j !== k) })}>削除</button>
                     </div>
                     {!isStatus && (supports(httpOptions, 'server_middlewares')
@@ -759,9 +767,11 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                         ? <ServerMiddlewares service={name} index={k + 1} value={srv.middlewares ?? []} candidates={serverMwCandidates} onChange={(v) => setServer({ middlewares: v.length > 0 ? v : undefined })} />
                         : null
                       : srv.middlewares !== undefined && <Preserved label="この転送先だけのミドルウェア" value={srv.middlewares} />)}
+                    {!targetCaps && srv.max_connections !== undefined && <Preserved label="同時に処理する上限" value={String(srv.max_connections)} />}
                   </div>
                 );
               })}
+              {targetCaps && <p className="text-xs text-gray-600 mb-1">転送先の上限は、同時に処理するリクエストの数です（空欄は上限なし）。いっぱいの転送先は飛ばし、すべていっぱいなら 503 で答えます。</p>}
               {statusAvailable && <p className="text-xs text-gray-600 mb-1">「状態コードで答える」は、重みの割合のリクエストに rproxy がその状態コードで答えます（ヘルスチェック・スティッキーの対象外）。</p>}
               <button type="button" className={smallButton} onClick={() => updateService(name, { servers: [...s.servers, { url: 'http://' }] })}>転送先を追加</button>
               <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">

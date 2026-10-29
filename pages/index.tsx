@@ -23,6 +23,7 @@ import {
   listenPortLabel,
   listTarget,
   certProblem,
+  targetFullProblem,
   needsAttention,
   portsLabel,
   ruleHref,
@@ -288,7 +289,7 @@ const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = 
               <span className="text-gray-600"> → </span>
               <TargetName rule={r} />
               <p className="text-xs text-red-800 break-all mt-0.5">
-                {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certIssueText(r) ?? nodeIssueText(r))}
+                {r.error ? ruleErrorText(r.error) : (r.state === 'missing' ? 'rproxy でこのルールが動いていません（変更して保存すると作り直します）。' : certIssueText(r) ?? targetFullProblem(r) ?? nodeIssueText(r))}
               </p>
             </div>
           </li>
