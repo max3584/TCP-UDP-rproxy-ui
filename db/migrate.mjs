@@ -49,7 +49,6 @@ export const APP_GRANTS = [
   ['usage_daily', 'SELECT, INSERT, UPDATE, DELETE'],
   ['rproxy_rules', 'SELECT'],
   ['rproxy_rule_sets', 'SELECT'],
-  ['rproxy_global', 'SELECT'],
 ];
 
 export const sha256 = (text) => createHash('sha256').update(text).digest('hex');

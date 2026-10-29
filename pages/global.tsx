@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { ErrorBanner, errorDetail } from '@/components/ui';
 import { explainError } from '@/components/messages';
 import {
-  GLOBAL_ITEM_LABELS, GlobalPatchError, SOURCE_LABELS, buildGlobalValue, editBlock, formatGlobalValue, toGlobalForm,
+  GLOBAL_ITEM_LABELS, GlobalPatchError, SOURCE_LABELS, buildGlobalValue, editBlock, formatGlobalValue, sameValue, toGlobalForm,
 } from '@/components/globalsettings';
 import type { GlobalForm, GlobalItem, GlobalNodeResult, GlobalNodeView } from '@/components/globalsettings';
 import { localeTag, t } from '@/i18n/core';
@@ -48,7 +48,11 @@ const ItemRow: React.FC<{ name: string; item: GlobalItem; transport: 'unix' | 't
         <span className="block">{itemLabel(name)}</span>
         <span className="block font-mono text-xs text-gray-600">{name}</span>
       </th>
-      <td className="font-mono text-xs break-all align-top text-gray-900" data-testid="global-value">{formatGlobalValue(item.value)}</td>
+      <td className="font-mono text-xs break-all align-top text-gray-900" data-testid="global-value">
+        {item.redacted
+          ? <span className="font-sans text-gray-700">{`中身は出しません（再起動が要る項目）${item.keys && item.keys.length > 0 ? `: ${item.keys.join(', ')}` : ''}`}</span>
+          : formatGlobalValue(item.value)}
+      </td>
       <td className="align-top"><SourceBadge source={item.source} /></td>
       <td className="align-top"><ApplyBadge apply={item.apply} /></td>
       <td className="align-top text-xs text-gray-800 space-y-1">
@@ -156,15 +160,35 @@ const FormFields: React.FC<{ name: string; form: GlobalForm; onChange: (f: Globa
   }
 };
 
-const ResultView: React.FC<{ results: GlobalNodeResult[]; applied: boolean; many: boolean }> = ({ results, applied, many }) => (
-  <section className="rounded-sm border border-blue-200 bg-blue-50 p-3 text-sm text-gray-900" data-testid={applied ? 'global-result' : 'global-plan'}>
-    <h3 className="font-semibold mb-2">{applied ? '適用しました' : '適用したときの変化（まだ何も変えていません）'}</h3>
+type ResultMode = 'plan' | 'applied' | 'failed';
+
+const RESULT_HEADING: Record<ResultMode, string> = {
+  plan: '適用したときの変化（まだ何も変えていません）',
+  applied: '適用しました',
+  failed: '適用できませんでした（ノードごとの結果）',
+};
+
+// 適用に失敗したときのノードごとの結果（ほかのノードが断ったので戻したか）
+function undoNote(r: GlobalNodeResult): string | null {
+  if (r.outcome === 'applied' && r.undone === true) return 'このノードでは効かせましたが、ほかのノードが断ったので前の値に戻しました。';
+  if (r.outcome === 'applied' && r.undone === false) return 'このノードでは効かせましたが、前の値に戻せませんでした（このノードだけ値が違います。画面で確かめて直してください）。';
+  if (r.outcome === 'unknown') return 'このノードは効いたか分からないため、戻していません。';
+  return null;
+}
+
+const ResultView: React.FC<{ results: GlobalNodeResult[]; mode: ResultMode; many: boolean }> = ({ results, mode, many }) => (
+  <section
+    className={`rounded-sm border p-3 text-sm text-gray-900 ${mode === 'failed' ? 'border-red-300 bg-red-50' : 'border-blue-200 bg-blue-50'}`}
+    data-testid={mode === 'plan' ? 'global-plan' : mode === 'applied' ? 'global-result' : 'global-failed'}
+  >
+    <h3 className="font-semibold mb-2">{RESULT_HEADING[mode]}</h3>
     {results.map((r) => (
-      <div key={r.node} className="mb-2 last:mb-0" data-testid="global-plan-node">
+      <div key={r.node} className="mb-2 last:mb-0" data-testid="global-plan-node" data-node={r.node} data-outcome={r.outcome ?? ''}>
         {many && <h4 className="font-mono font-semibold">{r.node}</h4>}
+        {mode === 'failed' && undoNote(r) && <p className={r.undone === true ? 'text-gray-800' : 'text-red-800'} data-testid="global-undo">{undoNote(r)}</p>}
         {!r.ok ? (
           <p className="text-red-800">{explainError(r.code, r.error ?? '')}</p>
-        ) : (r.changes ?? []).length === 0 ? (
+        ) : mode === 'failed' ? null : (r.changes ?? []).length === 0 ? (
           <p className="text-gray-700">変わる項目はありません。</p>
         ) : (
           <div className="table-scroll">
@@ -188,7 +212,7 @@ const ResultView: React.FC<{ results: GlobalNodeResult[]; applied: boolean; many
             </table>
           </div>
         )}
-        {applied && r.ok && r.persisted === false && (
+        {mode === 'applied' && r.ok && r.persisted === false && (
           <p className="text-amber-900 text-xs mt-1">値は効いていますが、まだ保存できていません（rproxy が後で書き直します。DB がなければ再起動で消えます）。</p>
         )}
       </div>
@@ -202,10 +226,11 @@ const GlobalPage: React.FC = () => {
   const [target, setTarget] = useState('');
   const [edits, setEdits] = useState<Record<string, Edit>>({});
   const [plan, setPlan] = useState<{ body: string; results: GlobalNodeResult[] } | null>(null);
-  const [result, setResult] = useState<GlobalNodeResult[] | null>(null);
+  const [result, setResult] = useState<{ nodes: GlobalNodeResult[]; failed: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
+  // keep：失敗の後の読み直し（誤りの文と入力を残す）
+  const load = useCallback(async (keep = false) => {
     try {
       const res = await fetch('/api/forward/global');
       if (!res.ok) {
@@ -213,9 +238,11 @@ const GlobalPage: React.FC = () => {
         return;
       }
       setData(await res.json() as GlobalData);
-      setEdits({});
       setPlan(null);
-      setError('');
+      if (!keep) {
+        setEdits({});
+        setError('');
+      }
     } catch (err) {
       setError(`読み込めませんでした: ${err instanceof Error ? err.message : err}`);
     }
@@ -249,7 +276,9 @@ const GlobalPage: React.FC = () => {
     }));
   }, [shown]);
 
-  const editOf = (name: string): Edit => edits[name] ?? { mode: 'keep', form: toGlobalForm(name, shown[0].settings!.items[name]) };
+  // ノードごとに API の値が違う項目（グループ）。欄に最初のノードの値を入れると、ほかのノードの値を黙って上書きしてしまうので空にする
+  const differs = (name: string) => shown.some((n) => !sameValue(n.settings!.items[name]?.api_value, shown[0].settings!.items[name]?.api_value));
+  const editOf = (name: string): Edit => edits[name] ?? { mode: 'keep', form: toGlobalForm(name, differs(name) ? undefined : shown[0].settings!.items[name]) };
   const setEdit = (name: string, e: Edit) => {
     setEdits((prev) => ({ ...prev, [name]: e }));
     setPlan(null);
@@ -282,7 +311,11 @@ const GlobalPage: React.FC = () => {
       if (!res.ok) {
         const data = await res.clone().json().catch(() => ({})) as { nodes?: GlobalNodeResult[] };
         setError(await errorDetail(res));
-        if (Array.isArray(data.nodes)) setResult(data.nodes);
+        if (!dryRun && Array.isArray(data.nodes)) {
+          setResult({ nodes: data.nodes, failed: true });
+          // 戻せなかったノード・分からないノードがあるので、今の値を読み直す
+          await load(true);
+        }
         return;
       }
       const out = await res.json() as { nodes: GlobalNodeResult[] };
@@ -290,7 +323,7 @@ const GlobalPage: React.FC = () => {
         setPlan({ body: JSON.stringify(built.values), results: out.nodes });
       } else {
         await load();
-        setResult(out.nodes);
+        setResult({ nodes: out.nodes, failed: false });
       }
     } catch (err) {
       setError(`送れませんでした: ${err instanceof Error ? err.message : err}`);
@@ -355,8 +388,16 @@ const GlobalPage: React.FC = () => {
                     </label>
                   ))}
                 </div>
+                {differs(name) && (
+                  <p className="text-xs text-amber-900" data-testid="global-differs">ノードごとに API の値が違います。欄は空にしてあり、入れた値をすべてのノードに同じに入れます。</p>
+                )}
                 {e.mode === 'set' && (
                   <>
+                    {e.form.kind === 'fields' && (
+                      <p className="text-xs text-gray-700" data-testid="global-whole">
+                        {`この項目は丸ごと置き換えます。空の欄は rproxy の既定になり、書いた欄だけが API の値になります（今の値: ${formatGlobalValue(item.value)}）。`}
+                      </p>
+                    )}
                     <FormFields name={name} form={e.form} onChange={(f) => setEdit(name, { ...e, form: f })} />
                     {item.unix_only && <p className="text-xs text-gray-700">守りに関わる項目です。rproxy は Unix ソケットからだけ受け付けます。</p>}
                   </>
@@ -371,13 +412,13 @@ const GlobalPage: React.FC = () => {
           </div>
           {notLoaded && <p className="text-xs text-red-800">保存した値を読めていないノードがあるため、適用できません。</p>}
           {hasChanges && !planOk && !notLoaded && <p className="text-xs text-gray-700">先に「差分を確かめる」で、rproxy が受け付けるかと変わる値を確かめてください。</p>}
-          {plan && <ResultView results={plan.results} applied={false} many={many} />}
+          {plan && <ResultView results={plan.results} mode="plan" many={many} />}
         </section>
       )}
       {data && shown.length > 0 && editable.length === 0 && shown.every((n) => n.settings) && !shown.some((n) => n.readonly) && (
         <p className="text-sm text-gray-700" data-testid="global-nothing-editable">このノード／グループで API から変えられる項目はありません。</p>
       )}
-      {result && <ResultView results={result} applied={result.every((r) => r.ok)} many={many} />}
+      {result && <ResultView results={result.nodes} mode={result.failed ? 'failed' : 'applied'} many={many} />}
     </div>
   );
 };

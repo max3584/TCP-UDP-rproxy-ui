@@ -1818,4 +1818,13 @@ export const en: Record<string, string> = {
   "新しい値を効かせられませんでした（今の値の欄は前から効いている値です）: {0}": "The new value could not be put in force (the value shown is the one in force before): {0}",
   "rproxy が起動のときに保存した値（rproxy_global）を読めていません（DB に届かないか、行が読めない形）。読めるまで変えられません（rproxy が定期に読み直します。読めない形の行は直すまで）。": "rproxy could not read the stored values (rproxy_global) at the start (the database cannot be reached, or a row cannot be read). They cannot be changed until it can (rproxy tries again regularly; an unreadable row must be fixed first).",
   "rproxy が起動のときに保存した global の値を読めていない（DB に届かないか、行が読めない形）ため、今は変えられません（書くと保存した値を消してしまうため）。rproxy が定期に読み直します（読めない形の行は直すまで）。": "rproxy could not read the stored global values at the start (the database cannot be reached, or a row cannot be read), so they cannot be changed now (writing would erase the stored values). rproxy tries again regularly (an unreadable row must be fixed first).",
+  "項目の名前が重なっています: {0} と {1}": "Item names overlap: {0} and {1}",
+  "rproxy の答えを待つ間に時間切れになり、効いたかどうか分かりません（rproxy はほかの変更の後に並んでいて、後から効かせることがあります）。少し待ってから画面を読み直し、値を確かめてください。": "Timed out waiting for rproxy's answer, so whether it took effect is unknown (rproxy may be queued behind another change and apply it later). Wait a moment, reload the screen and check the values.",
+  "中身は出しません（再起動が要る項目）{0}": "Contents not shown (an item that needs a restart){0}",
+  "適用できませんでした（ノードごとの結果）": "Could not apply (result per node)",
+  "このノードでは効かせましたが、ほかのノードが断ったので前の値に戻しました。": "Applied on this node, but put back to the value before because another node refused.",
+  "このノードでは効かせましたが、前の値に戻せませんでした（このノードだけ値が違います。画面で確かめて直してください）。": "Applied on this node, but could not be put back (only this node has a different value; check it on the screen and fix it).",
+  "このノードは効いたか分からないため、戻していません。": "Whether this node took the change is unknown, so it was not put back.",
+  "ノードごとに API の値が違います。欄は空にしてあり、入れた値をすべてのノードに同じに入れます。": "The API value differs between nodes. The fields are left empty; what you enter goes to every node.",
+  "この項目は丸ごと置き換えます。空の欄は rproxy の既定になり、書いた欄だけが API の値になります（今の値: {0}）。": "This item is replaced as a whole. Empty fields become rproxy's defaults; only the fields you fill in become API values (value in force: {0}).",
 };

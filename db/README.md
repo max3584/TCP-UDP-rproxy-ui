@@ -77,7 +77,7 @@ DB_HOST=db.example DB_DATABASE=rproxy DB_ADMIN_USER=root DB_ADMIN_PASSWORD=... n
 
 - `rproxy_rule_sets`（012）：rproxy-api v0.4.2 が、`persist: true` のトークンで `PUT /rulesets/{name}` した組を保存する（`(node, name)` で一意。`rules` は組のルールの配列（各要素は `POST /rules` の本文の形）、`owner` は組の持ち主のトークンの名前、`generation`・`etag` は組の世代）。書くのは rproxy だけ。rproxy は起動時に自分の `node` の行を `rproxy_rules` のあとに戻す。
 
-- `rproxy_global`（013）：rproxy-api v0.4.19 が、制御 API の `PATCH /config/global`（UI の「global の設定」の画面）で入れた `global` の値を保存する（`node` で一意。`spec` は API で入れた項目だけを設定ファイルの `global` と同じ形にした JSON、`updated_by` はトークンの名前）。書くのは rproxy だけ（`INSERT ... ON DUPLICATE KEY UPDATE`。行を消さない）。UI は値を rproxy の API で読み書きし、このテーブルは読まない。rproxy は起動時に自分の `node` の行を `forward_rules`・`rproxy_rules` のルールより先に読んで効かせる。テーブルがない・書けないときも値は効くが、`persisted: false` で、再起動すると消える。
+- `rproxy_global`（013）：rproxy-api v0.4.19 が、制御 API の `PATCH /config/global`（UI の「global の設定」の画面）で入れた `global` の値を保存する（`node` で一意。`spec` は API で入れた項目だけを設定ファイルの `global` と同じ形にした JSON、`updated_by` はトークンの名前）。書くのは rproxy だけ（`INSERT ... ON DUPLICATE KEY UPDATE`。行を消さない）。UI は値を rproxy の API で読み書きし、このテーブルは読まない（UI の DB ユーザーに権限は要らない。rproxy-api の docs/API.md の例にある UI への SELECT も要らない）。rproxy は起動時に自分の `node` の行を `forward_rules`・`rproxy_rules` のルールより先に読んで効かせる。テーブルがない・書けないときも値は効くが、`persisted: false` で、再起動すると消える。
 
 - `usage_counters`・`usage_hourly`・`usage_daily`（010）：利用量の集計。UI が rproxy の統計を取り、`usage_counters` に最後に見た数（と `counters_since`・`started_at`）、その差を `usage_hourly`（`hour` は UTC の時の始まり）と `usage_daily`（`day` は UTC の日付）に、ルール・ノードごとに足す。各行の `owner`・`target`・`labels`・`origin` はそのときのルールの持ち主と印で、主キーの `attr`（011。それらの SHA-256）が違えば別の行になる（同じ日に持ち主が変わっても、前の分の持ち主を書き換えない）。古い行は UI が消す（`RPROXY_UI_USAGE_HOURLY_DAYS`・`RPROXY_UI_USAGE_DAILY_DAYS`）。
 
@@ -99,7 +99,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_daily    TO 'rproxy_ui'@'10
 -- rproxy-api v0.4 の API のルールを見せるとき（009。UI は読むだけ）
 GRANT SELECT                         ON rproxy.rproxy_rules TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT                         ON rproxy.rproxy_rule_sets TO 'rproxy_ui'@'10.0.0.%';
-GRANT SELECT                         ON rproxy.rproxy_global TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api は起動時に `forward_rules` を読むだけなので、読み取り専用のユーザーを使う。

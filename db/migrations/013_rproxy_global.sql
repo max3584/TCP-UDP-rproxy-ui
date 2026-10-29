@@ -6,8 +6,7 @@
 -- 適用したら、複数の rproxy ではノードごとのビューを db/node-view.mjs で作り直す（ノードのデータベースに rproxy_global のビューができる）。
 -- rproxy の DB ユーザーへの権限（1 台の環境。ユーザーとホストは読み替える）:
 --   GRANT SELECT, INSERT, UPDATE ON rproxy.rproxy_global TO 'rproxy'@'127.0.0.1';
--- UI の DB ユーザーには読み取りだけ:
---   GRANT SELECT ON rproxy.rproxy_global TO 'rproxy_ui'@'10.0.0.%';
+-- UI の DB ユーザーには権限は要らない（UI は値を rproxy の API で読み書きし、このテーブルを読まない）。
 
 CREATE TABLE IF NOT EXISTS rproxy_global (
   node         VARCHAR(255) NOT NULL,   -- どの rproxy の値か（RPROXY_NODE_NAME、既定はホスト名）

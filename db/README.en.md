@@ -77,7 +77,7 @@ Columns of `schema_migrations`: `version` (the file name without `.sql`), `appli
 
 - `rproxy_rule_sets` (012): rproxy-api v0.4.2 stores here the rule sets PUT through `PUT /rulesets/{name}` with a `persist: true` token (unique on `(node, name)`; `rules` is the array of the set's rules, each in the shape of the `POST /rules` body; `owner` is the owning token's name; `generation` and `etag` are the set's). Only rproxy writes it. At startup rproxy restores the rows of its own `node` after `rproxy_rules`.
 
-- `rproxy_global` (013): rproxy-api v0.4.19 stores here the `global` values set through the control API's `PATCH /config/global` (the UI's "Global settings" screen) (unique on `node`; `spec` is JSON in the shape of the settings file's `global` with only the items set through the API; `updated_by` is the token name). Only rproxy writes it (`INSERT ... ON DUPLICATE KEY UPDATE`; it never deletes the row). The UI reads and writes the values through the rproxy API and does not read this table. At startup rproxy reads the row of its own `node` and puts it in force before the rules of `forward_rules` and `rproxy_rules`. Without the table, or when it cannot be written, the values are still in force but `persisted: false`, and are lost on restart.
+- `rproxy_global` (013): rproxy-api v0.4.19 stores here the `global` values set through the control API's `PATCH /config/global` (the UI's "Global settings" screen) (unique on `node`; `spec` is JSON in the shape of the settings file's `global` with only the items set through the API; `updated_by` is the token name). Only rproxy writes it (`INSERT ... ON DUPLICATE KEY UPDATE`; it never deletes the row). The UI reads and writes the values through the rproxy API and does not read this table (the UI's DB user needs no privilege on it, not even the SELECT in the example of rproxy-api's docs/API.md). At startup rproxy reads the row of its own `node` and puts it in force before the rules of `forward_rules` and `rproxy_rules`. Without the table, or when it cannot be written, the values are still in force but `persisted: false`, and are lost on restart.
 
 - `usage_counters`, `usage_hourly`, `usage_daily` (010): usage accounting. The UI reads rproxy's statistics, keeps the last values (and `counters_since`, `started_at`) in `usage_counters`, and adds the differences per rule and node to `usage_hourly` (`hour` is the start of the UTC hour) and `usage_daily` (`day` is the UTC date). `owner`, `target`, `labels` and `origin` of each row are the rule's owner and marks at that time; a different `attr` in the primary key (011; their SHA-256) makes a separate row (when the owner changes during a day, the earlier traffic keeps its owner). The UI deletes old rows (`RPROXY_UI_USAGE_HOURLY_DAYS`, `RPROXY_UI_USAGE_DAILY_DAYS`).
 
@@ -99,7 +99,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_daily    TO 'rproxy_ui'@'10
 -- to show rproxy-api v0.4 API rules (009; the UI only reads)
 GRANT SELECT                         ON rproxy.rproxy_rules TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT                         ON rproxy.rproxy_rule_sets TO 'rproxy_ui'@'10.0.0.%';
-GRANT SELECT                         ON rproxy.rproxy_global TO 'rproxy_ui'@'10.0.0.%';
 ```
 
 rproxy-api only reads `forward_rules` at startup, so use a read-only user.

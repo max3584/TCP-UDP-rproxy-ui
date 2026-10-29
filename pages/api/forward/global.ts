@@ -6,10 +6,8 @@ import { NodesConfigError, loadNodes, targetNodes, toRproxyNode } from '@/compon
 import type { NodesConfig } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
-import { FanoutError, applyToNodes } from '@/components/fanout';
-import type { NodeResult } from '@/components/fanout';
-import { GlobalPatchError, globalPatchBody, globalSettingsView, normalizeGlobalValues, undoValues } from '@/components/globalsettings';
-import { GlobalRouteError, globalCode, globalFailure } from '@/components/globalapi';
+import { GlobalPatchError, globalPatchBody, globalSettingsView, normalizeGlobalValues, redactRestartItems } from '@/components/globalsettings';
+import { GlobalRouteError, applyGlobal, changeSummary, globalFailure } from '@/components/globalapi';
 import type { GlobalChange, GlobalNodeResult, GlobalNodeView, GlobalSettings } from '@/components/globalsettings';
 import { READONLY_NODE_MESSAGE } from '@/components/messages';
 import { localizedApi } from '@/i18n/server';
@@ -19,7 +17,8 @@ import { localizedApi } from '@/i18n/server';
 //   ?target= でノード／グループのノードだけ。問い合わせできないノードがあっても 200
 // POST {target, values: {項目: 値 | null}, dryRun}：target（ノードかグループ）の全ノードに PATCH /config/global を送る。
 //   dryRun はノードごとの結果（changes・applied・断り）を 200 で返す（何も変えない）。
-//   適用は applyToNodes：1 台でも断れば、適用したノードを前の API の値に戻し（undo）、断ったノードのステータスで返す。
+//   適用は applyGlobal（components/globalapi.ts）：1 台でも断る・時間切れで分からなければ、効いたノードを前の API の値に戻し、
+//   断ったノードのステータスで返す（nodes にノードごとの outcome・undone・コード）。
 // rproxy の断りの返し方は components/globalapi.ts（globalFailure）
 
 interface PlanNode {
@@ -37,14 +36,21 @@ function planNodes(cfg: NodesConfig, target: string | undefined): PlanNode[] {
     readonly: n.readonly === true,
     transport: apiTarget(n.url).socketPath !== undefined ? 'unix' : 'tcp',
   });
-  if (!cfg.configured) return cfg.nodes.slice(0, 1).map(make);
+  if (!cfg.configured) {
+    // ノードを設定していなくても、知らない名前は断る（1 台の名前は default）
+    if (target !== undefined && target !== cfg.nodes[0]?.name) throw new GlobalRouteError(400, `ノード／グループ ${target} は設定にありません。`, 'unknown_target');
+    return cfg.nodes.slice(0, 1).map(make);
+  }
   if (target === undefined) return cfg.nodes.map(make);
   const nodes = targetNodes(cfg, target);
   if (nodes === null) throw new GlobalRouteError(400, `ノード／グループ ${target} は設定にありません。`, 'unknown_target');
   return nodes.map(make);
 }
 
-const run = <T,>(p: PlanNode, fn: () => Promise<T>): Promise<T> => (p.node ? withNode(p.node, fn) : fn());
+function run<T>(p: PlanNode, fn: () => Promise<T>): Promise<T> {
+  return p.node ? withNode(p.node, fn) : fn();
+}
+
 
 async function nodeView(p: PlanNode): Promise<GlobalNodeView> {
   const base = { node: p.name, transport: p.transport, readonly: p.readonly };
@@ -58,7 +64,9 @@ async function nodeView(p: PlanNode): Promise<GlobalNodeView> {
   }
   if (!supported) return { ...base, reachable: true, supported: false, settings: null, error: null, code: null };
   try {
-    const settings = globalSettingsView(await run(p, () => getGlobalSettings()));
+    const raw = globalSettingsView(await run(p, () => getGlobalSettings()));
+    // 再起動が要る項目（acme の contact・directory・eab など）の中身は画面に出さない
+    const settings = raw ? redactRestartItems(raw) : null;
     return { ...base, reachable: true, supported: true, settings: settings, error: settings ? null : 'rproxy の応答を解釈できません。', code: settings ? null : 'bad_response' };
   } catch (err) {
     const f = globalFailure(err);
@@ -141,45 +149,15 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(200).json({ dryRun: true, nodes: results });
   }
 
-  const done = new Map<string, { changes: GlobalChange[]; applied: string[]; settings: GlobalSettings | null }>();
-  const step = async (name: string) => {
-    const r = changesOf(await patchGlobalSettings(patch, false));
-    done.set(name, r);
-    const back = undoValues(r.changes);
-    return async () => {
-      if (back) await patchGlobalSettings(globalPatchBody(back), false);
-    };
-  };
   const who = session.user.name || session.user.email || session.user.id;
-  try {
-    let results: NodeResult[];
-    if (nodes.length === 1 && nodes[0].node === null) {
-      await step(nodes[0].name);
-      results = [{ node: nodes[0].name, ok: true }];
-    } else {
-      const byName = new Map(nodes.map((p) => [p.name, p]));
-      ({ results } = await applyToNodes(nodes.map((p) => p.node!), (n) => step(byName.get(n.name)!.name), logger));
-    }
-    logger.info(`global の設定を変えました（${who}、${nodes.map((n) => n.name).join(', ')}）: ${Object.keys(values).join(', ')}`);
-    const out: GlobalNodeResult[] = results.map((r) => {
-      const d = done.get(r.node);
-      return {
-        node: r.node, ok: true, changes: d?.changes ?? [], applied: d?.applied ?? [],
-        persisted: d?.settings?.persisted ?? null, ...(d?.settings ? { storage: d.settings.storage } : {}),
-      };
-    });
-    return res.status(200).json({ nodes: out });
-  } catch (err) {
-    if (err instanceof FanoutError) {
-      const f = globalFailure(err.reason);
-      logger.warn(`global の設定を変えられませんでした（${who}、ノード ${err.node}）: ${f.code} ${f.error}`);
-      const nodesOut = err.results.map((r) => (r.ok ? r : { ...r, ...(r.code ? { code: globalCode(r.code) } : {}) }));
-      return res.status(f.status).json({ error: `ノード ${err.node}: ${f.error}`, code: f.code, nodes: nodesOut });
-    }
-    const f = globalFailure(err);
-    logger.warn(`global の設定を変えられませんでした（${who}）: ${f.code} ${f.error}`);
-    return res.status(f.status).json({ error: f.error, code: f.code });
+  const result = await applyGlobal(nodes.map((p) => ({ name: p.name, run: <T,>(fn: () => Promise<T>) => run(p, fn) })), values, logger);
+  for (const n of result.nodes) {
+    if (n.ok) logger.info(`global の設定を変えました（${who}、ノード ${n.node}）: ${changeSummary(n.changes ?? [])}`);
   }
+  if (result.ok) return res.status(200).json({ nodes: result.nodes });
+  logger.warn(`global の設定を変えられませんでした（${who}、ノード ${result.node}）: ${result.failure.code} ${result.failure.error}`);
+  const error = nodes.length > 1 ? `ノード ${result.node}: ${result.failure.error}` : result.failure.error;
+  return res.status(result.failure.status).json({ error: error, code: result.failure.code, nodes: result.nodes });
 }
 
 export default localizedApi(handler);

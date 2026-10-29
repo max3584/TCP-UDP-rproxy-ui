@@ -108,6 +108,8 @@ export const READONLY_NODE_MESSAGE =
 
 // global の設定（rproxy-api v0.4.19 の PATCH /config/global、UI #169。pages/api/forward/global.ts・components/globalapi.ts）
 export const GLOBAL_UNSUPPORTED_MESSAGE = 'この rproxy は global の設定の API に対応していません（rproxy-api v0.4.19 から）。';
+// PATCH の答えを待つ間に時間切れ・接続が切れ、読み直しても効いたか分からないとき
+export const GLOBAL_UNKNOWN_MESSAGE = 'rproxy の答えを待つ間に時間切れになり、効いたかどうか分かりません（rproxy はほかの変更の後に並んでいて、後から効かせることがあります）。少し待ってから画面を読み直し、値を確かめてください。';
 
 const EXPLAIN: Record<string, string> = {
   resolve_failed: '転送先のホスト名を名前解決できませんでした。DNS に登録されているか、ホスト名の綴りを確認してください（IP アドレスでも指定できます）。',
@@ -138,6 +140,7 @@ const EXPLAIN: Record<string, string> = {
   global_unix_only: UNIX_ONLY_MESSAGE,
   global_forbidden: 'UI のトークンに rproxy の admin のスコープがありません（global の設定には admin が要ります）。',
   global_unsupported: GLOBAL_UNSUPPORTED_MESSAGE,
+  global_unknown: GLOBAL_UNKNOWN_MESSAGE,
   protected_file: 'rproxy が守っているパス（証明書のストア・ACME の保存先・秘密のファイルなど）は指定できません。',
   global_protected_file: 'rproxy が守っているパス（証明書のストア・ACME の保存先・秘密のファイルなど）は指定できません。API で入れるアクセスログは、そのノードの rproxy-api の RPROXY_API_ACCESS_LOG_DIR のすぐ下のファイルだけです（設定していなければ API では入れられません。rproxy のアクセスログだけのディレクトリを RPROXY_API_ACCESS_LOG_DIR に設定してください）。日ごとの切り替えで消してしまうファイル（同じ名前で始まる日付の形でないもの）や rproxy 自身のログと名前が重なるときも断ります。別の名前にしてください。',
   crowdsec_unavailable: '新しい CrowdSec の LAPI が答えませんでした（10 秒）。今の設定のまま何も変えていません。LAPI の URL・キーと、rproxy から届くかを確かめてください。',

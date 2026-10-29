@@ -19,6 +19,10 @@ export interface GlobalItem {
   shadowed?: boolean;
   // crowdsec：設定ファイルから消えたが、使うルールがあるので残している（source は file）
   kept?: boolean;
+  // 再起動が要る項目の値は UI が出さない（acme の contact・directory・eab・DNS のプロバイダなど。/api/forward/acme と同じ考え方）。
+  // redacted のときは value が null で、keys に一番上の項目の名前だけ
+  redacted?: boolean;
+  keys?: string[];
   // 値を効かせられなかった理由。API の値なら api_value は保存したまま（読めない値のこともある）。
   // 設定ファイルの crowdsec（新しい LAPI が答えない）なら value は今効いている前の値
   error?: string;
@@ -69,6 +73,8 @@ export interface GlobalNodeView {
 export interface GlobalNodeResult {
   node: string;
   ok: boolean;
+  // 適用のとき：applied（効いた）・refused（rproxy が断った）・unknown（時間切れで効いたか分からない）
+  outcome?: 'applied' | 'refused' | 'unknown';
   changes?: GlobalChange[];
   applied?: string[];
   persisted?: boolean | null;
@@ -147,13 +153,13 @@ export function normalizeGlobalValues(raw: unknown): Record<string, unknown> {
     if (!ITEM_NAME.test(item)) throw new GlobalPatchError(`項目の名前が正しくありません: ${item}`);
     out[item] = value === undefined ? null : value;
   }
+  // http と http.timeouts のように重なる名前は、どちらが勝つかが本文の形で決まってしまうので断る
+  const names = Object.keys(out);
+  for (const a of names) {
+    const b = names.find((n) => n !== a && n.startsWith(`${a}.`));
+    if (b) throw new GlobalPatchError(`項目の名前が重なっています: ${a} と ${b}`);
+  }
   return out;
-}
-
-// 適用したものを戻す本文：変わった項目の API の値を前の値（なければ null で消す）に戻す
-export function undoValues(changes: GlobalChange[] | undefined): Record<string, unknown> | null {
-  if (!changes || changes.length === 0) return null;
-  return Object.fromEntries(changes.map((c) => [c.item, c.api_before ?? null]));
 }
 
 // rproxy の答えを画面に渡す形にそろえる（知らない欄は落とす）
@@ -188,6 +194,35 @@ export function globalSettingsView(raw: unknown): GlobalSettings | null {
   };
 }
 
+// 再起動が要る項目の値を伏せる（UI の応答に入れない）。値がオブジェクトなら一番上の名前だけを残す。
+// 数・文字列・真偽（performance の workers など）は伏せるものがないのでそのまま
+export function redactRestartItems(settings: GlobalSettings): GlobalSettings {
+  const items: Record<string, GlobalItem> = {};
+  for (const [name, item] of Object.entries(settings.items)) {
+    if (item.apply === 'live' || item.value === null || typeof item.value !== 'object') {
+      items[name] = item;
+      continue;
+    }
+    const { api_value: _api, ...rest } = item;
+    void _api;
+    items[name] = { ...rest, value: null, redacted: true, keys: Array.isArray(item.value) ? [] : Object.keys(item.value as Record<string, unknown>) };
+  }
+  return { ...settings, items: items };
+}
+
+// 2 つの値が同じか（キーの順を問わない。undefined と null は同じ）
+export function sameValue(a: unknown, b: unknown): boolean {
+  return canonical(a) === canonical(b);
+}
+
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+  if (typeof v === 'object' && v !== null) {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
 // 値の短い表示
 export function formatGlobalValue(value: unknown): string {
   if (value === null || value === undefined) return '-';
@@ -216,9 +251,10 @@ export type GlobalForm =
   | { kind: 'fields'; keys: string[]; fields: Record<string, string> }
   | { kind: 'json'; text: string };
 
-// 欄の初めの値：API の値があればそれ、なければ今効いている値
-export function toGlobalForm(name: string, item: GlobalItem): GlobalForm {
-  const v = item.api_value !== undefined ? item.api_value : item.value;
+// 欄の初めの値：API の値だけ（今効いている既定の値を入れると、触らずに送ったときに既定が API の値として固まるため）。
+// グループでノードの API の値が違うときは呼ぶ側が undefined を渡して空にする
+export function toGlobalForm(name: string, item: GlobalItem | undefined): GlobalForm {
+  const v = item?.api_value;
   const fields = (keys: string[]): GlobalForm => {
     const o = typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {};
     return { kind: 'fields', keys: keys, fields: Object.fromEntries(keys.map((k) => [k, o[k] === undefined || o[k] === null ? '' : String(o[k])])) };
