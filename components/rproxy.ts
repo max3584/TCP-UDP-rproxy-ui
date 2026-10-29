@@ -146,6 +146,8 @@ export interface CapabilityFeatures {
   route_source_ip?: boolean;
   // 設定ファイルの global.performance で効く項目の名前
   performance?: string[];
+  // v0.4.19：global の設定の API（GET / PATCH /config/global、#342）
+  global_api?: boolean;
 }
 
 export interface Capabilities {
@@ -427,6 +429,15 @@ export interface RproxyConfigStatus {
 
 export function getConfigStatus(): Promise<RproxyConfigStatus> {
   return request<RproxyConfigStatus>('GET', '/config');
+}
+
+// global の設定（v0.4.19 の GET / PATCH /config/global、#342。admin のスコープ）。PATCH の本文は設定ファイルの global の形（null で API の値を消す）
+export function getGlobalSettings(): Promise<unknown> {
+  return request<unknown>('GET', '/config/global');
+}
+
+export function patchGlobalSettings(body: Record<string, unknown>, dryRun: boolean): Promise<unknown> {
+  return request<unknown>('PATCH', `/config/global${dryRun ? '?dry_run=true' : ''}`, body);
 }
 
 // ACME の状態（GET /acme。rules:read のスコープ）。global.acme がなければ 404。秘密は rproxy も返さない

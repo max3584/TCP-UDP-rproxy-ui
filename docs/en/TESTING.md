@@ -239,6 +239,15 @@ That exporting and importing again gives the same rules is checked in `tests/exp
 
 `tests/nodeview.test.ts` also checks that the per-node SQL creates an `rproxy_rules` view that can write only that node's rows (`WITH CHECK OPTION`) with its grant (left out with `--without-rproxy-rules`).
 
+## Unit tests: global settings (`tests/globalsettings.test.ts`, `tests/global-route.test.ts`)
+
+| Test | What it checks |
+|---|---|
+| Shapes and fields | `http.timeouts` becomes `{"http": {"timeouts": …}}`; only the shape of values is checked (unknown items go to rproxy); undo puts the API values before back (null without one); reading `GET /config/global` (unknown items kept); why an item cannot be changed (settings file, environment, restart, `settable`, `unix_only` over TCP); fields to values and back (CIDR normalization, absolute paths, integers, required crowdsec fields, JSON for unknown items) |
+| /api/forward/global | Administrators only (403 `forbidden_admin`), CSRF, each node's transport (unix / tcp) and `features.global_api`, a dry run asks every node of the group and changes nothing, applying to a group puts the other nodes back to their API values before when one refuses (409 `global_static`), target required / unknown target / empty values, secret items over TCP are 403 `global_unix_only`, renamed refusal codes (`global_*`) and unknown codes and 503 keep rproxy's text |
+
+`tests/nodeview.test.ts` also checks the view of the node's single `rproxy_global` row (migration 013; `SELECT, INSERT, UPDATE`; `--without-rproxy-global`), and `tests/migrate.test.ts` that 013 is applied. The screen's E2E is `tests/ui/global.spec.ts` (with an rproxy that has `global_api`: sources, items that need a restart, Unix-socket-only items over TCP, applying after checking the changes and going back to the default, storing in the database, 403 for users).
+
 ## Unit tests: usage (`tests/usage.test.ts`, `tests/usage-route.test.ts`)
 
 | Test | What it checks |

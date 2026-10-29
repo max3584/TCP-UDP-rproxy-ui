@@ -1,4 +1,5 @@
 // API のエラーコードを、利用者向けの説明に直す（tests/listen.test.ts）
+import { UNIX_ONLY_MESSAGE } from './globalsettings';
 
 // 固定ルール（rproxy の --static-rules のファイルにあるルール）は API から変更・削除できない（409 static）
 export const STATIC_RULE_MESSAGE = '固定ルールは rproxy の設定ファイルで管理されているため、画面からは変更・削除できません。';
@@ -105,6 +106,9 @@ export const SHADOWED_RULE_MESSAGE =
 export const READONLY_NODE_MESSAGE =
   'Kubernetes の rproxy は見るだけです（画面からは変更・停止・送り直しができません）。ルールは Gateway API のリソース（Gateway・HTTPRoute など）で変えてください。';
 
+// global の設定（rproxy-api v0.4.19 の PATCH /config/global、UI #169。pages/api/forward/global.ts・components/globalapi.ts）
+export const GLOBAL_UNSUPPORTED_MESSAGE = 'この rproxy は global の設定の API に対応していません（rproxy-api v0.4.19 から）。';
+
 const EXPLAIN: Record<string, string> = {
   resolve_failed: '転送先のホスト名を名前解決できませんでした。DNS に登録されているか、ホスト名の綴りを確認してください（IP アドレスでも指定できます）。',
   bind_failed: '待ち受けポートを開けませんでした。ほかのプログラムがそのポートを使っていないか確認してください。',
@@ -128,6 +132,14 @@ const EXPLAIN: Record<string, string> = {
   shadowed: SHADOWED_RULE_MESSAGE,
   readonly_node: READONLY_NODE_MESSAGE,
   csrf: 'ほかのサイトからの変更の要求は受け付けません。この画面を開き直してから操作してください。',
+  global_static: 'この項目は rproxy の設定ファイル（か環境変数）が決めているため、画面からは変えられません。変えるときは設定ファイルを直してください。',
+  global_restart_only: 'この項目は rproxy の起動のときだけ読まれるため、画面からは変えられません。設定ファイルで変えて rproxy を再起動してください。',
+  global_in_use: 'この値を使っているルールがあるため外せません。先にルールの側を直してください。',
+  global_unix_only: UNIX_ONLY_MESSAGE,
+  global_forbidden: 'UI のトークンに rproxy の admin のスコープがありません（global の設定には admin が要ります）。',
+  global_unsupported: GLOBAL_UNSUPPORTED_MESSAGE,
+  protected_file: 'rproxy の証明書のストア・ACME の保存先・秘密のファイルなど、rproxy が守っているパスは指定できません。',
+  forbidden_admin: '管理者だけが使えます。',
 };
 
 // 1024 未満のポートは、rproxy に CAP_NET_BIND_SERVICE がないと開けない

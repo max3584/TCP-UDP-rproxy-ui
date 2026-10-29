@@ -10,7 +10,7 @@ const AUTH_ENDPOINT = `${FAKE_ISSUER}/protocol/openid-connect/auth`;
 // 詳細・変更の画面に使うルール（テストの中で作って消す）
 const RULE_PORT = 19581;
 const RULE = `/rules/tcp/127.0.0.1/${RULE_PORT}`;
-const PAGES = ['/', '/rules/new', '/rules/import', RULE, `${RULE}/edit`, '/history', '/usage', '/system', '/ha', '/profile', '/no-such-page'];
+const PAGES = ['/', '/rules/new', '/rules/import', RULE, `${RULE}/edit`, '/history', '/usage', '/system', '/global', '/ha', '/profile', '/no-such-page'];
 
 let issuer: http.Server;
 
