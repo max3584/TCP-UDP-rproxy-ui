@@ -335,7 +335,7 @@ jobs:
             echo "token-$n" > "$E2E_DIR/$n/tokens"
             docker run -d --name "rproxy-$n" --network "${{ job.container.network }}" --cap-add NET_ADMIN \
               -v "$E2E_DIR/rproxy-api:/usr/local/bin/rproxy-api:ro" -v "$E2E_DIR/$n:/run/rproxy" \
-              -e RPROXY_API_PORT=0 -e RPROXY_API_SOCKET=/run/rproxy/api.sock -e RPROXY_TOKEN_FILE=/run/rproxy/tokens \
+              -e RPROXY_API_PORT=0 -e RPROXY_API_SOCKET=/run/rproxy/api.sock -e RPROXY_TOKEN_FILE=/run/rproxy/tokens -e RPROXY_NODE_NAME="$n" \
               -e RPROXY_DATABASE_URL="mysql://rproxy_$n:pw-$n@$db_ip:3306/rproxy_node_$n" \
               rproxy-e2e-node rproxy-api
           done

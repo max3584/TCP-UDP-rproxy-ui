@@ -367,6 +367,7 @@ rproxy-api v0.4 の項目（`../rproxy-api/docs/API.md` の「v0.4 の設定」�
 - rproxy が `features.dry_run` を返すときは、追加・変更の画面に「差分を見る」が出ます。保存する前に、ノードごとに rproxy で何が変わるか（作成・変更、接続を切らずに変わるか・待ち受けを作り直すか、項目ごとの前と後）を rproxy の `?dry_run=true` で確かめます（DB も rproxy も変えません）。
 - 詳細画面に、設定した項目、制限で断った数、数え始めの時刻（`counters_since`）、宛先ごとの外している状態と回数、rproxy の `conditions`（Gateway API の形の状態）を出します（rproxy が返すとき）。
 - 「rproxy の機能と設定」（`/system`）に、ノードごとの rproxy-api の版、v0.4 の機能の印、設定ファイルの `global.performance` で効く項目、設定ファイルの状態を読み取り専用で出します。performance・GeoIP のデータベース・制御 API の守りは rproxy の設定ファイルと引数で変えます（画面からは変えません）。設定ファイルのパスと誤りの中身・バイナリの SHA-256・問い合わせの失敗の理由は管理者だけに出し（利用者には誤り・失敗があることだけ）、`RPROXY_UI_USER_NODES` の利用者には触れるノードだけを出します（ダッシュボードの設定ファイルの注意も同じ）。
+- 「global の設定」（`/global`。管理者だけ。`/system` から開く）に、rproxy-api v0.4.19 の `GET /config/global` で、プロセス全体の設定の項目ごとに今の値・出どころ（設定ファイル / 環境変数 / API / 既定）・変え方（すぐ効く / 再起動が要る）を出します。設定ファイル・環境変数に書いた項目は読み取り専用（「設定ファイルで固定」。API の値があっても効かないときはその旨）、起動のときだけ読む項目は表示だけです。書いていない、すぐ効く項目（`udp_max_sessions`・`http.timeouts` など。どれを変えられるかは rproxy が返す `settable`・`unix_only` と、ノードへの道（Unix ソケットか TCP か）で決めます）は、「差分を確かめる」（`?dry_run=true`）で変わる値を見てから「適用する」で `PATCH /config/global` を送ります（「API の値を消す」で既定に戻せます）。複数の rproxy ではノードごとに出し、グループを選ぶと全ノードに送ります（1 台でも断るか答えが時間切れで分からなければ、適用したノードを前の値に戻し、ノードごとの結果（戻したか・戻せなかったか）を出します）。再起動が要る項目（`acme` など）の中身は出しません。rproxy は値を DB の `rproxy_global`（migration 013）に保存し、再起動しても残します。守りに関わる項目（`trusted_proxies`・`access_log`・`crowdsec`。rproxy の `unix_only`）は rproxy の Unix ソケットからだけ受け付けるので、TCP で聞いているノードでは変えられません（変えるときは、UI のそのノードの url を rproxy-api の `RPROXY_API_SOCKET` のソケット（`unix:/…`）にします）。API で入れるアクセスログは、そのノードの rproxy-api の `RPROXY_API_ACCESS_LOG_DIR` のすぐ下のファイルだけです（既定はなく、設定しなければ API では入れられません。rproxy のアクセスログだけのディレクトリにします）。rproxy が起動のときに保存した値を 読めていない間（`loaded: false`。DB に届かない・行が読めない形）は警告を出し、適用できません。UI のトークンに rproxy の `admin` のスコープが要ります。`features.global_api` のない rproxy では項目を出しません。
 - 制御 API をクライアント証明書（mTLS）で守るときは、`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`（と、rproxy の証明書を確かめる `RPROXY_API_TLS_CA`）、複数の rproxy では `nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca` を書きます（`https://` の URL だけ。トークンファイルのエントリが `client_cert` だけならトークンは要りません）。`RPROXY_API_TLS_*` を `http://`・`unix:` の `RPROXY_API_URL` と一緒に書くと、トークンが平文で流れるので UI は起動しません（問い合わせもしません）。
 - UI の認証が続けて失敗して rproxy が UI を一時的に止めた（`429 locked_out`）ときは、トークン・証明書を確かめるように画面とログに出します（止める時間が過ぎると自動で解けます）。
 
@@ -382,6 +383,7 @@ rproxy-api v0.4 の項目（`../rproxy-api/docs/API.md` の「v0.4 の設定」�
 | 変更の履歴（`/history`） | ルールの追加・変更・削除の履歴と、前の版への巻き戻し（下の「変更の履歴と巻き戻し」）。ルールの詳細画面にも、そのルールの履歴が出ます |
 | 利用量（`/usage`） | 月か日ごとの通信量の集計表（所有者・ラベル・ノード・ルールでまとめる）と CSV、通信量の推移（下の「利用量」） |
 | rproxy の機能と設定（`/system`） | ノードごとの rproxy-api の版、v0.4 の機能の印、`global.performance` で効く項目、設定ファイルの状態（読み取り専用） |
+| global の設定（`/global`） | rproxy の `global` の項目ごとの今の値・出どころ・変え方と、API で変えられる項目の変更（差分を見てから適用。管理者だけ） |
 
 rx はクライアントから転送先へ、tx は転送先からクライアントへのバイト数です（rproxy がルールを開始してからの累計。rproxy を再起動すると 0 に戻ります）。
 「拒否」は、接続を許可する送信元（allow_from）の範囲外か、どのサーバ名にも一致しない接続を切断する設定（unmatched: reject）のために切断した接続の数です。

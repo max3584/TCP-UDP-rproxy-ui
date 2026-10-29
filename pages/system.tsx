@@ -88,6 +88,7 @@ const NodeCard: React.FC<{ n: NodeSystemView; many: boolean }> = ({ n, many }) =
 
 const SystemPage: React.FC = () => {
   const [nodes, setNodes] = useState<NodeSystemView[] | null>(null);
+  const [admin, setAdmin] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -97,8 +98,9 @@ const SystemPage: React.FC = () => {
         setError(await errorDetail(res));
         return;
       }
-      const data = await res.json() as { nodes: NodeSystemView[] };
+      const data = await res.json() as { nodes: NodeSystemView[]; admin?: boolean };
       setNodes(data.nodes);
+      setAdmin(data.admin === true);
       setError('');
     } catch (err) {
       setError(`読み込めませんでした: ${err instanceof Error ? err.message : err}`);
@@ -122,6 +124,12 @@ const SystemPage: React.FC = () => {
       <p className="text-sm text-gray-700">
         rproxy-api が使える機能と、設定ファイルの状態です（読み取り専用）。プロセス全体の設定（performance・GeoIP のデータベース・制御 API の守り）は rproxy の設定ファイルと引数で変えます。
       </p>
+      {admin && nodes?.some((n) => n.features?.global_api === true) && (
+        <p className="text-sm">
+          <Link href="/global" className="link" data-testid="system-global-link">global の設定を見る・変える</Link>
+          <span className="ml-2 text-gray-700">（設定ファイル・環境変数に書いていない項目を API で変えます。管理者だけ）</span>
+        </p>
+      )}
       {error && <ErrorBanner message={error} onClose={() => setError('')} />}
       {!nodes && !error && <p className="text-gray-700">読み込み中…</p>}
       {nodes && (

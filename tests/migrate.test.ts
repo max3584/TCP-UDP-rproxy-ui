@@ -9,6 +9,7 @@ describe('db/migrate.mjs', () => {
     expect(files.map((f: { number: number }) => f.number)).toEqual([...files.map((f: { number: number }) => f.number)].sort((a, b) => a - b));
     expect(files[0].version).toBe('001_initial');
     expect(files.some((f: { version: string }) => f.version === '012_rproxy_rule_sets')).toBe(true);
+    expect(files.some((f: { version: string }) => f.version === '013_rproxy_global')).toBe(true);
     const first = files[0];
     expect(first.checksum).toBe(sha256(readFileSync('db/migrations/001_initial.sql', 'utf8')));
   });
@@ -34,6 +35,7 @@ describe('db/migrate.mjs', () => {
     expect(by['009_rproxy_rules']).toBe('baseline');
     expect(by['010_usage']).toBe('applied');
     expect(by['012_rproxy_rule_sets']).toBe('applied');
+    expect(by['013_rproxy_global']).toBe('applied');
     expect(plan.schema).toBe(false);
   });
 

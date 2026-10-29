@@ -248,6 +248,15 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 
 `tests/nodeview.test.ts` は、ノードごとのビューに、そのノードの行だけを書ける `rproxy_rules` のビュー（`WITH CHECK OPTION`）と権限が出ること（`--without-rproxy-rules` で出さない）も確かめる。
 
+## 単体テスト：global の設定（`tests/globalsettings.test.ts`・`tests/global-route.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| 形と欄 | `http.timeouts` を `{"http": {"timeouts": …}}` にする、値の形だけを確かめる（知らない項目は rproxy に渡す）、取り消しは前の API の値（なければ null）、`GET /config/global` の答えを読む（知らない項目も残す）、変えられない理由（設定ファイル・環境変数・再起動・`settable`・TCP の `unix_only`）、欄と値の行き来（CIDR の正規化・絶対パス・整数・crowdsec の必須・知らない項目は JSON） |
+| /api/forward/global | 管理者だけ（403 `forbidden_admin`。`RPROXY_UI_USER_NODES` の利用者も）、CSRF、再起動が要る項目の中身を伏せる、時間切れは読み直して applied・unknown を決める（unknown は戻さない、applied は戻す）、戻せなかったときの `undone: false`、ほかの管理者が変えた値は戻さない、見るだけのノードは 409 `readonly_node`、重なる項目の名前、ノードごとの道（unix / tcp）と `features.global_api`、dry run はグループの全ノードに聞いて何も変えない、グループに適用して 1 台が断ればほかを前の API の値に戻す（409 `global_static`）、target の要否・知らない target・空の値、TCP の Unix ソケットだけの項目は 403 `global_unix_only`（TCP でも受け付ける設定は勧めない）、断りのコードの付け替え（`global_*`）、`crowdsec_unavailable`（502）・`not_loaded`（503）と知らないコードは rproxy のコードのまま |
+
+`tests/nodeview.test.ts` は `rproxy_global`（migration 013）のノードの 1 行だけのビュー（`SELECT, INSERT, UPDATE`、`--without-rproxy-global`）も、`tests/migrate.test.ts` は 013 を当てることも確かめる。画面の E2E は `tests/ui/global.spec.ts`（`global_api` のある rproxy で、出どころ・再起動が要る項目・TCP の Unix ソケットだけの項目・差分を見てからの適用と既定に戻すこと・DB への保存・利用者は 403）。複数のノードは `tests/e2e-nodes.test.ts`（グループに送ると Unix ソケットの 2 台に効き、各ノードのビューの `rproxy_global` に自分の行を書き、再起動しても戻る。CI のノードは `RPROXY_NODE_NAME` をノードの名前にする）。
+
 ## 単体テスト：利用量（`tests/usage.test.ts`・`tests/usage-route.test.ts`）
 
 | テスト | 確かめること |
