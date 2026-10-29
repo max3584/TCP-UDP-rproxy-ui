@@ -228,7 +228,7 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `url` | （必須） | `NEXTAUTH_URL` |
 | `existingSecret` | （必須） | `NEXTAUTH_SECRET`・`KEYCLOAK_CLIENT_SECRET`・`DB_PASSWORD` |
 | `keycloak.issuer`・`clientId` | （必須）・`rproxy-ui` | |
-| `roles.*` | 空 | `RPROXY_UI_ROLES_CLAIM`・`_ADMIN_ROLE`・`_USER_ROLE`・`_USER_PORTS`・`_USER_NODES`・`_USER_TARGETS`・`_USER_CERTS`・`_USER_CERTS_BY_SUB`（`userCertsBySub`）・`_USER_CERTS_BY_ROLE`（`userCertsByRole`）・`RPROXY_UI_PROTECTED_TARGETS`（`protectedTargets`。Pod の IP は変わるので Pod と Service の CIDR を書く。`userRole` が空なら `rproxy-admin` のない人は使えない） |
+| `roles.*` | 空 | `RPROXY_UI_ROLES_CLAIM`・`_ADMIN_ROLE`・`_USER_ROLE`・`_USER_PORTS`・`_USER_NODES`・`_USER_TARGETS`・`_USER_CERTS`・`_USER_CERTS_BY_SUB`（`userCertsBySub`）・`_USER_CERTS_BY_ROLE`（`userCertsByRole`）・`_USER_CACHE_MAX_MEMORY`（`userCacheMaxMemory`）・`_USER_CACHE_MAX_ENTRIES`（`userCacheMaxEntries`）・`RPROXY_UI_PROTECTED_TARGETS`（`protectedTargets`。Pod の IP は変わるので Pod と Service の CIDR を書く。`userRole` が空なら `rproxy-admin` のない人は使えない） |
 | `db.host`・`port`・`database`・`user` | 空・3306・`rproxy`・`rproxy_ui` | |
 | `db.tls.enabled`・`caSecret`・`caKey`・`verify` | `false`・空・`ca.crt`・`true` | 外の DB への TLS（上の「外の DB への TLS」） |
 | `migrate.enabled`・`existingSecret`・`baseline`・`createDatabase`・`createUser` | `true`・空・空・`false`・`false` | |

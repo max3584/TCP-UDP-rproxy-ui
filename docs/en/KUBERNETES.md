@@ -228,7 +228,7 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `url` | (required) | `NEXTAUTH_URL` |
 | `existingSecret` | (required) | `NEXTAUTH_SECRET`, `KEYCLOAK_CLIENT_SECRET`, `DB_PASSWORD` |
 | `keycloak.issuer`, `clientId` | (required), `rproxy-ui` | |
-| `roles.*` | empty | `RPROXY_UI_ROLES_CLAIM`, `_ADMIN_ROLE`, `_USER_ROLE`, `_USER_PORTS`, `_USER_NODES`, `_USER_TARGETS`, `_USER_CERTS`, `_USER_CERTS_BY_SUB` (`userCertsBySub`), `_USER_CERTS_BY_ROLE` (`userCertsByRole`), `RPROXY_UI_PROTECTED_TARGETS` (`protectedTargets`; Pod IPs change, so write the Pod and Service CIDRs; with `userRole` empty, people without `rproxy-admin` cannot use the UI) |
+| `roles.*` | empty | `RPROXY_UI_ROLES_CLAIM`, `_ADMIN_ROLE`, `_USER_ROLE`, `_USER_PORTS`, `_USER_NODES`, `_USER_TARGETS`, `_USER_CERTS`, `_USER_CERTS_BY_SUB` (`userCertsBySub`), `_USER_CERTS_BY_ROLE` (`userCertsByRole`), `_USER_CACHE_MAX_MEMORY` (`userCacheMaxMemory`), `_USER_CACHE_MAX_ENTRIES` (`userCacheMaxEntries`), `RPROXY_UI_PROTECTED_TARGETS` (`protectedTargets`; Pod IPs change, so write the Pod and Service CIDRs; with `userRole` empty, people without `rproxy-admin` cannot use the UI) |
 | `db.host`, `port`, `database`, `user` | empty, 3306, `rproxy`, `rproxy_ui` | |
 | `db.tls.enabled`, `caSecret`, `caKey`, `verify` | `false`, empty, `ca.crt`, `true` | TLS to an external DB ("TLS to an external DB" above) |
 | `migrate.enabled`, `existingSecret`, `baseline`, `createDatabase`, `createUser` | `true`, empty, empty, `false`, `false` | |

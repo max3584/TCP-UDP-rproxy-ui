@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { routeNames } from '@/components/lib';
 import type { CacheCounts, CertStatus, ForwardRules, HttpStats } from '@/components/lib';
-import { capText, fullNodes, healthCheckLabel, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
+import { capText, fullNodes, healthCheckLabel, nodeTargetStatus, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
 import {
   BALANCE_LABELS,
   CERT_ROLE_LABELS,
@@ -95,7 +95,8 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
               {(capped ? capText(s?.connections, t.max_connections ?? s?.max_connections, aggregate) : null) ?? (s?.connections !== undefined ? formatCount(s.connections) : '-')}
               {aggregate
                 ? (() => {
-                  const on = fullNodes(rule.nodes, (st) => targetStatus(rule.targets, st?.targets, i));
+                  const replaced = (node: string) => { const ov = rule.overrides?.[node]; return ov?.targets !== undefined || ov?.distAddr !== undefined; };
+                  const on = fullNodes(rule.nodes, (st, node) => nodeTargetStatus(rule.targets, replaced(node), st?.targets, i));
                   return on.length > 0 && <TargetFullBadge nodes={on} />;
                 })()
                 : s?.full === true && <TargetFullBadge />}
@@ -142,7 +143,7 @@ const byMiddleware = (counts: Record<string, number>) =>
 
 // ルートの cache の数（ミドルウェアの名前ごと。#340）
 const cacheByMiddleware = (counts: Record<string, CacheCounts>) =>
-  Object.entries(counts).map(([name, c]) => `${name}: ${cacheCountsLabel(c)}`).join(', ');
+  joinList(Object.entries(counts).map(([name, c]) => `${name}: ${cacheCountsLabel(c)}`));
 
 // L7（http）のルールのリクエストの数（rproxy の stats.http）
 // 証明書の期限（rproxy の cert_status）。expiring は琥珀、expired は赤

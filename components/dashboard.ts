@@ -297,7 +297,7 @@ export function targetFullProblem(rule: Pick<ForwardRules, 'state' | 'stats' | '
   const nodes = targetFullNodes(rule);
   if (nodes === null || ((rule.nodes ?? []).length > 1 && nodes.length === 0)) return null;
   return nodes.length > 0
-    ? translate(`ノード ${nodes.join(', ')} で、すべての宛先が同時接続の上限に達していて、新しい接続を断っています。`)
+    ? translate(`ノード ${joinList(nodes, ', ')} で、すべての宛先が同時接続の上限に達していて、新しい接続を断っています。`)
     : translate('すべての宛先が同時接続の上限に達していて、新しい接続を断っています。');
 }
 

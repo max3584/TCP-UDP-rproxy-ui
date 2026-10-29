@@ -246,6 +246,71 @@ describe('review fixes (#155)', () => {
     expect(oidcConfigs({ http: { middlewares: { o: { oidc: { issuer: 'https://i', client_id: 'd' } } } } })).not.toEqual(a);
   });
 
+  it('userCacheProblem caps max_memory / max_entries (omitted means rproxy\'s default) and refuses the share flags', async () => {
+    const { userCacheProblem } = await import('@/components/userlimits');
+    const limits = { maxMemory: 16 * 1024 * 1024, maxEntries: 1024 };
+    const rule = (cache: Record<string, unknown>, name = 'c') => ({ http: { middlewares: { [name]: { cache } } } } as unknown as ForwardRule);
+    expect(userCacheProblem(rule({ ttl: '1s', max_memory: 16 * 1024 * 1024 }), null, limits)).toBeNull();
+    // omitted max_memory is rproxy's 64 MiB
+    const omitted = userCacheProblem(rule({ ttl: '1s' }), null, limits);
+    expect(omitted?.code).toBe('cache_limit');
+    expect(omitted?.message).toContain('RPROXY_UI_USER_CACHE_MAX_MEMORY');
+    expect(omitted?.message).toContain('64 MiB');
+    expect(userCacheProblem(rule({ ttl: '1s', max_memory: 16 * 1024 * 1024 + 1 }), null, limits)?.code).toBe('cache_limit');
+    const entries = userCacheProblem(rule({ ttl: '1s', max_memory: 1048576, max_entries: 1025 }), null, limits);
+    expect([entries?.code, entries?.message.includes('RPROXY_UI_USER_CACHE_MAX_ENTRIES')]).toEqual(['cache_limit', true]);
+    expect(userCacheProblem(rule({ ttl: '1s', max_memory: 1048576 }), null, { ...limits, maxEntries: 100 })?.message).toContain('既定（1024）');
+    for (const k of ['share_after_auth', 'share_credentials']) {
+      const p = userCacheProblem(rule({ ttl: '1s', max_memory: 1048576, [k]: true }), null, limits);
+      expect([p?.code, p?.message.includes(k)]).toEqual(['middleware_not_allowed', true]);
+      expect(userCacheProblem(rule({ ttl: '1s', max_memory: 1048576, [k]: false }), null, limits)).toBeNull();
+    }
+    // an unchanged setting under the same name may stay (keys reordered), a changed or renamed one is checked
+    const old = rule({ share_after_auth: true, ttl: '1s' }, 'old');
+    expect(userCacheProblem(rule({ ttl: '1s', share_after_auth: true }, 'old'), old, limits)).toBeNull();
+    expect(userCacheProblem(rule({ ttl: '1s', share_after_auth: true }, 'renamed'), old, limits)?.code).toBe('middleware_not_allowed');
+    expect(userCacheProblem(rule({ ttl: '2s', share_after_auth: true }, 'old'), old, limits)?.code).toBe('middleware_not_allowed');
+    // the caps exemption is by name too: an admin's big cache cannot be copied under a new name
+    const big = rule({ ttl: '1s', max_memory: 1 << 30 }, 'big');
+    expect(userCacheProblem(big, big, limits)).toBeNull();
+    expect(userCacheProblem(rule({ ttl: '1s', max_memory: 1 << 30 }, 'copy'), big, limits)?.code).toBe('cache_limit');
+    expect(userCacheProblem({ http: null }, null, limits)).toBeNull();
+  });
+
+  it('an admin\'s sharing cache stays only where it was (same name, config, routes and the middlewares in front)', async () => {
+    const { userCacheProblem } = await import('@/components/userlimits');
+    const limits = { maxMemory: 1 << 30, maxEntries: 1 << 20 };
+    const sso = { oidc: { issuer: 'https://id.example.com/realms/a', client_id: 'a' } };
+    const spec = (routes: { name: string; match?: string; service?: string; to?: string; middlewares: string[] }[], name = 'c') => ({ http: {
+      routes: routes.map((r) => ({ match: 'PathPrefix(`/`)', service: 's', ...r })),
+      services: { s: { servers: [{ url: 'http://192.0.2.9' }] } },
+      middlewares: { sso: sso, [name]: { cache: { ttl: '1s', share_after_auth: true, share_credentials: true } } },
+    } } as unknown as ForwardRule);
+    const before = spec([{ name: 'a', middlewares: ['sso', 'c'] }, { name: 'b', middlewares: [] }]);
+    // unchanged placement
+    expect(userCacheProblem(before, before, limits)).toBeNull();
+    // fewer routes is fine
+    expect(userCacheProblem(spec([{ name: 'b', middlewares: [] }]), before, limits)).toBeNull();
+    // the same config on a new route
+    const added = userCacheProblem(spec([{ name: 'a', middlewares: ['sso', 'c'] }, { name: 'b', middlewares: ['c'] }]), before, limits);
+    expect(added?.code).toBe('middleware_not_allowed');
+    expect(added?.message).toContain('コピーや移動では使えません');
+    // the same route with a wider match, or a middleware in front removed
+    expect(userCacheProblem(spec([{ name: 'a', match: 'PathPrefix(`/x`)', middlewares: ['sso', 'c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
+    expect(userCacheProblem(spec([{ name: 'a', middlewares: ['c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
+    // the same route pointed at another service or URL
+    expect(userCacheProblem(spec([{ name: 'a', service: 'other', middlewares: ['sso', 'c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
+    expect(userCacheProblem(spec([{ name: 'a', service: undefined, to: 'http://192.0.2.10', middlewares: ['sso', 'c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
+    // changing the servers of the approved service itself stays allowed
+    const moved = spec([{ name: 'a', middlewares: ['sso', 'c'] }, { name: 'b', middlewares: [] }]);
+    (moved.http as unknown as { services: Record<string, unknown> }).services.s = { servers: [{ url: 'http://192.0.2.11' }] };
+    expect(userCacheProblem(moved, before, limits)).toBeNull();
+    // the same config under a new name
+    expect(userCacheProblem(spec([{ name: 'a', middlewares: ['sso', 'n'] }], 'n'), before, limits)?.code).toBe('middleware_not_allowed');
+    // a new rule (copy, move): nothing before
+    expect(userCacheProblem(before, null, limits)?.code).toBe('middleware_not_allowed');
+  });
+
   it('RPROXY_UI_PROTECTED_TARGETS is refused even inside the allow-list', async () => {
     const { roleConfig, RoleConfigError } = await import('@/components/roles');
     const cfg = roleConfig({ RPROXY_UI_PROTECTED_TARGETS: '10.0.0.5:3306, 10.96.0.0/12, [fd00::/8]:5432, [2001:db8::1]' });

@@ -128,6 +128,7 @@ const EXPLAIN: Record<string, string> = {
   cert_not_allowed: 'この登録済みの証明書は管理者だけが使えます。',
   target_not_allowed: 'この転送先は利用者には使えません（管理者が許可した宛先だけ）。',
   middleware_not_allowed: 'このミドルウェアは管理者だけが足したり変えたりできます。',
+  cache_limit: '応答のキャッシュの大きさが、利用者に許された上限を超えています。',
   rproxy_locked_out: RPROXY_LOCKED_OUT_MESSAGE,
   locked_out: RPROXY_LOCKED_OUT_MESSAGE,
   owned: OWNED_RULE_MESSAGE,

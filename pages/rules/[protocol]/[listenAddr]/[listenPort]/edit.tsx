@@ -93,6 +93,7 @@ const EditRulePage: React.FC = () => {
       {initial && key && rule?.origin !== 'static' && !rule?.readonlyNode && !(rule?.origin === 'api' && rule.ruleset) && (
         <RuleForm
           restricted={restricted}
+          cacheCaps={(session as sessionUser | null)?.user?.cacheCaps}
           initialData={initial}
           submitting={submitting}
           onSubmit={handleSubmit}

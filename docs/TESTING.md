@@ -279,6 +279,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 | /api/forward/certs | 名前・名前の一覧・期限だけ、利用者には `RPROXY_UI_USER_CERTS` の名前だけ、`?target=` は `RPROXY_UI_USER_NODES` の内だけ、403・404 は `available: false` |
 | 証明書の割り当て（#160） | `RPROXY_UI_USER_CERTS_BY_SUB`・`_BY_ROLE` の読み方と誤り（`tests/roles.test.ts`）、割り当てのある利用者はその先頭だけ（共通の先頭は効かない）・sub とロールの足し合わせ・割り当てを設定したら割り当てのない利用者は何も選べない（共通の先頭に戻らない）・先頭は - . _ で終える、前からある名前は残せる（API の add・modify と /api/forward/certs の一覧） |
 | レビューの指摘 | 読めない URL（`:65536`・`:8a`・`[fe80::1%25eth0]`）はだれでも 400、保存済みなら利用者は 403。L4 の死活確認のポート、上書きの転送先の置き場所、oidc の変更は 403、`RPROXY_UI_PROTECTED_TARGETS` |
+| cache の制限（#175） | `RPROXY_UI_USER_CACHE_MAX_MEMORY`・`_MAX_ENTRIES` の読み方と誤り（`tests/roles.test.ts`）、省いた `max_memory` は rproxy の既定の 64 MiB で比べて 403 `cache_limit`、`share_after_auth`・`share_credentials` は 403 `middleware_not_allowed`、前からある設定は同じ名前・同じ設定だけ残せる、共有の設定は使うルート・前のミドルウェアが同じときだけ（新しいルート・新しい名前・コピーは 403）、利用者のフォームの新しい cache に上限を入れる、管理者は通る |
 
 テストの名前解決は `tests/setup.ts` が決める（`localhost` は 127.0.0.1、`*.invalid` は解決できない、ほかは 192.0.2.10）。利用者のロールは `vitest.config.mts` の `RPROXY_UI_USER_ROLE=rproxy-user`。
 

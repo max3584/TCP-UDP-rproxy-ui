@@ -292,6 +292,34 @@ describe('review fixes (#155)', () => {
     expect([changed.status, changed.body.code]).toEqual([403, 'middleware_not_allowed']);
   });
 
+  // #175：cache の大きさの上限と、共有の設定
+  it('a user\'s cache must stay within RPROXY_UI_USER_CACHE_MAX_* and may not share after auth (403)', async () => {
+    const http = (cache: Record<string, unknown>) => ({ routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's', middlewares: ['c'] }], services: { s: { servers: [{ url: 'http://192.0.2.9' }] } }, middlewares: { c: { cache } } });
+    const add = (cache: Record<string, unknown>) => call('add', { ...tcpRule, distAddr: '', distPort: 0, http: http(cache) });
+    const omitted = await add({ ttl: '1s' });
+    expect([omitted.status, omitted.body.code]).toEqual([403, 'cache_limit']);
+    expect(omitted.body.error).toContain('RPROXY_UI_USER_CACHE_MAX_MEMORY');
+    expect((await add({ ttl: '1s', max_memory: 8388608, share_after_auth: true })).body.code).toBe('middleware_not_allowed');
+    expect((await add({ ttl: '1s', max_memory: 8388608, share_credentials: true })).body.code).toBe('middleware_not_allowed');
+    expect(mocks.addRule).not.toHaveBeenCalled();
+    vi.stubEnv('RPROXY_UI_USER_CACHE_MAX_MEMORY', '128MiB');
+    expect((await add({ ttl: '1s' })).status).toBe(200);
+    vi.stubEnv('RPROXY_UI_USER_CACHE_MAX_ENTRIES', '10');
+    expect((await add({ ttl: '1s', max_entries: 11 })).body.code).toBe('cache_limit');
+    // admins are not limited
+    mocks.getServerSession.mockResolvedValue(admin);
+    expect((await add({ ttl: '1s', max_entries: 5000, share_after_auth: true })).status).toBe(200);
+  });
+
+  it('a user keeps an unchanged cache over the limits but may not change it', async () => {
+    const http = (cache: Record<string, unknown>) => ({ routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's', middlewares: ['c'] }], services: { s: { servers: [{ url: 'http://192.0.2.9' }] } }, middlewares: { c: { cache } } });
+    const stored = { ttl: '1s', share_after_auth: true };
+    storedRule({ dist_addr: '', dist_port: 0, options: { tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, http: http(stored) } });
+    expect((await call('modify', { ...tcpRule, distAddr: '', distPort: 0, http: http(stored) })).status).toBe(200);
+    const changed = await call('modify', { ...tcpRule, distAddr: '', distPort: 0, http: http({ ...stored, ttl: '2s' }) });
+    expect([changed.status, changed.body.code]).toEqual([403, 'middleware_not_allowed']);
+  });
+
   it('the L4 health check port and RPROXY_UI_PROTECTED_TARGETS are checked', async () => {
     vi.stubEnv('RPROXY_UI_PROTECTED_TARGETS', '192.0.2.1:3306');
     const body = { ...tcpRule, distAddr: '', distPort: 0, targets: [{ addr: '192.0.2.1', port: 80 }], healthCheck: { port: 3306 } };

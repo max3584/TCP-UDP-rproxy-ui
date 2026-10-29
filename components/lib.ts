@@ -497,6 +497,8 @@ export interface sessionUser extends DefaultSession {
     roles?: string[];
     // admin / user / none（components/roles.ts）
     access?: Access;
+    // 利用者（admin でない人）の cache の上限（RPROXY_UI_USER_CACHE_MAX_*。#175）。フォームの新しい cache の欄に入れる案内だけ
+    cacheCaps?: { maxMemory: number; maxEntries: number };
   }
   expires: ISODateString;
 }
