@@ -246,6 +246,32 @@ describe('review fixes (#155)', () => {
     expect(oidcConfigs({ http: { middlewares: { o: { oidc: { issuer: 'https://i', client_id: 'd' } } } } })).not.toEqual(a);
   });
 
+  it('userCacheProblem caps max_memory / max_entries (omitted means rproxy\'s default) and refuses the share flags', async () => {
+    const { userCacheProblem } = await import('@/components/userlimits');
+    const limits = { maxMemory: 16 * 1024 * 1024, maxEntries: 1024 };
+    const rule = (cache: Record<string, unknown>, name = 'c') => ({ http: { middlewares: { [name]: { cache } } } } as unknown as ForwardRule);
+    expect(userCacheProblem(rule({ ttl: '1s', max_memory: 16 * 1024 * 1024 }), null, limits)).toBeNull();
+    // omitted max_memory is rproxy's 64 MiB
+    const omitted = userCacheProblem(rule({ ttl: '1s' }), null, limits);
+    expect(omitted?.code).toBe('cache_limit');
+    expect(omitted?.message).toContain('RPROXY_UI_USER_CACHE_MAX_MEMORY');
+    expect(omitted?.message).toContain('64 MiB');
+    expect(userCacheProblem(rule({ ttl: '1s', max_memory: 16 * 1024 * 1024 + 1 }), null, limits)?.code).toBe('cache_limit');
+    const entries = userCacheProblem(rule({ ttl: '1s', max_memory: 1048576, max_entries: 1025 }), null, limits);
+    expect([entries?.code, entries?.message.includes('RPROXY_UI_USER_CACHE_MAX_ENTRIES')]).toEqual(['cache_limit', true]);
+    expect(userCacheProblem(rule({ ttl: '1s', max_memory: 1048576 }), null, { ...limits, maxEntries: 100 })?.message).toContain('既定（1024）');
+    for (const k of ['share_after_auth', 'share_credentials']) {
+      const p = userCacheProblem(rule({ ttl: '1s', max_memory: 1048576, [k]: true }), null, limits);
+      expect([p?.code, p?.message.includes(k)]).toEqual(['middleware_not_allowed', true]);
+      expect(userCacheProblem(rule({ ttl: '1s', max_memory: 1048576, [k]: false }), null, limits)).toBeNull();
+    }
+    // an unchanged setting already there may stay (renamed, keys reordered), a changed one is checked
+    const old = rule({ share_after_auth: true, ttl: '1s' }, 'old');
+    expect(userCacheProblem(rule({ ttl: '1s', share_after_auth: true }, 'renamed'), old, limits)).toBeNull();
+    expect(userCacheProblem(rule({ ttl: '2s', share_after_auth: true }), old, limits)?.code).toBe('middleware_not_allowed');
+    expect(userCacheProblem({ http: null }, null, limits)).toBeNull();
+  });
+
   it('RPROXY_UI_PROTECTED_TARGETS is refused even inside the allow-list', async () => {
     const { roleConfig, RoleConfigError } = await import('@/components/roles');
     const cfg = roleConfig({ RPROXY_UI_PROTECTED_TARGETS: '10.0.0.5:3306, 10.96.0.0/12, [fd00::/8]:5432, [2001:db8::1]' });

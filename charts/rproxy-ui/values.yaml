@@ -39,6 +39,8 @@ roles:
   userCertsBySub: ""   # RPROXY_UI_USER_CERTS_BY_SUB, e.g. 0b6f...-sub:tenant-a- (Keycloak sub:prefix, comma-separated; repeat a sub for more prefixes)
   userCertsByRole: ""  # RPROXY_UI_USER_CERTS_BY_ROLE, e.g. tenant-a:tenant-a-,tenant-b:tenant-b- (role:prefix, comma-separated)
   protectedTargets: ""  # RPROXY_UI_PROTECTED_TARGETS, e.g. 10.96.0.0/12,10.244.0.0/16 (always refused to users; Pod IPs change, so use CIDRs)
+  userCacheMaxMemory: ""   # RPROXY_UI_USER_CACHE_MAX_MEMORY, e.g. 32MiB (max_memory of users' cache middlewares; 16MiB when empty)
+  userCacheMaxEntries: ""  # RPROXY_UI_USER_CACHE_MAX_ENTRIES, e.g. 4096 (max_entries of users' cache middlewares; 1024 when empty)
 
 # the database (MariaDB). External by default; mariadb.enabled bundles one
 db:

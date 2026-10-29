@@ -7,7 +7,7 @@ import type { HttpOutlierSpec } from './v04';
 import { BALANCE_LABELS } from './dashboard';
 import { BALANCE_HELP } from './targets';
 import { FILE_OWNER_NOTE } from './messages';
-import { USER_FILES_NOTE } from './userlimits';
+import { USER_CACHE_NOTE, USER_FILES_NOTE } from './userlimits';
 import {
   CACHE_STATUSES,
   HttpOption,
@@ -297,7 +297,12 @@ const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<stri
 // ---- 応答のキャッシュ（#340）：種類ごとの欄に、持つ状態コード（チェックボックス）と結果のヘッダ（付けないこともできる）を足す ----
 
 const CacheConfig: React.FC<{ id: string; value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void }> = ({ id, value, onChange }) => {
-  const status = Array.isArray(value.status) && value.status.length > 0 ? (value.status as number[]) : [200];
+  // 省いたときは既定の [200]。全部外したときは空の一覧のまま持ち（rproxy は空を [200] と読む）、欄に既定が効くことを出す
+  const cleared = Array.isArray(value.status) && value.status.length === 0;
+  const status = Array.isArray(value.status) ? (value.status as unknown[]) : [200];
+  // 一覧にない値（JSON や古い設定から）は消さずに残す（保存の前の確かめが誤りにする）
+  const extra = status.filter((s) => !CACHE_STATUSES.includes(s as number));
+  const filesLocked = useContext(FilesLocked);
   const header = typeof value.header === 'string' ? value.header : undefined;
   const setKey = (key: string, v: unknown) => {
     const next = { ...value };
@@ -306,9 +311,9 @@ const CacheConfig: React.FC<{ id: string; value: Record<string, unknown>; onChan
     onChange(next);
   };
   const toggleStatus = (st: number, on: boolean) => {
-    const list = CACHE_STATUSES.filter((s) => (s === st ? on : status.includes(s)));
-    // 空と [200] は既定（省く）
-    setKey('status', list.length === 0 || (list.length === 1 && list[0] === 200) ? undefined : list);
+    const list = [...CACHE_STATUSES.filter((s) => (s === st ? on : status.includes(s))), ...extra];
+    // [200] は既定（省く）。全部外したら空の一覧（既定の 200 が効く）
+    setKey('status', list.length === 1 && list[0] === 200 ? undefined : list);
   };
   return (
     <div data-testid="cache-config">
@@ -323,6 +328,13 @@ const CacheConfig: React.FC<{ id: string; value: Record<string, unknown>; onChan
             </label>
           ))}
         </div>
+        {cleared && <p className="text-xs text-gray-600 mt-1" data-testid="cache-status-default">チェックがないので、既定の 200 だけを持ちます。</p>}
+        {extra.length > 0 && (
+          <p className="text-xs text-amber-900 mt-1" data-testid="cache-status-extra">
+            一覧にない状態コード {extra.map(String).join(', ')} は持てません（保存できません）。
+            <button type="button" className="underline ml-1" onClick={() => setKey('status', status.length > extra.length ? status.filter((s) => !extra.includes(s)) : undefined)}>外す</button>
+          </p>
+        )}
       </fieldset>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
         <div>
@@ -341,6 +353,7 @@ const CacheConfig: React.FC<{ id: string; value: Record<string, unknown>; onChan
           結果のヘッダを付けない
         </label>
       </div>
+      {filesLocked && <p className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-sm px-2 py-1 mt-2" data-testid="cache-user-note">{USER_CACHE_NOTE}</p>}
       <p className="text-xs text-gray-600 mt-1">
         GET の応答をメモリに持ち、持つ時間のあいだは転送先へ送らずに答えます（HEAD は GET の答えから）。キーはルート・受けた方式とポート・ホスト・パス・クエリと vary のヘッダです。Set-Cookie や Cache-Control: no-store・private・no-cache のある応答は持ちません。
       </p>
@@ -957,7 +970,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
               {unavailable && <p className="text-amber-900 text-xs mb-2">この種類は、この rproxy ではまだ使えません（GET /capabilities の features.middlewares にありません）。</p>}
               {kind === 'cache'
                 ? unavailable
-                  ? <Preserved label="キャッシュの設定" value={config} note="（この rproxy では使えないので編集できません。値は消さずに残します）" />
+                  ? <Preserved label="キャッシュの設定" value={config} note="（この rproxy では cache を使えないので編集できません。値は消さずに残しますが、このミドルウェアがある間は保存できません。保存するには、このミドルウェアを削除してください）" />
                   : <CacheConfig id={id} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
                 : kind === 'mirror'
                 ? <MirrorConfig id={id} value={config} services={serviceNames} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />

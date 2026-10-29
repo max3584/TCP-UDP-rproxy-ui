@@ -82,4 +82,20 @@ describe('roles', () => {
       expect(() => roleConfig({ RPROXY_UI_USER_PORTS: bad })).toThrow(RoleConfigError);
     }
   });
+
+  // #175：利用者の cache の上限
+  it('reads RPROXY_UI_USER_CACHE_MAX_MEMORY / _MAX_ENTRIES with small defaults', () => {
+    const none = roleConfig({});
+    expect([none.userCacheMaxMemory, none.userCacheMaxEntries]).toEqual([16 * 1024 * 1024, 1024]);
+    expect(roleConfig({ RPROXY_UI_USER_CACHE_MAX_MEMORY: '4194304' }).userCacheMaxMemory).toBe(4194304);
+    expect(roleConfig({ RPROXY_UI_USER_CACHE_MAX_MEMORY: '32MiB' }).userCacheMaxMemory).toBe(32 * 1024 * 1024);
+    expect(roleConfig({ RPROXY_UI_USER_CACHE_MAX_MEMORY: '512 k' }).userCacheMaxMemory).toBe(512 * 1024);
+    expect(roleConfig({ RPROXY_UI_USER_CACHE_MAX_ENTRIES: '100' }).userCacheMaxEntries).toBe(100);
+    for (const bad of ['0', '-1', '1.5', '16MB', '17GiB', 'x']) {
+      expect(() => roleConfig({ RPROXY_UI_USER_CACHE_MAX_MEMORY: bad }), bad).toThrow(RoleConfigError);
+    }
+    for (const bad of ['0', '1000001', '1e3', 'x']) {
+      expect(() => roleConfig({ RPROXY_UI_USER_CACHE_MAX_ENTRIES: bad }), bad).toThrow(RoleConfigError);
+    }
+  });
 });

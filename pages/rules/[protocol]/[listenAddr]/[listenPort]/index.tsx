@@ -123,7 +123,7 @@ const byMiddleware = (counts: Record<string, number>) =>
 
 // ルートの cache の数（ミドルウェアの名前ごと。#340）
 const cacheByMiddleware = (counts: Record<string, CacheCounts>) =>
-  Object.entries(counts).map(([name, c]) => `${name}: ${cacheCountsLabel(c)}`).join(', ');
+  joinList(Object.entries(counts).map(([name, c]) => `${name}: ${cacheCountsLabel(c)}`));
 
 // L7（http）のルールのリクエストの数（rproxy の stats.http）
 // 証明書の期限（rproxy の cert_status）。expiring は琥珀、expired は赤

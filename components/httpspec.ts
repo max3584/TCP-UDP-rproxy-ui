@@ -557,8 +557,9 @@ function checkCacheConfig(label: string, c: Record<string, unknown>, errors: str
 
 // ルートの cache の置き場所（rproxy の HttpSpec::check_cache_route と同じ規則）。
 // メモリから答えると cache より後ろのミドルウェアを通らないので、通すかを決めるものは前に置き、
-// 前で利用者を確かめるなら答えを共有してよいと明示させる
-function checkCacheRoute(label: string, names: string[], middlewares: Record<string, MiddlewareSpec>, errors: string[]): void {
+// 前で利用者を確かめるなら答えを共有してよいと明示させる。ルートのサービスの転送先（servers[].middlewares）の forward_auth も
+// キャッシュから答えると通らないので断る
+function checkCacheRoute(label: string, names: string[], middlewares: Record<string, MiddlewareSpec>, servers: ServerSpec[], errors: string[]): void {
   const kindOf = (n: string) => (n in middlewares ? middlewareKind(middlewares[n]) : '');
   const at = names.findIndex((n) => kindOf(n) === 'cache');
   if (at < 0) return;
@@ -579,6 +580,10 @@ function checkCacheRoute(label: string, names: string[], middlewares: Record<str
     if (kind === 'oidc' && c.share_credentials !== true) {
       errors.push(`${label}の cache「${name}」より前に OIDC の「${n}」があります。OIDC を通ったリクエストにはすべてセッションの Cookie が付くので、このままではどのリクエストもキャッシュを使わず（BYPASS）、cache を置く意味がありません。cache の「Cookie・Authorization のあるリクエストも共有する」（share_credentials）を必ず有効にしてください（rproxy は保存を断らず、--check-config が警告するだけですが、UI では保存の前に止めます）。`);
     }
+  }
+  const auth = servers.flatMap((srv) => srv.middlewares ?? []).find((n) => kindOf(n) === 'forward_auth');
+  if (auth !== undefined) {
+    errors.push(`${label}のサービスの転送先が forward_auth の「${auth}」を使っています。キャッシュから答えたリクエストはこれを通らないので、cache「${name}」と一緒には使えません（forward_auth をルールのミドルウェアにして cache より前に置いてください）。`);
   }
 }
 
@@ -692,7 +697,7 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
     for (const mw of r.middlewares ?? []) {
       if (!(mw in middlewares)) errors.push(`${label}のミドルウェア「${mw}」がありません。`);
     }
-    checkCacheRoute(label, r.middlewares ?? [], middlewares, errors);
+    checkCacheRoute(label, r.middlewares ?? [], middlewares, (r.service ? services[r.service]?.servers : undefined) ?? [], errors);
     for (const d of [r.timeouts?.request, r.timeouts?.backend_request]) {
       if (d !== undefined && !isDuration(d)) errors.push(`${label}の時間の上限「${d}」は 10s・500ms・1m のように書いてください。`);
     }

@@ -279,6 +279,7 @@ That exporting and importing again gives the same rules is checked in `tests/exp
 | /api/forward/certs | Names, SANs and expiry only; users get only the names of `RPROXY_UI_USER_CERTS`; `?target=` only inside `RPROXY_UI_USER_NODES`; 403 and 404 become `available: false` |
 | Certificate assignments (#160) | Reading `RPROXY_UI_USER_CERTS_BY_SUB` and `_BY_ROLE` and their errors (`tests/roles.test.ts`); users with an assignment get only its prefixes (the shared prefixes do not apply), sub and role assignments add up, once an assignment is set, users without one get nothing (no fallback to the shared prefixes), prefixes end with - . or _, names already on the rule can stay (API add and modify, and the /api/forward/certs list) |
 | Review fixes | Unreadable URLs (`:65536`, `:8a`, `[fe80::1%25eth0]`) are 400 for everyone and 403 for users when already stored; the L4 health check port, the place of override destinations, oidc changes refused, `RPROXY_UI_PROTECTED_TARGETS` |
+| Cache limits (#175) | Reading `RPROXY_UI_USER_CACHE_MAX_MEMORY` / `_MAX_ENTRIES` and their errors (`tests/roles.test.ts`); an omitted `max_memory` is compared as rproxy's default of 64 MiB and gets 403 `cache_limit`; `share_after_auth` / `share_credentials` get 403 `middleware_not_allowed`; the same setting already there stays and a changed one is checked; admins pass |
 
 Name resolution in the tests is decided by `tests/setup.ts` (`localhost` is 127.0.0.1, `*.invalid` does not resolve, others are 192.0.2.10). The user role is `RPROXY_UI_USER_ROLE=rproxy-user` in `vitest.config.mts`.
 

@@ -109,6 +109,59 @@ export function oidcConfigs(rule: Pick<ForwardRule, 'http'> | null | undefined):
   return Object.values(mws).filter((m): m is Record<string, unknown> => isObject(m) && m.oidc !== undefined).map((m) => stableJson(m.oidc));
 }
 
+// L7 の cache ミドルウェアの設定（#175）。メモリは rproxy の利用者みんなで共有し、share_after_auth・share_credentials は
+// 管理者の置いた認証の後で利用者ごとの答えを共有させうるので、利用者には上限と禁止がある。前からある同じ設定はそのまま残せる
+export interface CacheLimits {
+  maxMemory: number;
+  maxEntries: number;
+}
+
+// rproxy の既定（src/l7/middleware/cache.rs の DEFAULT_MAX_MEMORY・DEFAULT_MAX_ENTRIES）。省いたときはこれで比べる
+export const CACHE_DEFAULT_MAX_MEMORY = 64 * 1024 * 1024;
+export const CACHE_DEFAULT_MAX_ENTRIES = 1024;
+const CACHE_SHARE_KEYS = ['share_after_auth', 'share_credentials'];
+
+export interface CacheProblem {
+  code: 'middleware_not_allowed' | 'cache_limit';
+  message: string;
+}
+
+// 利用者が新しく書いた・変えた cache の設定の問題（なければ null）。前の内容に同じ設定（名前と項目の順番は問わない）があれば確かめない
+export function userCacheProblem(rule: Pick<ForwardRule, 'http'> | null | undefined, before: Pick<ForwardRule, 'http'> | null | undefined, limits: CacheLimits): CacheProblem | null {
+  const mws = rule?.http?.middlewares;
+  if (!isObject(mws)) return null;
+  const old = new Set(cacheConfigs(before));
+  for (const [name, m] of Object.entries(mws)) {
+    if (!isObject(m) || !isObject(m.cache) || old.has(stableJson(m.cache))) continue;
+    const c = m.cache;
+    const shared = CACHE_SHARE_KEYS.filter((k) => c[k] === true);
+    if (shared.length > 0) {
+      return { code: 'middleware_not_allowed', message: `cache「${name}」の ${shared.join('・')} は管理者だけが有効にできます（認証の後で利用者ごとの答えを共有させないため）。外してから保存してください。` };
+    }
+    const memory = c.max_memory ?? CACHE_DEFAULT_MAX_MEMORY;
+    if (typeof memory === 'number' && memory > limits.maxMemory) {
+      const message = c.max_memory === undefined
+        ? `cache「${name}」のメモリの上限（max_memory）は、利用者は ${limits.maxMemory} バイトまでです（RPROXY_UI_USER_CACHE_MAX_MEMORY）。書かないと rproxy の既定（64 MiB）になるので、max_memory をその内で書いてください。`
+        : `cache「${name}」のメモリの上限（max_memory）は、利用者は ${limits.maxMemory} バイトまでです（RPROXY_UI_USER_CACHE_MAX_MEMORY）。max_memory をその内にしてください。`;
+      return { code: 'cache_limit', message: message };
+    }
+    const entries = c.max_entries ?? CACHE_DEFAULT_MAX_ENTRIES;
+    if (typeof entries === 'number' && entries > limits.maxEntries) {
+      const message = c.max_entries === undefined
+        ? `cache「${name}」の持つ数の上限（max_entries）は、利用者は ${limits.maxEntries} までです（RPROXY_UI_USER_CACHE_MAX_ENTRIES）。書かないと rproxy の既定（1024）になるので、max_entries をその内で書いてください。`
+        : `cache「${name}」の持つ数の上限（max_entries）は、利用者は ${limits.maxEntries} までです（RPROXY_UI_USER_CACHE_MAX_ENTRIES）。max_entries をその内にしてください。`;
+      return { code: 'cache_limit', message: message };
+    }
+  }
+  return null;
+}
+
+function cacheConfigs(rule: Pick<ForwardRule, 'http'> | null | undefined): string[] {
+  const mws = rule?.http?.middlewares;
+  if (!isObject(mws)) return [];
+  return Object.values(mws).filter((m): m is Record<string, unknown> => isObject(m) && m.cache !== undefined).map((m) => stableJson(m.cache));
+}
+
 function stableJson(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
   if (isObject(v)) return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson(v[k])}`).join(',')}}`;
@@ -157,6 +210,8 @@ export function certAllowed(name: string, prefixes: string[] | null): boolean {
 // 画面の注意（利用者に出す）
 export const USER_FILES_NOTE =
   'ファイルのパス（証明書・鍵・CA・秘密のファイル）は管理者だけが指定できます。証明書は管理者が登録した名前（登録済みの証明書）から選んでください。前からある値はそのまま残せます。';
+export const USER_CACHE_NOTE =
+  '利用者は「Cookie・Authorization のあるリクエストも共有する」と「認証の後でも答えを共有する」を使えません。メモリの上限（max_memory）は管理者の決めた大きさ（RPROXY_UI_USER_CACHE_MAX_MEMORY。既定 16 MiB）までなので、書いてください（書かないと rproxy の既定の 64 MiB になり、保存できません）。持つ数（max_entries）も管理者の決めた数（RPROXY_UI_USER_CACHE_MAX_ENTRIES。既定 1024）までです。';
 export const USER_TARGETS_NOTE =
   '転送先は管理者が許可した宛先（RPROXY_UI_USER_TARGETS）だけに使えます。ループバック・リンクローカル・rproxy の制御 API・この画面・データベースのアドレスには転送できません。';
 

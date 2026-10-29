@@ -29,6 +29,10 @@ export interface RoleConfig {
   // user（admin 以外）がいつも使えない宛先（RPROXY_UI_PROTECTED_TARGETS。CIDR か CIDR:ポート。#155 のレビュー M3）。
   // 許可リストに入っていても断る（別のホストの DB・Kubernetes の Service の CIDR など）
   protectedTargets: ProtectedTarget[];
+  // user（admin 以外）が L7 の cache ミドルウェアに使える上限（RPROXY_UI_USER_CACHE_MAX_MEMORY・RPROXY_UI_USER_CACHE_MAX_ENTRIES。#175）。
+  // rproxy のメモリは利用者みんなで共有なので、管理者が決めた大きさまで。既定は 16 MiB・1024 件
+  userCacheMaxMemory: number;
+  userCacheMaxEntries: number;
 }
 
 // port が null ならすべてのポート
@@ -138,6 +142,32 @@ function parseNodes(value: string | undefined): string[] | null {
   return list;
 }
 
+// cache の上限の既定（#175）。max_entries の既定は rproxy の DEFAULT_MAX_ENTRIES と同じ
+export const USER_CACHE_MAX_MEMORY_DEFAULT = 16 * 1024 * 1024;
+export const USER_CACHE_MAX_ENTRIES_DEFAULT = 1024;
+const SIZE_UNITS: Record<string, number> = { '': 1, k: 1024, kib: 1024, m: 1024 ** 2, mib: 1024 ** 2, g: 1024 ** 3, gib: 1024 ** 3 };
+
+// バイト数（数だけか、KiB・MiB・GiB を付ける）。rproxy の max_memory の上限（16 GiB）まで
+function parseCacheMemory(value: string | undefined): number {
+  const text = value?.trim() ?? '';
+  if (text === '') return USER_CACHE_MAX_MEMORY_DEFAULT;
+  const m = /^([0-9]+)\s*([a-z]*)$/i.exec(text);
+  const unit = m ? SIZE_UNITS[m[2].toLowerCase()] : undefined;
+  const n = m && unit !== undefined ? Number(m[1]) * unit : NaN;
+  if (!(Number.isSafeInteger(n) && n >= 1 && n <= 16 * 1024 ** 3)) {
+    throw new RoleConfigError(`RPROXY_UI_USER_CACHE_MAX_MEMORY はバイト数（16777216 か 16MiB のように。KiB・MiB・GiB が使える。16 GiB まで）で書いてください: ${text}`);
+  }
+  return n;
+}
+
+function parseCacheEntries(value: string | undefined): number {
+  const text = value?.trim() ?? '';
+  if (text === '') return USER_CACHE_MAX_ENTRIES_DEFAULT;
+  const n = /^[0-9]+$/.test(text) ? Number(text) : NaN;
+  if (!(n >= 1 && n <= 1_000_000)) throw new RoleConfigError(`RPROXY_UI_USER_CACHE_MAX_ENTRIES は 1〜1000000 の整数で書いてください: ${text}`);
+  return n;
+}
+
 // 環境変数から読む。未設定なら既定（realm_access.roles、rproxy-admin、利用者なし、ポート・宛先の許可リストなし）
 export function roleConfig(env: Record<string, string | undefined> = process.env): RoleConfig {
   const ports = env.RPROXY_UI_USER_PORTS?.trim();
@@ -152,6 +182,8 @@ export function roleConfig(env: Record<string, string | undefined> = process.env
     userCertsBySub: parseCertAssignments('RPROXY_UI_USER_CERTS_BY_SUB', env.RPROXY_UI_USER_CERTS_BY_SUB),
     userCertsByRole: parseCertAssignments('RPROXY_UI_USER_CERTS_BY_ROLE', env.RPROXY_UI_USER_CERTS_BY_ROLE),
     protectedTargets: parseProtected(env.RPROXY_UI_PROTECTED_TARGETS),
+    userCacheMaxMemory: parseCacheMemory(env.RPROXY_UI_USER_CACHE_MAX_MEMORY),
+    userCacheMaxEntries: parseCacheEntries(env.RPROXY_UI_USER_CACHE_MAX_ENTRIES),
   };
 }
 

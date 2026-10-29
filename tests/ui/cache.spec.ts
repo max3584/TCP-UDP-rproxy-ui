@@ -96,6 +96,11 @@ test('response cache from the form', async ({ page }) => {
     await expect(page.locator('#http-mw-0-status-404')).toBeChecked();
     await expect(page.locator('#http-mw-0-status-200')).toBeChecked();
     await expect(page.getByTestId('http-preserved')).toHaveCount(0);
+    // 状態コードのチェックを全部外すと、既定の 200 が効くことを出す（#175）
+    await page.locator('#http-mw-0-status-404').uncheck();
+    await page.locator('#http-mw-0-status-200').uncheck();
+    await expect(page.locator('#http-mw-0-status-200')).not.toBeChecked();
+    await expect(page.getByTestId('cache-status-default')).toBeVisible();
   } finally {
     await deleteRule(page);
     backend.close();

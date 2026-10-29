@@ -80,7 +80,7 @@ import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
 import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, isShadowing, liveRule, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
 import { V04_FIELD, V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
 import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
-import { addedRefs, certAllowed, certNames, destKey, fileKey, fileRefs, locatedDests, oidcConfigs, redactFiles } from '@/components/userlimits';
+import { addedRefs, certAllowed, certNames, destKey, fileKey, fileRefs, locatedDests, oidcConfigs, redactFiles, userCacheProblem } from '@/components/userlimits';
 import type { DestRef } from '@/components/userlimits';
 import { checkDestinations, protectedAddrs, refusalText, resolveHost } from '@/components/usertargets';
 import type { InterfacesInfo } from '@/components/listen';
@@ -268,6 +268,8 @@ async function protectedFor(actor: Actor, place: Place, logger: AppLogger) {
 // - サーバのファイルを指す項目は、前の内容にない値を断る（403 file_not_allowed）
 // - 登録済みの証明書の名前は、前の内容になく利用者の先頭（RPROXY_UI_USER_CERTS・割り当て。certPrefixesFor）の外なら断る（403 cert_not_allowed）
 // - oidc のミドルウェアは、前の内容と同じ設定でなければ断る（403 middleware_not_allowed。discovery の先を確かめられないため）
+// - cache のミドルウェアは、前の内容と同じ設定でなければ share_after_auth・share_credentials を断り（403 middleware_not_allowed）、
+//   max_memory・max_entries（省けば rproxy の既定）が RPROXY_UI_USER_CACHE_MAX_* を超えれば断る（403 cache_limit。#175）
 function userRuleSync(actor: Actor, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null): DestRef[] {
   if (actor.access === 'admin') return [];
   const files = addedRefs(fileRefs(rule), fileRefs(before?.rule), fileKey);
@@ -284,6 +286,8 @@ function userRuleSync(actor: Actor, rule: ForwardRule, overrides: Overrides | un
   if (oidcConfigs(rule).some((c) => !oldOidc.has(c))) {
     throw new HttpError(403, 'OIDC のミドルウェアは管理者だけが足したり変えたりできます（rproxy がつなぐ先を UI が確かめられないため）。', 'middleware_not_allowed');
   }
+  const cache = userCacheProblem(rule, before?.rule, { maxMemory: actor.roles.userCacheMaxMemory, maxEntries: actor.roles.userCacheMaxEntries });
+  if (cache) throw new HttpError(403, cache.message, cache.code);
   const next = locatedDests(rule, overrides);
   const old = before ? locatedDests(before.rule, before.overrides) : [];
   // 読めない URL は前からあっても確かめる（断る）

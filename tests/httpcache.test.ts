@@ -88,6 +88,18 @@ describe('where cache sits in a route', () => {
     expect(errorsOf(perServer)).toContain('転送先ごとには使えない種類');
   });
 
+  it('refuses forward_auth on the servers of the route\'s service (rproxy check_cache_route)', () => {
+    const spec = example({ ttl: '1s' }, ['micro'], { fa: { forward_auth: { address: 'http://10.0.0.30/auth' } } });
+    spec.services!.app.servers[0].middlewares = ['fa'];
+    const e = errorsOf(spec);
+    expect(e).toContain('サービスの転送先が forward_auth の「fa」を使っています');
+    expect(e).toContain('cache「micro」と一緒には使えません');
+    // a route without cache is not refused for it
+    const noCache = example({ ttl: '1s' }, ['gzip'], { fa: { forward_auth: { address: 'http://10.0.0.30/auth' } } });
+    noCache.services!.app.servers[0].middlewares = ['fa'];
+    expect(errorsOf(noCache)).not.toContain('サービスの転送先が forward_auth');
+  });
+
   it('refuses the kind when rproxy does not list it', () => {
     expect(validateHttp(example(), ['compress']).join(' ')).toContain('種類「cache」は、この rproxy ではまだ使えません');
     expect(validateHttp(example(), ['compress', 'cache'])).toEqual([]);
@@ -122,6 +134,31 @@ describe('HttpEditor: cache is edited only when features.middlewares lists it', 
       expect(html).toContain('&quot;ttl&quot;:&quot;1s&quot;');
       expect(html).not.toContain('<option value="cache">');
     }
+  });
+
+  it('says the default 200 applies when every status is cleared, and keeps values outside the list', () => {
+    const cleared = render(example({ ttl: '1s', status: [] }), ['compress', 'cache']);
+    expect(cleared).toContain('data-testid="cache-status-default"');
+    expect(cleared).not.toMatch(/id="http-mw-1-status-200"[^>]*checked=""/);
+    const omitted = render(example({ ttl: '1s' }), ['compress', 'cache']);
+    expect(omitted).toMatch(/id="http-mw-1-status-200"[^>]*checked=""/);
+    expect(omitted).not.toContain('data-testid="cache-status-default"');
+    const extra = render(example({ ttl: '1s', status: [404, 500] }), ['compress', 'cache']);
+    expect(extra).toContain('data-testid="cache-status-extra"');
+    expect(extra).toContain('一覧にない状態コード 500');
+    expect(extra).toMatch(/id="http-mw-1-status-404"[^>]*checked=""/);
+    expect(validateHttp(example({ ttl: '1s', status: [] }))).toEqual([]);
+  });
+
+  it('says saving is blocked while an unavailable cache stays', () => {
+    expect(render(spec, ['compress'])).toContain('このミドルウェアがある間は保存できません');
+  });
+
+  it('shows the user limits to users', () => {
+    const user = renderToStaticMarkup(createElement(HttpEditor, { value: spec, onChange: () => undefined, http3: false, httpOptions: null, serviceOptions: null, middlewares: ['compress', 'cache'], filesLocked: true }));
+    expect(user).toContain('data-testid="cache-user-note"');
+    expect(user).toContain('RPROXY_UI_USER_CACHE_MAX_MEMORY');
+    expect(render(spec, ['compress', 'cache'])).not.toContain('data-testid="cache-user-note"');
   });
 
   it('sends the settings as they are', () => {
