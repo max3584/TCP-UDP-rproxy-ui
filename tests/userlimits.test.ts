@@ -281,7 +281,7 @@ describe('review fixes (#155)', () => {
     const { userCacheProblem } = await import('@/components/userlimits');
     const limits = { maxMemory: 1 << 30, maxEntries: 1 << 20 };
     const sso = { oidc: { issuer: 'https://id.example.com/realms/a', client_id: 'a' } };
-    const spec = (routes: { name: string; match?: string; middlewares: string[] }[], name = 'c') => ({ http: {
+    const spec = (routes: { name: string; match?: string; service?: string; to?: string; middlewares: string[] }[], name = 'c') => ({ http: {
       routes: routes.map((r) => ({ match: 'PathPrefix(`/`)', service: 's', ...r })),
       services: { s: { servers: [{ url: 'http://192.0.2.9' }] } },
       middlewares: { sso: sso, [name]: { cache: { ttl: '1s', share_after_auth: true, share_credentials: true } } },
@@ -298,6 +298,13 @@ describe('review fixes (#155)', () => {
     // the same route with a wider match, or a middleware in front removed
     expect(userCacheProblem(spec([{ name: 'a', match: 'PathPrefix(`/x`)', middlewares: ['sso', 'c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
     expect(userCacheProblem(spec([{ name: 'a', middlewares: ['c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
+    // the same route pointed at another service or URL
+    expect(userCacheProblem(spec([{ name: 'a', service: 'other', middlewares: ['sso', 'c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
+    expect(userCacheProblem(spec([{ name: 'a', service: undefined, to: 'http://192.0.2.10', middlewares: ['sso', 'c'] }]), before, limits)?.code).toBe('middleware_not_allowed');
+    // changing the servers of the approved service itself stays allowed
+    const moved = spec([{ name: 'a', middlewares: ['sso', 'c'] }, { name: 'b', middlewares: [] }]);
+    (moved.http as unknown as { services: Record<string, unknown> }).services.s = { servers: [{ url: 'http://192.0.2.11' }] };
+    expect(userCacheProblem(moved, before, limits)).toBeNull();
     // the same config under a new name
     expect(userCacheProblem(spec([{ name: 'a', middlewares: ['sso', 'n'] }], 'n'), before, limits)?.code).toBe('middleware_not_allowed');
     // a new rule (copy, move): nothing before

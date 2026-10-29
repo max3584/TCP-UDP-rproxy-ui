@@ -163,7 +163,8 @@ export function userCacheProblem(rule: Pick<ForwardRule, 'http'> | null | undefi
   return null;
 }
 
-// その cache を使うルートと置き場所（ルートの名前・match・cache より前のミドルウェアの名前と設定）
+// その cache を使うルートと置き場所（ルートの名前・match・転送先（service・to）・cache より前のミドルウェアの名前と設定）。
+// 認めたサービスそのものの servers を変えるのは比べない（管理者はそのサービスで共有することを認めたため）
 function cachePlacements(rule: Pick<ForwardRule, 'http'> | null | undefined, name: string): string[] {
   const mws = rule?.http?.middlewares;
   const routes = rule?.http?.routes;
@@ -174,7 +175,7 @@ function cachePlacements(rule: Pick<ForwardRule, 'http'> | null | undefined, nam
     const at = (r.middlewares as unknown[]).indexOf(name);
     if (at < 0) continue;
     const front = (r.middlewares as unknown[]).slice(0, at).map((n) => [n, typeof n === 'string' ? mws[n] ?? null : null]);
-    out.push(stableJson({ route: r.name ?? null, match: r.match ?? null, front: front }));
+    out.push(stableJson({ route: r.name ?? null, match: r.match ?? null, service: r.service ?? null, to: r.to ?? null, front: front }));
   }
   return out;
 }
