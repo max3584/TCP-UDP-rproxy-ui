@@ -1,7 +1,7 @@
 // ダッシュボードとルールの詳細画面で使う集計・整形の関数。React に依存しない（tests/dashboard.test.ts）
 
 import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, routeNames, routeTargets } from './lib';
-import type { Balance, CertRole, CertState, CertStatus, ForwardRule, ForwardRules, HttpSpec, HttpStats, NodeLiveState, NodesInfo, Protocol, RuleState, RuleStats, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
+import type { Balance, CacheCounts, CertRole, CertState, CertStatus, ForwardRule, ForwardRules, HttpSpec, HttpStats, NodeLiveState, NodesInfo, Protocol, RuleState, RuleStats, StatusClass, StatusCounts, Target, TlsSpec } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
 import { normalizeBalance, normalizeHealthCheck, normalizeTargets, normalizeTls } from './tls';
 import { hostsOfMatch } from './httpspec';
@@ -722,6 +722,8 @@ export interface HttpRouteRow {
   // ミドルウェアの名前ごと（表示用）
   limitedBy: Record<string, number>;
   blockedBy: Record<string, number>;
+  // cache のミドルウェアの名前ごと（#340）
+  cacheBy: Record<string, CacheCounts>;
 }
 
 function sum(counts: Record<string, number> | undefined): number {
@@ -739,11 +741,29 @@ export function httpRouteRows(http: HttpStats): HttpRouteRow[] {
       blocked: sum(r.blocked),
       limitedBy: r.limited ?? {},
       blockedBy: r.blocked ?? {},
+      cacheBy: r.cache ?? {},
     }))
     .sort((a, b) => {
       if ((a.name === NO_ROUTE) !== (b.name === NO_ROUTE)) return a.name === NO_ROUTE ? 1 : -1;
       return b.requests - a.requests || a.name.localeCompare(b.name);
     });
+}
+
+// cache の数の表示（"ヒット 5 / ミス 1 / 古い値 0 / 対象外 2"）
+export function cacheCountsLabel(c: CacheCounts): string {
+  return [
+    translate(`ヒット ${formatCount(c.hit ?? 0)}`),
+    translate(`ミス ${formatCount(c.miss ?? 0)}`),
+    translate(`古い値 ${formatCount(c.stale ?? 0)}`),
+    translate(`対象外 ${formatCount(c.bypass ?? 0)}`),
+  ].join(' / ');
+}
+
+// メモリから答えた割合（%、対象外を除く。数えたものがなければ null）
+export function cacheHitPercent(c: CacheCounts): number | null {
+  const answered = (c.hit ?? 0) + (c.stale ?? 0);
+  const total = answered + (c.miss ?? 0);
+  return total === 0 ? null : Math.round((answered / total) * 1000) / 10;
 }
 
 // "2xx 3 / 4xx 2" のような表示（0 件の区分は省く）

@@ -228,6 +228,8 @@ export interface RuleStats {
   http?: HttpStats;
   // 宛先ごとの状態（宛先を複数にしたルール。rproxy v0.3.3 以降。古い rproxy は返さない）
   targets?: TargetStats[];
+  // サーバ名ごとの転送先（tls.routes[]）の宛先の状態（宛先が 2 つ以上か max_connections のある route だけ。tls.routes の順。rproxy v0.4.19、#341）
+  tls_routes?: TlsRouteStats[];
   // L4 の制限（limits）で断った数（rproxy v0.4。#165）
   limited?: number;
   // この数え始めの時刻（Unix 秒。rproxy v0.4。#166）。ルールを作り直すと変わり、引き継ぎ（handoff）では変わらない
@@ -245,6 +247,12 @@ export interface CertStatus {
   // 残りの日数。切れたら負
   days_left: number;
   state: CertState;
+}
+
+// サーバ名ごとの転送先 1 件の宛先の状態（rproxy の stats.tls_routes[]）
+export interface TlsRouteStats {
+  server_names: string[];
+  targets: TargetStats[];
 }
 
 // 宛先ごとの状態。rproxy の版によって項目が欠けることがあるので、どれも省略できる
@@ -282,6 +290,8 @@ export interface HttpStats {
   blocked?: number;
   // サービスごとの転送先の状態（health_check か転送先の max_connections のあるサービスだけ）
   services?: Record<string, HttpServerStats[]>;
+  // cache のミドルウェアのあるルールだけ（rproxy-api #340、v0.4.19）
+  cache?: CacheCounts;
 }
 
 // L7 のサービスの転送先 1 件の状態。max_connections・in_flight・full は上限のある転送先だけ（rproxy v0.4.19、#341）
@@ -294,12 +304,22 @@ export interface HttpServerStats {
   full?: boolean;
 }
 
-// limited / blocked はミドルウェアの名前ごと
+// cache のミドルウェアを通ったリクエスト：メモリから（hit）、転送先から（miss）、
+// 転送先が落ちたので期限切れのものを（stale）、キャッシュの対象でない（bypass）
+export interface CacheCounts {
+  hit: number;
+  miss: number;
+  stale: number;
+  bypass: number;
+}
+
+// limited / blocked / cache はミドルウェアの名前ごと
 export interface HttpRouteStats {
   requests: number;
   by_status: StatusCounts;
   limited?: Record<string, number>;
   blocked?: Record<string, number>;
+  cache?: Record<string, CacheCounts>;
 }
 
 // 稼働情報は rproxy に問い合わせできない（unknown）か rproxy にない（missing）ときは null / 空

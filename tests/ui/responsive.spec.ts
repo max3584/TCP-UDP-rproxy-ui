@@ -110,6 +110,13 @@ for (const vp of VIEWPORTS) {
       await expectNoPageOverflow(page);
     });
 
+    test('global settings fit the width', async ({ page }) => {
+      await page.goto('/global');
+      await expect(page.getByRole('heading', { name: 'global の設定', level: 1 })).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      await expectNoPageOverflow(page);
+    });
+
     test('history fits the width', async ({ page }) => {
       await page.goto('/history');
       await expect(page.getByRole('heading', { name: '変更の履歴' })).toBeVisible();

@@ -1,7 +1,7 @@
 // 宛先を複数にしたとき（rproxy v0.3.3 の targets / balance / health_check）のフォームの行と組み立て。
 // React に依存しない（tests/targets.test.ts）。形の検証は components/tls.ts の normalizeTargets / checkBalancing
 
-import { Balance, DEFAULT_BALANCE, ForwardRule, HealthCheck, Protocol, RuleStats, Target, TargetStats } from './lib';
+import { Balance, DEFAULT_BALANCE, ForwardRule, HealthCheck, Protocol, RuleStats, Target, TargetStats, TlsRouteStats } from './lib';
 import { Balancing, checkBalancing, normalizeHealthCheck, normalizeTargets } from './tls';
 import { joinList } from '@/i18n/core';
 
@@ -120,17 +120,38 @@ export function capUsageLabel(current: number | undefined, max: number | undefin
 
 const formatNumber = (n: number) => n.toLocaleString('en-US');
 
-// 上限のある宛先がすべていっぱいか、ほかが落ちている（新しい接続を断っている）。上限のある宛先がなければ false。
-// L4 は stats.targets、L7 はサービスごとの stats.http.services（どれか 1 つのサービスでも）
-export function targetsAllFull(stats: Pick<RuleStats, 'targets' | 'http'> | null | undefined): boolean {
-  const allFull = (list: { up?: boolean; full?: boolean }[]) => list.length > 0 && list.some((t) => t.full === true) && list.every((t) => t.full === true || t.up === false);
-  if (allFull(stats?.targets ?? [])) return true;
-  return Object.values(stats?.http?.services ?? {}).some((servers) => allFull(servers));
+// 上限で新しい接続・リクエストを断っているか（rproxy-api #341）：up の宛先があればそれがすべていっぱい
+// （down の宛先は試さない）、up の宛先がなければすべていっぱい。いっぱいの宛先がなければ false。
+// L4 は stats.targets、サーバ名ごとの転送先は stats.tls_routes、L7 はサービスごとの stats.http.services（どれか 1 つでも）
+export function refusingAllFull(list: { up?: boolean; full?: boolean }[]): boolean {
+  if (!list.some((t) => t.full === true)) return false;
+  const up = list.filter((t) => t.up !== false);
+  return (up.length > 0 ? up : list).every((t) => t.full === true);
+}
+
+export function targetsAllFull(stats: Pick<RuleStats, 'targets' | 'tls_routes' | 'http'> | null | undefined): boolean {
+  if (refusingAllFull(stats?.targets ?? [])) return true;
+  if ((stats?.tls_routes ?? []).some((r) => refusingAllFull(r.targets ?? []))) return true;
+  return Object.values(stats?.http?.services ?? {}).some((servers) => refusingAllFull(servers));
+}
+
+// サーバ名ごとの転送先の宛先の状態を stats.tls_routes から探す（名前の組が同じもの。なければ同じ位置で名前のないもの）
+export function tlsRouteStatus(names: string[], stats: TlsRouteStats[] | undefined, index: number): TlsRouteStats | null {
+  if (!stats || stats.length === 0) return null;
+  const key = (list: string[]) => [...list].map((n) => n.toLowerCase()).sort().join(',');
+  return stats.find((s) => Array.isArray(s.server_names) && key(s.server_names) === key(names))
+    ?? (stats[index] && !Array.isArray(stats[index].server_names) ? stats[index] : null);
+}
+
+// 宛先の生死を rproxy が報告するか：宛先が 1 つでヘルスチェックのないルールは、上限のためだけに stats.targets を出し、
+// up / down は報告しない（rproxy-api #341）
+export function reportsTargetHealth(rule: Pick<ForwardRule, 'targets' | 'healthCheck'>): boolean {
+  return rule.targets.length > 1 || rule.healthCheck !== null;
 }
 
 // いま上限に達している宛先の数（L4 の宛先と L7 の転送先）
-export function fullTargetCount(stats: Pick<RuleStats, 'targets' | 'http'> | null | undefined): number {
-  const l4 = (stats?.targets ?? []).filter((t) => t.full === true).length;
+export function fullTargetCount(stats: Pick<RuleStats, 'targets' | 'tls_routes' | 'http'> | null | undefined): number {
+  const l4 = [...(stats?.targets ?? []), ...(stats?.tls_routes ?? []).flatMap((r) => r.targets ?? [])].filter((t) => t.full === true).length;
   const l7 = Object.values(stats?.http?.services ?? {}).flat().filter((s) => s.full === true).length;
   return l4 + l7;
 }

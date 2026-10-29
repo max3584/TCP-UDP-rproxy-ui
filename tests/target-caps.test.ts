@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ForwardRule, ForwardRules, RuleStats } from '@/components/lib';
 import type { RproxyRuleStatus } from '@/components/rproxy';
 import { normalizeTargets, normalizeTls, optionsJson, parseOptions } from '@/components/tls';
-import { buildBalancing, capUsageLabel, firstRow, fullTargetCount, rowToTarget, targetCapsOf, targetsAllFull, toHealthCheckRow, toRows, withoutTargetCaps } from '@/components/targets';
+import { buildBalancing, capUsageLabel, firstRow, fullTargetCount, reportsTargetHealth, rowToTarget, targetCapsOf, targetsAllFull, tlsRouteStatus, toHealthCheckRow, toRows, withoutTargetCaps } from '@/components/targets';
 import { buildRouteSpec, routeRow } from '@/components/RuleForm';
 import TargetsEditor, { RouteTargetsEditor } from '@/components/TargetsEditor';
 import HttpEditor from '@/components/HttpEditor';
@@ -190,9 +190,25 @@ describe('state: full targets', () => {
     const l7 = stats(undefined, { requests: 0, by_status: {}, routes: {}, services: { s: [{ url: 'http://a', up: true, max_connections: 1, in_flight: 1, full: true }] } });
     expect(targetsAllFull(l7)).toBe(true);
     expect(fullTargetCount(stats([{ full: true }, { full: false }]))).toBe(1);
+    // up の宛先がすべていっぱいなら、down の宛先（いっぱいでない）は試さずに断る。up がなければ、いっぱいでない down の宛先を試す
+    expect(targetsAllFull(stats([{ full: true, up: true }, { full: false, up: false }]))).toBe(true);
+    expect(targetsAllFull(stats([{ full: true, up: false }, { full: false, up: false }]))).toBe(false);
+    expect(targetsAllFull(stats([{ full: true, up: false }]))).toBe(true);
+    // サーバ名ごとの転送先（stats.tls_routes）
+    const routes = { ...stats(undefined), tls_routes: [{ server_names: ['a.example'], targets: [{ up: true, full: true }] }, { server_names: ['b.example'], targets: [{ up: true, full: false }] }] };
+    expect(targetsAllFull(routes)).toBe(true);
+    expect(fullTargetCount(routes)).toBe(1);
+    expect(tlsRouteStatus(['B.example'], routes.tls_routes, 0)).toBe(routes.tls_routes[1]);
+    expect(tlsRouteStatus(['c.example'], routes.tls_routes, 0)).toBeNull();
     expect(capUsageLabel(3, 200)).toBe('3 / 200');
     expect(capUsageLabel(1234, undefined)).toBe('1,234');
     expect(capUsageLabel(undefined, undefined)).toBeNull();
+  });
+
+  it('a single target without a health check reports only its cap state', () => {
+    expect(reportsTargetHealth({ targets: [{ addr: 'a', port: 1, max_connections: 5 }], healthCheck: null })).toBe(false);
+    expect(reportsTargetHealth({ targets: [{ addr: 'a', port: 1, max_connections: 5 }], healthCheck: {} })).toBe(true);
+    expect(reportsTargetHealth(base)).toBe(true);
   });
 
   it('a running rule with every target full needs attention', () => {

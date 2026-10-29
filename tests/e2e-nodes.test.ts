@@ -396,4 +396,59 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect((await call('ha', undefined, 'GET')).status).toBe(200);
     expect((await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: HA_PORT, target: 'ha' })).status).toBe(200);
   });
+
+  // global の設定（#169）：グループに送ると両方のノードに効き、ノードごとのビュー（rproxy_global、WITH CHECK OPTION）に
+  // 自分の行を書き、再起動しても戻る。制御 API は Unix ソケットなので Unix ソケットだけの項目（trusted_proxies）も変えられる
+  it('global settings sent to a group reach both nodes, are stored through each node\'s view and survive a restart', async () => {
+    const { default: globalHandler } = await import('@/pages/api/forward/global');
+    const g = async (method: string, body?: unknown, query: Record<string, string> = {}) => {
+      let status = 0;
+      let json: any;
+      const res = { status(x: number) { status = x; return res; }, json(j: unknown) { json = j; return res; } } as unknown as NextApiResponse;
+      await globalHandler({ method, query, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest, res);
+      return { status, json };
+    };
+    const items = async () => {
+      const { json } = await g('GET', undefined, { target: 'ha' });
+      return Object.fromEntries(json.nodes.map((n: any) => [n.node, n.settings]));
+    };
+    const before = await items();
+    if (!before.n1) return; // global_api のない rproxy-api
+    const values = { trusted_proxies: ['192.0.2.0/24'], udp_max_sessions: 2048 };
+    try {
+      const plan = await g('POST', { target: 'ha', values, dryRun: true });
+      expect(plan.json.nodes.map((n: any) => n.ok)).toEqual([true, true]);
+      const applied = await g('POST', { target: 'ha', values });
+      expect(applied.status).toBe(200);
+      expect(applied.json.nodes.map((n: any) => [n.node, n.outcome, n.persisted])).toEqual([['n1', 'applied', true], ['n2', 'applied', true]]);
+      const now = await items();
+      for (const n of ['n1', 'n2']) {
+        expect(now[n].items.trusted_proxies).toMatchObject({ source: 'api', value: ['192.0.2.0/24'] });
+        expect(now[n].items.udp_max_sessions).toMatchObject({ source: 'api', value: 2048 });
+      }
+      // 各ノードの行はそのノードのビューに書かれている（ほかのノードの行は見えない）
+      const mariadb = (await import('mariadb')).default;
+      for (const n of ['n1', 'n2']) {
+        const conn = await mariadb.createConnection({
+          host: process.env.DB_HOST, port: Number(process.env.DB_PORT), database: `rproxy_node_${n}`, user: process.env.DB_USER, password: process.env.DB_PASSWORD,
+        });
+        try {
+          const rows = await conn.query('SELECT node, CAST(spec AS CHAR) AS spec FROM rproxy_global');
+          expect(rows.map((r: any) => r.node)).toEqual([n]);
+          expect(JSON.parse(rows[0].spec)).toMatchObject({ trusted_proxies: ['192.0.2.0/24'], udp_max_sessions: 2048 });
+        } finally {
+          await conn.end();
+        }
+      }
+      execFileSync('docker', ['restart', container('n1')], { stdio: 'inherit' });
+      await waitFor(async () => {
+        expect((await items()).n1.items.udp_max_sessions).toMatchObject({ source: 'api', value: 2048 });
+      });
+    } finally {
+      expect((await g('POST', { target: 'ha', values: { trusted_proxies: null, udp_max_sessions: null } })).status).toBe(200);
+    }
+    const after = await items();
+    expect(after.n1.items.udp_max_sessions.source).toBe('default');
+    expect(after.n2.items.trusted_proxies.source).toBe('default');
+  });
 });

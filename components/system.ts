@@ -24,6 +24,7 @@ export const V04_FEATURES: { key: keyof CapabilityFeatures; label: string }[] = 
   { key: 'api_lockout', label: '認証の失敗が続く送信元の一時停止' },
   { key: 'handoff', label: '再起動なしの更新（handoff）' },
   { key: 'self_update', label: 'コンテナでの自動更新' },
+  { key: 'global_api', label: 'global の設定の API' },
 ];
 
 // global.performance の項目（設定ファイルにあれば使う。再起動まで効かない）

@@ -180,6 +180,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 - `api-rules.spec.ts`：rproxy の API を直接呼んで作ったルールが、利用者には見えず（404）、管理者にはダッシュボードと詳細に「API」で出て、編集で rproxy の転送先が変わり、削除で rproxy から消えること（rproxy の版を問わない）
 - `usage.spec.ts`：作ったルールに通信を流すと、UI の集計（E2E では `RPROXY_UI_USAGE_SECS=30`）でルールの利用量が増え、詳細画面のグラフ・利用量の画面の表・CSV に出ること（010 の表がなければ飛ばす）
 - `v04.spec.ts`：v0.4 の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームの「制限・GeoIP」でラベルと送信元ごとの同時接続 1 を付けて追加し、詳細画面にラベルが出て、2 本目の接続がすぐ閉じられること。`features.dry_run` のときは「差分を見る」で作成・変更の差分（接続を切らずに変わる、`labels`）が出ること
+- `cache.spec.ts`：応答のキャッシュ（rproxy の `features.middlewares` に `cache` があるときだけ。まだなら飛ばす）。フォームで cache の後ろに ip_allow を置くと保存の前に断ること、cache を付けて追加し、1 回目は `X-Cache: MISS`・2 回目は `HIT` で転送先へは 1 回だけ届くこと、詳細画面に設定とヒット・ミスの数が出ること、編集画面で読み直せること
 - `gateway.spec.ts`：Gateway API 向けの L7・TLS の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームでルートの時間の上限・Host の書き換え・ヘッダを足す・ミラー・418 で答える転送先を付けて追加し、実際に Host が変わりヘッダが足され、写しがミラーの送り先に届き、`/teapot` が 418 を返すこと、詳細画面と編集画面に出ること。TLS の sni のサーバ名ごとの転送先を複数の宛先（フェイルオーバー）にして、ClientHello が 1 番目の宛先へ届き、詳細・編集画面に出ること。375px ではみ出さず、ライト・ダークで白地に白文字がないこと
 - `proxy-protocol.spec.ts`：rproxy-api v0.4.13 の `proxy_protocol` と `tls.routes[].source_ip`（rproxy の `features.proxy_protocol_in`・`route_source_ip` があるときだけ。まだなら飛ばす）。フォームの「詳細」で PROXY protocol の受け取り（`/0` は送る前に断る）と allow_from を付けて追加し、ヘッダのクライアントが allow_from の内なら転送され（ヘッダは転送先に届かない）、外・ヘッダなしなら断られること、変更の画面でそのまま保存しても残り、外すと rproxy からも外れること。TLS の sni のサーバ名ごとの転送先に `proxy_v1` を選んで追加し、変更の画面でそのまま保存しても残り（以前は保存で消えた）、その転送先に ClientHello の前の PROXY v1 のヘッダが届くこと
 - `route-upstream.spec.ts`：rproxy-api v0.4.7 の `tls.routes[].upstream`（rproxy の `features.tls_route_upstream` があり openssl があるときだけ。まだなら飛ばす）。TCP の終端のルールのサーバ名ごとの転送先に「転送先への TLS」（検証するサーバ名・検証しない）を付けて追加し（クライアント証明書だけで秘密鍵がなければ送る前に断る）、その名前だけ転送先へ TLS で、指定したサーバ名でつながること、変更の画面でそのまま保存しても残ること、「この名前は平文」にすると `{}` で保存され TLS でつながなくなること
@@ -208,6 +209,14 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 | tls.routes の targets | `normalizeTls` の形（既定の balance は省く）、両方・どちらもない・targets のない balance・範囲のポートの誤り、ダッシュボードの検索、読み取り専用の表示 |
 
 エクスポートして読み込み直すと同じルールになることは `tests/export-import.test.ts`（Gateway API の項目を使う L7 のルールと targets のある sni のルール）。
+
+## 単体テスト：応答のキャッシュ（`tests/httpcache.test.ts`、rproxy-api #340）
+
+| テスト | 確かめること |
+|---|---|
+| validateHttp | docs/API.md の例とひな形が通り、`ttl`（100ms〜24h）・`stale_on_error`・`max_body`・`max_entries`・`max_memory`（`max_body` 以上）・`vary`・`status`・`header`（ホップごと・本文の形・キャッシュのヘッダの名前は不可）・知らない項目の誤り（rproxy の `cache.rs` と同じ規則）。ルートの置き場所（後ろの ip_allow などの通すかを決めるもの、前の認証と `share_after_auth`、oidc と `share_credentials`、1 つのルートに 1 つ、転送先ごとには不可）と、`features.middlewares` にないときの種類の誤り |
+| HttpEditor | `features.middlewares` に `cache` があるときだけ欄（状態コードのチェックボックス・結果のヘッダを付けない）を出し、ないとき・features がないときは選べず読み取り専用で残すこと |
+| HttpSummary・stats | 詳細画面の設定、`stats.http.cache` の表示と割合、ルートごとの数、グループのノードの合計 |
 
 ## 単体テスト：v0.4 のルールの項目（`tests/v04.test.ts`・`tests/forward-v04.test.ts`）
 
@@ -238,6 +247,15 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 | /api/forward | 管理者のダッシュボードに動いている API のルール・組のルール・保存済みで動いていないルール、利用者には出さない、`rproxy_rules` がなくても動く、`shadowedBy`、1 件の取得、`api-modify` は PATCH だけで DB に書かずrproxy が保存できなかった（`persisted: false`）ときだけ warning、`api-delete`・管理者だけ・409 `owned` / `ui_rule`、`plan` の `api-modify` |
 
 `tests/nodeview.test.ts` は、ノードごとのビューに、そのノードの行だけを書ける `rproxy_rules` のビュー（`WITH CHECK OPTION`）と権限が出ること（`--without-rproxy-rules` で出さない）も確かめる。
+
+## 単体テスト：global の設定（`tests/globalsettings.test.ts`・`tests/global-route.test.ts`）
+
+| テスト | 確かめること |
+|---|---|
+| 形と欄 | `http.timeouts` を `{"http": {"timeouts": …}}` にする、値の形だけを確かめる（知らない項目は rproxy に渡す）、取り消しは前の API の値（なければ null）、`GET /config/global` の答えを読む（知らない項目も残す）、変えられない理由（設定ファイル・環境変数・再起動・`settable`・TCP の `unix_only`）、欄と値の行き来（CIDR の正規化・絶対パス・整数・crowdsec の必須・知らない項目は JSON） |
+| /api/forward/global | 管理者だけ（403 `forbidden_admin`。`RPROXY_UI_USER_NODES` の利用者も）、CSRF、再起動が要る項目の中身を伏せる、時間切れは読み直して applied・unknown を決める（unknown は戻さない、applied は戻す）、戻せなかったときの `undone: false`、ほかの管理者が変えた値は戻さない、見るだけのノードは 409 `readonly_node`、重なる項目の名前、ノードごとの道（unix / tcp）と `features.global_api`、dry run はグループの全ノードに聞いて何も変えない、グループに適用して 1 台が断ればほかを前の API の値に戻す（409 `global_static`）、target の要否・知らない target・空の値、TCP の Unix ソケットだけの項目は 403 `global_unix_only`（TCP でも受け付ける設定は勧めない）、断りのコードの付け替え（`global_*`）、`crowdsec_unavailable`（502）・`not_loaded`（503）と知らないコードは rproxy のコードのまま |
+
+`tests/nodeview.test.ts` は `rproxy_global`（migration 013）のノードの 1 行だけのビュー（`SELECT, INSERT, UPDATE`、`--without-rproxy-global`）も、`tests/migrate.test.ts` は 013 を当てることも確かめる。画面の E2E は `tests/ui/global.spec.ts`（`global_api` のある rproxy で、出どころ・再起動が要る項目・TCP の Unix ソケットだけの項目・差分を見てからの適用と既定に戻すこと・DB への保存・利用者は 403）。複数のノードは `tests/e2e-nodes.test.ts`（グループに送ると Unix ソケットの 2 台に効き、各ノードのビューの `rproxy_global` に自分の行を書き、再起動しても戻る。CI のノードは `RPROXY_NODE_NAME` をノードの名前にする）。
 
 ## 単体テスト：利用量（`tests/usage.test.ts`・`tests/usage-route.test.ts`）
 

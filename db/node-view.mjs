@@ -3,6 +3,7 @@
 //
 //   node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>]
 //                         [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules] [--without-rproxy-rule-sets]
+//                         [--without-rproxy-global]
 //
 // 出した SQL は、UI のテーブルを読める管理者（root など）で流す（ビューはその人の権限で元のテーブルを読む）:
 //   node db/node-view.mjs node1 --password 'secret' | mariadb -u root -p
@@ -18,6 +19,9 @@
 // 009 を適用していなければ --without-rproxy-rules で出さない。
 // rproxy-api v0.4.2 がルールの組を保存する rproxy_rule_sets（migration 012）も同じく、そのノードの行だけの書けるビューにする。
 // 012 を適用していなければ --without-rproxy-rule-sets で出さない（--without-rproxy-rules でも出さない）。
+// rproxy-api v0.4.19 が API で入れた global の値を保存する rproxy_global（migration 013）も、そのノードの行だけの書けるビューにする
+// （rproxy は INSERT ... ON DUPLICATE KEY UPDATE だけで消さないので SELECT・INSERT・UPDATE）。
+// 013 を適用していなければ --without-rproxy-global で出さない（--without-rproxy-rules でも出さない）。
 // 依存のない JavaScript（.deb の /usr/share/rproxy-ui/db/ からも node で動く）。テストは tests/nodeview.test.ts
 
 // components/nodes.ts の NAME_PATTERN と同じ（データベース名・ユーザー名に使うので英小文字・数字・_ だけ）
@@ -34,6 +38,9 @@ export const RPROXY_RULES_COLUMNS = ['node', 'protocol', 'listen_addr', 'listen_
 // rproxy_rule_sets の列（migration 012。rproxy-api の src/config/persist.rs）
 export const RPROXY_RULE_SETS_COLUMNS = ['node', 'name', 'generation', 'etag', 'owner', 'rules', 'spec_version', 'updated_by', 'updated_at'];
 
+// rproxy_global の列（migration 013。rproxy-api の src/config/persist.rs）
+export const RPROXY_GLOBAL_COLUMNS = ['node', 'spec', 'spec_version', 'updated_by', 'updated_at'];
+
 // ' は '' にする（sql_mode の NO_BACKSLASH_ESCAPES に関係なく同じ意味になるように、\ は受け付けない）
 function quoteString(value) {
   const s = String(value);
@@ -42,7 +49,7 @@ function quoteString(value) {
 }
 
 /**
- * @param {{ node: string, database?: string, viewDatabase?: string, user?: string, host?: string, password?: string, withoutRproxyRules?: boolean, withoutRproxyRuleSets?: boolean }} opts
+ * @param {{ node: string, database?: string, viewDatabase?: string, user?: string, host?: string, password?: string, withoutRproxyRules?: boolean, withoutRproxyRuleSets?: boolean, withoutRproxyGlobal?: boolean }} opts
  * @returns {string}
  */
 export function nodeViewSql(opts) {
@@ -105,6 +112,17 @@ export function nodeViewSql(opts) {
       `GRANT SELECT, INSERT, UPDATE, DELETE ON \`${viewDatabase}\`.\`rproxy_rule_sets\` TO ${account};`,
     );
   }
+  if (!opts.withoutRproxyRules && !opts.withoutRproxyGlobal) {
+    // rproxy が書く rproxy_global（v0.4.19）：自分のノードの 1 行だけを見せ、ほかのノードの行は書けない
+    lines.push(
+      `CREATE OR REPLACE SQL SECURITY DEFINER VIEW \`${viewDatabase}\`.\`rproxy_global\` AS`,
+      `  SELECT ${RPROXY_GLOBAL_COLUMNS.map((c) => `\`${c}\``).join(', ')}`,
+      `    FROM \`${database}\`.\`rproxy_global\``,
+      `   WHERE \`node\` = ${quoteString(node)}`,
+      '  WITH CHECK OPTION;',
+      `GRANT SELECT, INSERT, UPDATE ON \`${viewDatabase}\`.\`rproxy_global\` TO ${account};`,
+    );
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -124,6 +142,8 @@ export function parseArgs(argv) {
       opts.withoutRproxyRules = true;
     } else if (a === '--without-rproxy-rule-sets') {
       opts.withoutRproxyRuleSets = true;
+    } else if (a === '--without-rproxy-global') {
+      opts.withoutRproxyGlobal = true;
     } else if (a.startsWith('--')) {
       throw new Error(`知らないオプション: ${a}`);
     } else {
@@ -139,7 +159,7 @@ if (process.argv[1] && process.argv[1].endsWith('node-view.mjs')) {
     process.stdout.write(nodeViewSql(parseArgs(process.argv.slice(2))));
   } catch (err) {
     console.error(`node-view.mjs: ${err instanceof Error ? err.message : err}`);
-    console.error('使い方: node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>] [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules] [--without-rproxy-rule-sets]');
+    console.error('使い方: node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>] [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules] [--without-rproxy-rule-sets] [--without-rproxy-global]');
     process.exit(2);
   }
 }

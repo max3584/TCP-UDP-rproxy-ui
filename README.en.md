@@ -259,6 +259,28 @@ TLS to the backend per server name can be set only on names rproxy terminates (n
 
 Before saving, the form checks the same rules as rproxy (a URL or a status code, `h2` with https:// backends and `h2c` with http:// backends, the kinds of per-backend middlewares, the mirror's service, CORS origins, combinations of the service TLS, which names may have TLS to the backend and how its client certificate, private key and intermediate CAs go together, and so on).
 
+## Response cache (cache)
+
+The rproxy-api `cache` middleware (rproxy-api #340; only when `features.middlewares` of `GET /capabilities` has `cache`) can be created and edited as the middleware kind "Response cache" in the L7 tab.
+It keeps GET responses in memory and answers from there without asking the backend for the time to keep (`ttl`, 100ms to 24h, required). It is meant to cut requests to the backend when many clients fetch the same JSON every few seconds.
+
+| Field | Setting | Default |
+|---|---|---|
+| Time to keep | `ttl` | (required) |
+| Time to serve an expired answer when the backend fails | `stale_on_error` | `0s` |
+| Largest body kept (bytes, up to 64 MiB) | `max_body` | 1 MiB |
+| Most answers kept | `max_entries` | 1024 |
+| Memory limit (bytes) | `max_memory` | 64 MiB |
+| Request headers in the key | `vary` | none |
+| Statuses kept (200, 203, 204, 300, 301, 308, 404, 410) | `status` | `[200]` |
+| Share answers for requests with Cookie or Authorization too | `share_credentials` | false |
+| Share answers after sign-in too | `share_after_auth` | false |
+| Response header with the result (HIT, MISS, STALE, BYPASS; can be left out; not `Connection`, `Content-Length`, `Transfer-Encoding`, `Age`, `Vary`, `Set-Cookie` and the like) | `header` | `X-Cache` |
+
+Before saving, the form checks the same rules as rproxy: in a route, `ip_allow`, `geoip`, `crowdsec`, `basic_auth`, `forward_auth` and `oidc` cannot come after `cache` (answers from the cache would not pass them), `basic_auth`, `forward_auth` or `oidc` before it needs `share_after_auth` (`oidc` also needs `share_credentials`, as the session cookie comes with every request; rproxy only warns in `--check-config`, but without it no request uses the cache, so the UI stops before saving), and a route takes one `cache`.
+With an rproxy that cannot use it, the kind cannot be chosen, and existing `cache` settings are kept read-only.
+"HTTP requests" on the details page shows the hits, misses, stale answers and bypasses, and the share answered from the cache (per route, the counts per middleware).
+
 ## Multiple targets
 
 "Add backend" in the "Basic" tab lets a rule have multiple backends, with a choice of "Load balancing" (rproxy-api v0.3.3 or later; L4 TCP / UDP rules).
@@ -273,7 +295,7 @@ Before saving, the form checks the same rules as rproxy (a URL or a status code,
 - A health check (checked by a TCP connection; interval, timeout, port) can be added. For UDP rules, the TCP port to check is required. Even without a health check, rproxy takes a target that failed to connect out of rotation for a while.
 - The details screen shows the state of each target (up / down, connections) when rproxy returns it.
 - For L7 rules, the same three can be chosen as the service's "Load balancing" (failover goes through the servers from the top).
-- Per-target connection caps (`max_connections`; rproxy-api v0.4.19, `features.target_max_connections`): the "Cap" of a target row (empty: no cap). A target at its cap is skipped like a down one, and when every target is full new connections are refused (counted in "Refused by limits"). With failover, targets fill up to their caps from the top. Caps can also be set on the several destinations per server name in the TLS tab and on the servers of L7 services (requests handled at once; not on status entries). In the targets field of per-node overrides, write `max=200`. The details screen shows "Connections / cap" (requests in progress for L7) and a "Cap" badge on full targets, and rules whose targets are all full appear under "Rules needing attention" on the dashboard. With an rproxy that does not support caps, the values are kept read-only and sent as they are.
+- Per-target connection caps (`max_connections`; rproxy-api v0.4.19, `features.target_max_connections`): the "Cap" of a target row (empty: no cap). A target at its cap is skipped like a down one, and when every target is full new connections are refused (counted in "Refused by limits"). With failover, targets fill up to their caps from the top. Caps can also be set on the several destinations per server name in the TLS tab and on the servers of L7 services (requests handled at once; not on status entries). In the targets field of per-node overrides, write `max=200`. The details screen shows "Connections / cap" (also for the targets of a server name; requests in progress for L7) and a "Cap" badge on full targets (for a rule with a single target and no health check, rproxy does not report up / down, so the state column is "-"), and rules refusing because of caps (every live target full, or every target full when none is live) appear under "Rules needing attention" on the dashboard. With an rproxy that does not support caps, the values are kept read-only and sent as they are.
 
 ## Listening on IPv4 and IPv6 at the same time
 
@@ -346,6 +368,7 @@ The rproxy-api v0.4 settings (`../rproxy-api/docs/API.md`, "v0.4 settings") are 
 - When rproxy reports `features.dry_run`, the add and edit screens show "Show the difference". Before saving, it asks rproxy with `?dry_run=true` what would change on each node (create or update, whether it changes without cutting connections or recreates the listener, and each field before and after) without changing the DB or rproxy.
 - The detail screen shows the settings, the count refused by limits, when counting started (`counters_since`), which targets are ejected and how often, and rproxy's `conditions` (Gateway API style status), when rproxy reports them.
 - "rproxy features & settings" (`/system`) shows, read-only and per node, the rproxy-api version, the v0.4 feature flags, which `global.performance` keys of the settings file take effect, and the settings file state. Performance, GeoIP databases and control API hardening are changed in rproxy's settings file and arguments (not from the UI). The settings file path and error text, the binary's SHA-256 and the reasons a node cannot be reached are shown to administrators only (users see that there is an error or a failure); users limited by `RPROXY_UI_USER_NODES` see only their nodes (the same applies to the dashboard's settings file notice).
+- "Global settings" (`/global`; administrators only; opened from `/system`) shows, through rproxy-api v0.4.19's `GET /config/global`, each item of the process-wide settings with its value in force, where it comes from (settings file / environment / API / default) and how it changes (at once / needs a restart). Items written in the settings file or the environment are read-only ("Fixed by the settings file"; also when an API value is kept but not in force), and items read only at the start are shown only. Items left out that take effect at once (`udp_max_sessions`, `http.timeouts` and so on; which ones can be changed follows rproxy's `settable` and `unix_only` and the path to the node (Unix socket or TCP)) are sent with `PATCH /config/global` by "Apply" after "Check the changes" (`?dry_run=true`) shows what changes ("Clear the API value" goes back to the default). With several rproxy instances it shows each node, and choosing a group sends to every node of it (if any node refuses, or its answer times out and the outcome is unknown, the nodes already changed are put back, and the result per node, put back or not, is shown). The contents of items that need a restart (`acme` and so on) are not shown. rproxy stores the values in the database table `rproxy_global` (migration 013), so they survive a restart. Items that guard security (`trusted_proxies`, `access_log`, `crowdsec`; rproxy's `unix_only`) are accepted only over rproxy's Unix socket, so they cannot be changed on a node reached over TCP (to change them, set the UI's url of that node to the socket of rproxy-api's `RPROXY_API_SOCKET` (`unix:/…`)). An access log set through the API must be a file directly in the node's rproxy-api `RPROXY_API_ACCESS_LOG_DIR` (there is no default: without it, access logs cannot be set through the API; use a directory only for rproxy's access logs). While rproxy has not read the stored values at the start (`loaded: false`: the database cannot be reached or a row cannot be read), the screen shows a warning and nothing can be applied. The UI's token needs rproxy's `admin` scope. With an rproxy without `features.global_api` no items are shown.
 - To protect the control API with client certificates (mTLS), set `RPROXY_API_TLS_CERT` and `RPROXY_API_TLS_KEY` (and `RPROXY_API_TLS_CA` to verify rproxy's certificate), or `tls_cert`, `tls_key` and `tls_ca` in `nodes.yaml` for several rproxy instances (`https://` URLs only; when the token file entry has only `client_cert`, no token is needed). With `RPROXY_API_TLS_*` and an `http://` or `unix:` `RPROXY_API_URL`, the token would travel in plain text, so the UI does not start (and sends no request).
 - When rproxy temporarily locks the UI out after repeated authentication failures (`429 locked_out`), the screen and the log say to check the token and certificate (the lockout ends by itself).
 
@@ -361,6 +384,7 @@ The rproxy-api v0.4 settings (`../rproxy-api/docs/API.md`, "v0.4 settings") are 
 | Change history (`/history`) | History of adding, changing and deleting rules, and reverting to an earlier version (see "Change history and revert" below). The rule details screen also shows the history of that rule |
 | Usage (`/usage`) | Traffic report per month or day (grouped by owner, label, node or rule) with CSV, and traffic over time (see "Usage" below) |
 | rproxy features & settings (`/system`) | Per node: the rproxy-api version, v0.4 feature flags, which `global.performance` keys take effect, the settings file state (read-only) |
+| Global settings (`/global`) | Each item of rproxy's `global` with its value in force, where it comes from and how it changes, and changing the items the API may set (apply after checking the changes; administrators only) |
 
 rx is the number of bytes from the client to the target, tx from the target to the client (cumulative since rproxy started the rule; reset to 0 when rproxy restarts).
 "Refused" is the number of connections dropped because they were outside the allowed sources (allow_from), or because of the setting that drops connections matching no server name (unmatched: reject).

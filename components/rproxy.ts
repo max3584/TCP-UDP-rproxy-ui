@@ -148,6 +148,8 @@ export interface CapabilityFeatures {
   target_max_connections?: boolean;
   // 設定ファイルの global.performance で効く項目の名前
   performance?: string[];
+  // v0.4.19：global の設定の API（GET / PATCH /config/global、#342）
+  global_api?: boolean;
 }
 
 export interface Capabilities {
@@ -174,6 +176,9 @@ export class RproxyError extends Error {
 }
 
 const TIMEOUT_MS = 10_000;
+// PATCH /config/global の待ち時間：rproxy は crowdsec の新しい LAPI を最大 10 秒待ち、DB に書き（数秒）、
+// ほかの global の変更・設定ファイルの読み直しの後に並ぶので、ほかの要求より長く待つ（#173 のレビュー）
+export const GLOBAL_PATCH_TIMEOUT_MS = 30_000;
 
 export interface ApiTarget {
   // リクエストの URL の先頭（末尾の / は除く）
@@ -347,7 +352,7 @@ export function currentNode(): RproxyNode | undefined {
   return nodeContext.getStore();
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, timeoutMs = TIMEOUT_MS): Promise<T> {
   const node = nodeContext.getStore();
   const clientTls = node ? node.tls : envClientTls();
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -371,7 +376,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     };
     // Unix ソケットは undici の fetch に dispatcher を渡す（グローバルの fetch はソケットを指定できない）。
     // クライアント証明書・CA を使う https も undici の Agent に証明書を渡す
@@ -429,6 +434,16 @@ export interface RproxyConfigStatus {
 
 export function getConfigStatus(): Promise<RproxyConfigStatus> {
   return request<RproxyConfigStatus>('GET', '/config');
+}
+
+// global の設定（v0.4.19 の GET / PATCH /config/global、#342。admin のスコープ）。PATCH の本文は設定ファイルの global の形（null で API の値を消す）
+export function getGlobalSettings(): Promise<unknown> {
+  return request<unknown>('GET', '/config/global');
+}
+
+// 時間切れ（RproxyError の status 0）は「rproxy が効かせたか分からない」。呼ぶ側が GET で確かめる（pages/api/forward/global.ts）
+export function patchGlobalSettings(body: Record<string, unknown>, dryRun: boolean): Promise<unknown> {
+  return request<unknown>('PATCH', `/config/global${dryRun ? '?dry_run=true' : ''}`, body, GLOBAL_PATCH_TIMEOUT_MS);
 }
 
 // ACME の状態（GET /acme。rules:read のスコープ）。global.acme がなければ 404。秘密は rproxy も返さない
