@@ -1849,4 +1849,9 @@ export const en: Record<string, string> = {
   "ノードごとに API の値が違います。欄は空にしてあり、入れた値をすべてのノードに同じに入れます。": "The API value differs between nodes. The fields are left empty; what you enter goes to every node.",
   "この項目は丸ごと置き換えます。空の欄は rproxy の既定になり、書いた欄だけが API の値になります（今の値: {0}）。": "This item is replaced as a whole. Empty fields become rproxy's defaults; only the fields you fill in become API values (value in force: {0}).",
   "（接続 {0}）": " (connections {0})",
+  "（上限 {0}・ノードごと）": " (cap {0} per node)",
+  "ノード {node} の rproxy は宛先ごとの上限（max=）を使えません。max= を外すか、rproxy-api を v0.4.19 以降にしてください。": "The rproxy of node {node} does not support per-target caps (max=). Remove max= or update rproxy-api to v0.4.19 or later.",
+  "このノードの rproxy は宛先ごとの上限（max=）を使えません（rproxy-api v0.4.19 以降が要ります）。保存する前に max= を外してください。": "This node's rproxy does not support per-target caps (max=; rproxy-api v0.4.19 or later is needed). Remove max= before saving.",
+  "ノード {0} で、すべての宛先が同時接続の上限に達していて、新しい接続を断っています。": "On node {0}, every target is at its connection cap, so new connections are refused.",
+  "接続数（合計）": "Connections (total)",
 };

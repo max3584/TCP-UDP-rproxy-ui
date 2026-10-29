@@ -25,22 +25,26 @@ function serverLabel(srv: ServerSpec): string {
   return `${head}${weight}${mws}`;
 }
 
-// 転送先の状態（rproxy の stats.http.services.<名前>[]）を探す（同じ数なら同じ位置、ほかは URL で）
+// 転送先の状態（rproxy の stats.http.services.<名前>[]）を探す。rproxy は状態コードの転送先を出さないので、
+// 状態コードの転送先を除いた位置で引く（同じ URL の転送先が複数あっても取り違えない）。数が合わなければ null
 export function serverStatus(servers: ServerSpec[], stats: HttpServerStats[] | undefined, index: number): HttpServerStats | null {
-  if (!stats || stats.length === 0) return null;
-  if (stats.length === servers.length) return stats[index] ?? null;
-  const url = servers[index]?.url;
-  return url === undefined ? null : stats.find((x) => x.url === url) ?? null;
+  if (!stats || stats.length === 0 || servers[index] === undefined || servers[index].status !== undefined) return null;
+  const urlServers = servers.filter((x) => x.status === undefined);
+  if (stats.length !== urlServers.length) return null;
+  return stats[servers.slice(0, index).filter((x) => x.status === undefined).length] ?? null;
 }
 
 // 転送先の同時に処理する上限と今の数（#341。上限がなければ何も出さない）
-const ServerCap: React.FC<{ srv: ServerSpec; live: HttpServerStats | null }> = ({ srv, live }) => {
+// aggregate（ノードが 2 つ以上のルールの「全体」）では上限はノードごとなので、合計の処理中の数とは並べず上限だけ出す
+const ServerCap: React.FC<{ srv: ServerSpec; live: HttpServerStats | null; aggregate: boolean }> = ({ srv, live, aggregate }) => {
   const max = srv.max_connections ?? live?.max_connections;
   if (max === undefined) return null;
   return (
     <span className="font-sans text-gray-700" data-testid="http-server-cap">
-      {live?.in_flight !== undefined ? translate(`（処理中 ${capUsageLabel(live.in_flight, max)}）`) : translate(`（上限 ${max.toLocaleString('en-US')}）`)}
-      {live?.full === true && <TargetFullBadge />}
+      {!aggregate && live?.in_flight !== undefined
+        ? translate(`（処理中 ${capUsageLabel(live.in_flight, max)}）`)
+        : aggregate ? translate(`（上限 ${max.toLocaleString('en-US')}・ノードごと）`) : translate(`（上限 ${max.toLocaleString('en-US')}）`)}
+      {!aggregate && live?.full === true && <TargetFullBadge />}
     </span>
   );
 };
@@ -58,7 +62,7 @@ function serviceTlsLabel(t: ServiceTlsSpec): string {
 }
 
 // services：rproxy の stats.http.services（転送先の状態。動いているときだけ）
-const HttpSummary: React.FC<{ http: HttpSpec; services?: Record<string, HttpServerStats[]> }> = ({ http, services: liveServices }) => {
+const HttpSummary: React.FC<{ http: HttpSpec; services?: Record<string, HttpServerStats[]>; aggregate?: boolean }> = ({ http, services: liveServices, aggregate = false }) => {
   const rules = toHttpRules(http);
   const services = rules.services ?? {};
   const mws = rules.middlewares ?? {};
@@ -119,7 +123,7 @@ const HttpSummary: React.FC<{ http: HttpSpec; services?: Record<string, HttpServ
                     <React.Fragment key={k}>
                       {k > 0 && ', '}
                       {serverLabel(srv)}
-                      <ServerCap srv={srv} live={serverStatus(s.servers, liveServices?.[name], k)} />
+                      <ServerCap srv={srv} live={serverStatus(s.servers, liveServices?.[name], k)} aggregate={aggregate} />
                     </React.Fragment>
                   ))}
                 </span>

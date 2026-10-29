@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { routeNames } from '@/components/lib';
 import type { CacheCounts, CertStatus, ForwardRules, HttpStats } from '@/components/lib';
-import { capUsageLabel, healthCheckLabel, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
+import { capText, fullNodes, healthCheckLabel, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
 import {
   BALANCE_LABELS,
   CERT_ROLE_LABELS,
@@ -56,6 +56,8 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
   const capped = rule.targets.some((t) => t.max_connections !== undefined) || (rule.stats?.targets ?? []).some((t) => t.max_connections !== undefined);
   // 宛先が 1 つでヘルスチェックのないルールは、rproxy が上限のためだけに状態を出す（生死は報告しない）
   const health = reportsTargetHealth(rule);
+  // ノードが 2 つ以上のルールの「全体」：数はノードの合計、上限といっぱいかはノードごと
+  const aggregate = (rule.nodes?.length ?? 0) > 1;
   return (
   <div className="mt-3 table-scroll">
   <table className="data-table w-full text-sm" data-testid="targets-table">
@@ -66,7 +68,7 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
         <th scope="col">重み</th>
         <th scope="col">予備</th>
         <th scope="col">状態</th>
-        <th scope="col">{capped ? '接続数 / 上限' : '接続数'}</th>
+        <th scope="col">{capped ? (aggregate ? '接続数（合計）' : '接続数 / 上限') : '接続数'}</th>
         {rule.stats?.targets?.some((t) => t.ejections !== undefined) && <th scope="col">外した回数</th>}
       </tr>
     </thead>
@@ -90,8 +92,13 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
               )}
             </td>
             <td className="tabular-nums" data-testid="target-connections">
-              {(capped ? capUsageLabel(s?.connections, t.max_connections ?? s?.max_connections) : null) ?? (s?.connections !== undefined ? formatCount(s.connections) : '-')}
-              {s?.full === true && <TargetFullBadge />}
+              {(capped ? capText(s?.connections, t.max_connections ?? s?.max_connections, aggregate) : null) ?? (s?.connections !== undefined ? formatCount(s.connections) : '-')}
+              {aggregate
+                ? (() => {
+                  const on = fullNodes(rule.nodes, (st) => targetStatus(rule.targets, st?.targets, i));
+                  return on.length > 0 && <TargetFullBadge nodes={on} />;
+                })()
+                : s?.full === true && <TargetFullBadge />}
             </td>
             {rule.stats?.targets?.some((x) => x.ejections !== undefined) && <td>{s?.ejections !== undefined ? formatCount(s.ejections) : '-'}</td>}
           </tr>
@@ -247,8 +254,11 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                       <div data-testid="tls-route-targets">
                         {r.targets.map((t, j) => {
                           // その route の宛先の今の数・いっぱいか（rproxy の stats.tls_routes。#341）
-                          const live = targetStatus(r.targets ?? [], tlsRouteStatus(routeNames(r), rule.stats?.tls_routes, i)?.targets, j);
-                          const usage = live?.connections !== undefined ? capUsageLabel(live.connections, t.max_connections ?? live.max_connections) : null;
+                          const routeTargetStatus = (st: ForwardRules['stats']) => targetStatus(r.targets ?? [], tlsRouteStatus(routeNames(r), st?.tls_routes, i)?.targets, j);
+                          const live = routeTargetStatus(rule.stats);
+                          const aggregate = (rule.nodes?.length ?? 0) > 1;
+                          const usage = live?.connections !== undefined ? capText(live.connections, t.max_connections ?? live.max_connections, aggregate) : null;
+                          const fullOn = aggregate ? fullNodes(rule.nodes, routeTargetStatus) : [];
                           return (
                             <div key={j}>
                               {targetHostPort(t, rule)}
@@ -257,7 +267,7 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                               {usage !== null
                                 ? <span className="font-sans text-xs text-gray-700" data-testid="tls-route-target-connections">{`（接続 ${usage}）`}</span>
                                 : t.max_connections !== undefined && <span className="font-sans text-xs text-gray-700" data-testid="tls-route-target-max">{`（上限 ${formatCount(t.max_connections)}）`}</span>}
-                              {live?.full === true && <TargetFullBadge />}
+                              {aggregate ? fullOn.length > 0 && <TargetFullBadge nodes={fullOn} /> : live?.full === true && <TargetFullBadge />}
                             </div>
                           );
                         })}
@@ -873,7 +883,7 @@ const RuleDetailPage: React.FC = () => {
 
           {view.http !== null && (
             <Section id="section-http" title="L7 (HTTP)">
-              <HttpSummary http={view.http} services={view.stats?.http?.services} />
+              <HttpSummary http={view.http} services={view.stats?.http?.services} aggregate={(view.nodes?.length ?? 0) > 1} />
             </Section>
           )}
 

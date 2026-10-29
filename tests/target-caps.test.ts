@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ForwardRule, ForwardRules, RuleStats } from '@/components/lib';
 import type { RproxyRuleStatus } from '@/components/rproxy';
 import { normalizeTargets, normalizeTls, optionsJson, parseOptions } from '@/components/tls';
-import { buildBalancing, capUsageLabel, firstRow, fullTargetCount, reportsTargetHealth, rowToTarget, targetCapsOf, targetsAllFull, tlsRouteStatus, toHealthCheckRow, toRows, withoutTargetCaps } from '@/components/targets';
+import { buildBalancing, capText, capUsageLabel, firstRow, fullNodes, fullTargetCount, reportsTargetHealth, rowToTarget, targetCapsOf, targetsAllFull, tlsRouteStatus, toHealthCheckRow, toRows, withoutTargetCaps } from '@/components/targets';
 import { buildRouteSpec, routeRow } from '@/components/RuleForm';
 import TargetsEditor, { RouteTargetsEditor } from '@/components/TargetsEditor';
 import HttpEditor from '@/components/HttpEditor';
@@ -15,7 +15,8 @@ import { ruleDrift } from '@/components/drift';
 import { ruleChanges } from '@/components/history';
 import { formatTargetsText, normalizeOverride, parseTargetsText } from '@/components/overrides';
 import { exportDoc, parseDoc, settingsRuleToBody, toRproxyRule, toSettingsRule } from '@/components/settingsdoc';
-import { needsAttention, targetFullProblem } from '@/components/dashboard';
+import { needsAttention, sumStats, targetFullNodes, targetFullProblem } from '@/components/dashboard';
+import { TargetFullBadge } from '@/components/ui';
 
 const message = (f: () => unknown): string => {
   try {
@@ -114,7 +115,17 @@ describe('servers[].max_connections (L7)', () => {
     const idle = renderToStaticMarkup(createElement(HttpSummary, { http: spec }));
     expect(idle).toContain('（上限 10）');
     expect(idle).not.toContain('target-full');
-    expect(serverStatus([{ url: 'http://b' }], [{ url: 'http://a' }, { url: 'http://b', in_flight: 1 }], 0)).toEqual({ url: 'http://b', in_flight: 1 });
+    // rproxy は状態コードの転送先を出さないので、それを除いた位置で引く（同じ URL が 2 つあっても取り違えない）
+    const servers = [{ status: 503 }, { url: 'http://a' }, { url: 'http://a' }];
+    const list = [{ url: 'http://a', in_flight: 1 }, { url: 'http://a', in_flight: 2 }];
+    expect(serverStatus(servers, list, 2)).toEqual({ url: 'http://a', in_flight: 2 });
+    expect(serverStatus(servers, list, 0)).toBeNull();
+    expect(serverStatus(servers, [list[0]], 1)).toBeNull();
+    // 「全体」（ノードの合計）では上限だけを出し、処理中の数・いっぱいの印は出さない
+    const agg = renderToStaticMarkup(createElement(HttpSummary, { http: spec, services: live, aggregate: true }));
+    expect(agg).toContain('（上限 10・ノードごと）');
+    expect(agg).not.toContain('処理中');
+    expect(agg).not.toContain('target-full');
   });
 });
 
@@ -203,6 +214,36 @@ describe('state: full targets', () => {
     expect(capUsageLabel(3, 200)).toBe('3 / 200');
     expect(capUsageLabel(1234, undefined)).toBe('1,234');
     expect(capUsageLabel(undefined, undefined)).toBeNull();
+  });
+
+  it('a service with a status entry is not refusing even when its URL servers are full', () => {
+    const l7 = stats(undefined, { requests: 0, by_status: {}, routes: {}, services: { s: [{ url: 'http://a', up: true, max_connections: 1, in_flight: 1, full: true }] } });
+    expect(targetsAllFull(l7, { services: { s: { servers: [{ url: 'http://a', max_connections: 1 }] } } })).toBe(true);
+    expect(targetsAllFull(l7, { services: { s: { servers: [{ url: 'http://a', max_connections: 1 }, { status: 503 }] } } })).toBe(false);
+  });
+
+  it('group rules: caps are per node, so stats are not summed against them and each node is checked on its own', () => {
+    const a = stats([{ addr: 'x', port: 1, up: true, connections: 1, max_connections: 1, full: true }, { addr: 'y', port: 1, up: true, connections: 0, max_connections: 1, full: false }]);
+    const b = stats([{ addr: 'x', port: 1, up: true, connections: 0, max_connections: 1, full: false }, { addr: 'y', port: 1, up: true, connections: 1, max_connections: 1, full: true }]);
+    const summed = sumStats([a, b])!;
+    expect(summed.targets?.map((t) => [t.connections, t.max_connections, t.full])).toEqual([[1, 1, undefined], [1, 1, undefined]]);
+    const node = (name: string, s: RuleStats) => ({ node: name, state: 'running' as const, error: null, connections: 1, stats: s, startedAt: 1, resolved: [] });
+    const group = { ...base, id: 3, origin: 'dynamic', state: 'running', error: null, connections: 2, stats: summed, startedAt: 1, resolved: [], nodes: [node('a', a), node('b', b)] } as ForwardRules;
+    // A は宛先 1、B は宛先 2 がいっぱい：どちらのノードも断っていない
+    expect(targetFullProblem(group)).toBeNull();
+    expect(needsAttention([group])).toEqual([]);
+    // B で両方いっぱいなら、B の名前を出す
+    const bFull = stats([{ addr: 'x', port: 1, up: true, connections: 1, max_connections: 1, full: true }, { addr: 'y', port: 1, up: true, connections: 1, max_connections: 1, full: true }]);
+    const refusing = { ...group, nodes: [node('a', a), node('b', bFull)] } as ForwardRules;
+    expect(targetFullNodes(refusing)).toEqual(['b']);
+    expect(targetFullProblem(refusing)).toBe('ノード b で、すべての宛先が同時接続の上限に達していて、新しい接続を断っています。');
+    expect(needsAttention([refusing]).map((r) => r.id)).toEqual([3]);
+    // 「全体」の表示：合計の数と、ノードごとの上限を分けて出す。いっぱいのノードの名前
+    expect(capText(2, 1, true)).toBe('2（上限 1・ノードごと）');
+    expect(capText(2, 1, false)).toBe('2 / 1');
+    expect(fullNodes(refusing.nodes, (st) => st?.targets?.[0])).toEqual(['a', 'b']);
+    expect(fullNodes([node('a', a)], (st) => st?.targets?.[0])).toEqual([]);
+    expect(renderToStaticMarkup(createElement(TargetFullBadge, { nodes: ['a', 'b'] }))).toContain('上限（a, b）');
   });
 
   it('a single target without a health check reports only its cap state', () => {

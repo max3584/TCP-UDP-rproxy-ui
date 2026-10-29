@@ -3,7 +3,7 @@
 
 import { Balance, DEFAULT_BALANCE, ForwardRule, HealthCheck, Protocol, RuleStats, Target, TargetStats, TlsRouteStats } from './lib';
 import { Balancing, checkBalancing, normalizeHealthCheck, normalizeTargets } from './tls';
-import { joinList } from '@/i18n/core';
+import { joinList, translate } from '@/i18n/core';
 
 export const BALANCE_HELP: Record<Balance, string> = {
   round_robin: '重みの比率で順番に回します。',
@@ -120,6 +120,15 @@ export function capUsageLabel(current: number | undefined, max: number | undefin
 
 const formatNumber = (n: number) => n.toLocaleString('en-US');
 
+// 宛先の今の数と上限の表示。aggregate（ノードが 2 つ以上のルールの「全体」）では数はノードの合計で、上限はノードごとなので
+// 「12（上限 200・ノードごと）」と分けて出す（合計を 1 つのノードの上限と並べない）。どちらもなければ null
+export function capText(current: number | undefined, max: number | undefined, aggregate: boolean): string | null {
+  if (!aggregate) return capUsageLabel(current, max);
+  if (current === undefined && max === undefined) return null;
+  const count = current === undefined ? '-' : formatNumber(current);
+  return max === undefined ? count : `${count}${translate(`（上限 ${formatNumber(max)}・ノードごと）`)}`;
+}
+
 // 上限で新しい接続・リクエストを断っているか（rproxy-api #341）：up の宛先があればそれがすべていっぱい
 // （down の宛先は試さない）、up の宛先がなければすべていっぱい。いっぱいの宛先がなければ false。
 // L4 は stats.targets、サーバ名ごとの転送先は stats.tls_routes、L7 はサービスごとの stats.http.services（どれか 1 つでも）
@@ -129,10 +138,20 @@ export function refusingAllFull(list: { up?: boolean; full?: boolean }[]): boole
   return (up.length > 0 ? up : list).every((t) => t.full === true);
 }
 
-export function targetsAllFull(stats: Pick<RuleStats, 'targets' | 'tls_routes' | 'http'> | null | undefined): boolean {
+// http：ルールの L7 の設定。状態コードで答える転送先のあるサービスは、いっぱいでもその転送先が答えるので断らない
+// （rproxy の stats.http.services に状態コードの転送先は出ない）。stats は 1 つのノードの値で渡す（上限はノードごと）
+export function targetsAllFull(stats: Pick<RuleStats, 'targets' | 'tls_routes' | 'http'> | null | undefined, http?: unknown): boolean {
   if (refusingAllFull(stats?.targets ?? [])) return true;
   if ((stats?.tls_routes ?? []).some((r) => refusingAllFull(r.targets ?? []))) return true;
-  return Object.values(stats?.http?.services ?? {}).some((servers) => refusingAllFull(servers));
+  const specs = (http as { services?: Record<string, { servers?: { status?: unknown }[] }> } | null | undefined)?.services ?? {};
+  const answersItself = (name: string) => (specs[name]?.servers ?? []).some((x) => x.status !== undefined);
+  return Object.entries(stats?.http?.services ?? {}).some(([name, servers]) => !answersItself(name) && refusingAllFull(servers));
+}
+
+// 同じ宛先の、ノードごとのいっぱいのノード（ノードが 2 つ以上のルールの「全体」の表示。#341）
+export function fullNodes(nodes: { node: string; stats: RuleStats | null }[] | undefined, find: (stats: RuleStats | null) => { full?: boolean } | null | undefined): string[] {
+  if (!nodes || nodes.length < 2) return [];
+  return nodes.filter((n) => find(n.stats)?.full === true).map((n) => n.node);
 }
 
 // サーバ名ごとの転送先の宛先の状態を stats.tls_routes から探す（名前の組が同じもの。なければ同じ位置で名前のないもの）

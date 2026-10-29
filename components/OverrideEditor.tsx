@@ -1,10 +1,11 @@
 // ルールの詳細のノードのタブの「このノードだけの設定（上書き）」（#98）。グループのルールだけで出す
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { Balance, ForwardRules } from './lib';
 import { BALANCES } from './lib';
 import { NodeOverride, formatTargetsText, parseTargetsText } from './overrides';
 import { BALANCE_LABELS, hostPort, targetLabel } from './dashboard';
 import { errorDetail } from './ui';
+import { t } from '@/i18n/core';
 
 type DestMode = 'group' | 'single' | 'multi';
 
@@ -29,6 +30,22 @@ const OverrideEditor: React.FC<{ rule: ForwardRules; node: string; onSaved: (mes
   const [paused, setPaused] = useState(ov.enabled === false);
   const [busy, setBusy] = useState(false);
   const hasOverride = rule.overrides?.[node] !== undefined;
+  // このノードの rproxy が宛先ごとの上限（max=N。features.target_max_connections）を使えるか（分からなければ null）
+  const [targetCaps, setTargetCaps] = useState<boolean | null>(null);
+  useEffect(() => {
+    const getCapabilities = async () => {
+      try {
+        const res = await fetch(`/api/forward/capabilities?target=${encodeURIComponent(node)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setTargetCaps(data?.features?.target_max_connections === true);
+      } catch {
+        // 分からなければ rproxy の判断に任せる
+      }
+    };
+    void getCapabilities();
+  }, [node]);
+  const capsUnsupported = targetCaps === false && destMode === 'multi' && /(^|\s)max=/m.test(targetsText);
 
   const send = async (override: Record<string, unknown> | null) => {
     setBusy(true);
@@ -57,6 +74,10 @@ const OverrideEditor: React.FC<{ rule: ForwardRules; node: string; onSaved: (mes
         out.distPort = distPort === '' ? 0 : distPort;
       } else if (destMode === 'multi') {
         out.targets = parseTargetsText(targetsText);
+        if (targetCaps === false && (out.targets as { max_connections?: number }[]).some((t) => t.max_connections !== undefined)) {
+          onError(t('ノード {node} の rproxy は宛先ごとの上限（max=）を使えません。max= を外すか、rproxy-api を v0.4.19 以降にしてください。', { node: node }));
+          return;
+        }
         out.balance = balance;
       }
     } catch (err) {
@@ -111,6 +132,11 @@ const OverrideEditor: React.FC<{ rule: ForwardRules; node: string; onSaved: (mes
               <div className="mt-2 space-y-2">
                 <textarea aria-label="宛先（1 行に「アドレス:ポート [重み] [backup] [max=上限]」）" className={`${inputClass} h-20 font-mono text-xs`} value={targetsText}
                   placeholder={'192.0.2.11:443\n192.0.2.12:443 2 max=200\n192.0.2.13:443 backup'} onChange={(e) => setTargetsText(e.target.value)} />
+                {capsUnsupported && (
+                  <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1" role="alert" data-testid="override-caps-unsupported">
+                    このノードの rproxy は宛先ごとの上限（max=）を使えません（rproxy-api v0.4.19 以降が要ります）。保存する前に max= を外してください。
+                  </p>
+                )}
                 <select aria-label="振り分け方" className={`${inputClass} sm:w-64`} value={balance} onChange={(e) => setBalance(e.target.value as Balance)}>
                   {BALANCES.map((b) => <option key={b} value={b}>{BALANCE_LABELS[b]}</option>)}
                 </select>
