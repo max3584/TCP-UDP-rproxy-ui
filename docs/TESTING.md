@@ -244,7 +244,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 | テスト | 確かめること |
 |---|---|
 | 形と欄 | `http.timeouts` を `{"http": {"timeouts": …}}` にする、値の形だけを確かめる（知らない項目は rproxy に渡す）、取り消しは前の API の値（なければ null）、`GET /config/global` の答えを読む（知らない項目も残す）、変えられない理由（設定ファイル・環境変数・再起動・`settable`・TCP の `unix_only`）、欄と値の行き来（CIDR の正規化・絶対パス・整数・crowdsec の必須・知らない項目は JSON） |
-| /api/forward/global | 管理者だけ（403 `forbidden_admin`）、CSRF、ノードごとの道（unix / tcp）と `features.global_api`、dry run はグループの全ノードに聞いて何も変えない、グループに適用して 1 台が断ればほかを前の API の値に戻す（409 `global_static`）、target の要否・知らない target・空の値、TCP の秘密の項目は 403 `global_unix_only`、断りのコードの付け替え（`global_*`）と知らないコード・503 は rproxy の文のまま |
+| /api/forward/global | 管理者だけ（403 `forbidden_admin`）、CSRF、ノードごとの道（unix / tcp）と `features.global_api`、dry run はグループの全ノードに聞いて何も変えない、グループに適用して 1 台が断ればほかを前の API の値に戻す（409 `global_static`）、target の要否・知らない target・空の値、TCP の Unix ソケットだけの項目は 403 `global_unix_only`（TCP でも受け付ける設定は勧めない）、断りのコードの付け替え（`global_*`）、`crowdsec_unavailable`（502）・`not_loaded`（503）と知らないコードは rproxy のコードのまま |
 
 `tests/nodeview.test.ts` は `rproxy_global`（migration 013）のノードの 1 行だけのビュー（`SELECT, INSERT, UPDATE`、`--without-rproxy-global`）も、`tests/migrate.test.ts` は 013 を当てることも確かめる。画面の E2E は `tests/ui/global.spec.ts`（`global_api` のある rproxy で、出どころ・再起動が要る項目・TCP の Unix ソケットだけの項目・差分を見てからの適用と既定に戻すこと・DB への保存・利用者は 403）。
 

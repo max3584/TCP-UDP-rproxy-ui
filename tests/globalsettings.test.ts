@@ -35,11 +35,15 @@ describe('components/globalsettings', () => {
       items: {
         trusted_proxies: { value: ['10.0.0.0/8'], source: 'api', apply: 'live', unix_only: true, settable: true, api_value: ['10.0.0.0/8'], shadowed: false },
         future: { value: 1, source: 'file', apply: 'restart', unix_only: false, settable: false, shadowed: true, api_value: 2, error: 'x' },
+        crowdsec: { value: { lapi_url: 'http://127.0.0.1:8080' }, source: 'file', apply: 'live', unix_only: true, settable: false, kept: true },
         bad: 3,
       },
       storage: 'database', persisted: true, updated_by: 'ui', updated_at: 1790000000, warnings: [{ code: 'config.global_shadowed', item: 'future', message: 'm' }],
     });
-    expect(Object.keys(v!.items)).toEqual(['trusted_proxies', 'future']);
+    expect(Object.keys(v!.items)).toEqual(['trusted_proxies', 'future', 'crowdsec']);
+    expect(v!.items.crowdsec.kept).toBe(true);
+    expect(v!.loaded).toBe(true);
+    expect(globalSettingsView({ items: {}, loaded: false })!.loaded).toBe(false);
     expect(v!.items.trusted_proxies.unix_only).toBe(true);
     expect(v!.items.future).toMatchObject({ shadowed: true, api_value: 2, error: 'x' });
     expect(v!.persisted).toBe(true);
@@ -54,6 +58,11 @@ describe('components/globalsettings', () => {
     expect(editBlock(item({ unix_only: true }), 'tcp')).toContain('Unix ソケット');
     expect(editBlock(item({ unix_only: true }), 'unix')).toBeNull();
     expect(editBlock(item({ source: 'api' }), 'tcp')).toBeNull();
+  });
+
+  it('a stored value that cannot be read leaves the form empty', () => {
+    expect(toGlobalForm('trusted_proxies', item({ api_value: 'not a list', error: 'bad' }))).toEqual({ kind: 'lines', text: '' });
+    expect(toGlobalForm('udp_max_sessions', item({ api_value: 'x' }))).toEqual({ kind: 'number', text: '' });
   });
 
   it('turns form fields into values and back', () => {

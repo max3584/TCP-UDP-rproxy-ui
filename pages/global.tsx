@@ -58,7 +58,13 @@ const ItemRow: React.FC<{ name: string; item: GlobalItem; transport: 'unix' | 't
             {`API の値（${formatGlobalValue(item.api_value)}）は効いていません（設定ファイル・環境変数が優先）。`}
           </span>
         )}
-        {item.error && <span className="block text-red-800">{`戻した API の値を入れられませんでした（前の値のまま）: ${item.error}`}</span>}
+        {item.kept && <span className="block text-amber-900" data-testid="global-kept">設定ファイルから消えたが、使うルールがあるので残しています。</span>}
+        {item.error && (
+          <span className="block text-red-800" data-testid="global-item-error">
+            {`保存した API の値を効かせられませんでした（効いていません）: ${item.error}`}
+            {item.api_value !== undefined && <span className="block font-mono break-all">{`保存した値: ${formatGlobalValue(item.api_value)}`}</span>}
+          </span>
+        )}
       </td>
     </tr>
   );
@@ -89,8 +95,13 @@ const NodeCard: React.FC<{ n: GlobalNodeView; many: boolean }> = ({ n, many }) =
             <dt className="text-gray-600">最後に変えた人</dt>
             <dd>{s.updated_by ?? '-'}{s.updated_at ? `（${new Date(s.updated_at * 1000).toLocaleString(localeTag())}）` : ''}</dd>
             <dt className="text-gray-600">制御 API への道</dt>
-            <dd>{n.transport === 'unix' ? 'Unix ソケット' : 'TCP（秘密に関わる項目は変えられないことがあります）'}</dd>
+            <dd>{n.transport === 'unix' ? 'Unix ソケット' : 'TCP（Unix ソケットだけの項目は変えられません）'}</dd>
           </dl>
+          {!s.loaded && (
+            <p role="alert" className="rounded-sm border border-red-300 bg-red-50 p-2 text-red-800 text-xs" data-testid="global-not-loaded">
+              rproxy が起動のときに保存した値（rproxy_global）を DB から読めていません。読めるまで変えられません（DB に届くようになれば rproxy が読み直します）。
+            </p>
+          )}
           {s.warnings.length > 0 && (
             <ul className="rounded-sm border border-amber-300 bg-amber-50 p-2 text-amber-900 text-xs space-y-1" data-testid="global-warnings">
               {s.warnings.map((w, i) => <li key={i}>{w.item ? `${w.item}: ` : ''}{w.message ?? w.code}</li>)}
@@ -287,7 +298,9 @@ const GlobalPage: React.FC = () => {
   };
 
   const hasChanges = 'values' in built && Object.keys(built.values).length > 0;
-  const planOk = plan !== null && 'values' in built && plan.body === JSON.stringify(built.values) && plan.results.every((r) => r.ok);
+  // 保存した値を読めていないノードがあれば rproxy は 503 not_loaded で断る
+  const notLoaded = shown.some((n) => n.settings?.loaded === false);
+  const planOk = !notLoaded && plan !== null && 'values' in built && plan.body === JSON.stringify(built.values) && plan.results.every((r) => r.ok);
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -343,7 +356,7 @@ const GlobalPage: React.FC = () => {
                 {e.mode === 'set' && (
                   <>
                     <FormFields name={name} form={e.form} onChange={(f) => setEdit(name, { ...e, form: f })} />
-                    {item.unix_only && <p className="text-xs text-gray-700">秘密に関わる項目です。rproxy は既定で Unix ソケットからだけ受け付けます。</p>}
+                    {item.unix_only && <p className="text-xs text-gray-700">守りに関わる項目です。rproxy は Unix ソケットからだけ受け付けます。</p>}
                   </>
                 )}
               </fieldset>
@@ -354,7 +367,8 @@ const GlobalPage: React.FC = () => {
             <button type="button" className="btn-secondary" disabled={busy || !hasChanges} onClick={() => void send(true)} data-testid="global-dry-run">差分を確かめる</button>
             <button type="button" className="btn-primary" disabled={busy || !hasChanges || !planOk} onClick={() => void send(false)} data-testid="global-apply">適用する</button>
           </div>
-          {hasChanges && !planOk && <p className="text-xs text-gray-700">先に「差分を確かめる」で、rproxy が受け付けるかと変わる値を確かめてください。</p>}
+          {notLoaded && <p className="text-xs text-red-800">保存した値を読めていないノードがあるため、適用できません。</p>}
+          {hasChanges && !planOk && !notLoaded && <p className="text-xs text-gray-700">先に「差分を確かめる」で、rproxy が受け付けるかと変わる値を確かめてください。</p>}
           {plan && <ResultView results={plan.results} applied={false} many={many} />}
         </section>
       )}

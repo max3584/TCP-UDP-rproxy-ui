@@ -17,6 +17,9 @@ export interface GlobalItem {
   settable: boolean;
   api_value?: unknown;
   shadowed?: boolean;
+  // crowdsec：設定ファイルから消えたが、使うルールがあるので残している（source は file）
+  kept?: boolean;
+  // 保存した API の値を効かせられなかった理由（api_value は保存したまま。読めない値のこともある）
   error?: string;
 }
 
@@ -30,6 +33,8 @@ export interface GlobalSettings {
   items: Record<string, GlobalItem>;
   storage: string;
   persisted: boolean | null;
+  // 起動のときに保存した値（rproxy_global）を読めたか。false の間は PATCH が 503 not_loaded
+  loaded: boolean;
   updated_by?: string | null;
   updated_at?: number | null;
   warnings: GlobalWarning[];
@@ -104,7 +109,7 @@ export const HTTP_TIMEOUT_KEYS = ['tls_handshake', 'first_byte', 'request_header
 export const CROWDSEC_KEYS = ['lapi_url', 'api_key_file', 'appsec_url', 'update_interval'];
 
 export const UNIX_ONLY_MESSAGE =
-  'この項目は rproxy の Unix ソケット（RPROXY_API_SOCKET）からだけ変えられます。UI のこのノードの url を unix:/… にするか、rproxy の RPROXY_API_RELOAD_UNIX_ONLY=false で TCP からも受け付けてください。';
+  'この項目は rproxy の Unix ソケットからだけ変えられます。UI のこのノードの url を、rproxy-api の RPROXY_API_SOCKET のソケット（unix:/…）にしてください。';
 
 // 項目の名前（http.timeouts など）を PATCH の本文の形（{"http": {"timeouts": …}}）にする
 export function globalPatchBody(values: Record<string, unknown>): Record<string, unknown> {
@@ -167,6 +172,7 @@ export function globalSettingsView(raw: unknown): GlobalSettings | null {
       settable: i.settable === true,
       ...('api_value' in i ? { api_value: i.api_value } : {}),
       ...(i.shadowed === true ? { shadowed: true } : {}),
+      ...(i.kept === true ? { kept: true } : {}),
       ...(typeof i.error === 'string' ? { error: i.error } : {}),
     };
   }
@@ -174,6 +180,7 @@ export function globalSettingsView(raw: unknown): GlobalSettings | null {
     items: items,
     storage: typeof r.storage === 'string' ? r.storage : 'memory',
     persisted: typeof r.persisted === 'boolean' ? r.persisted : null,
+    loaded: r.loaded !== false,
     updated_by: typeof r.updated_by === 'string' ? r.updated_by : null,
     updated_at: typeof r.updated_at === 'number' ? r.updated_at : null,
     warnings: Array.isArray(r.warnings) ? (r.warnings as unknown[]).filter((w): w is GlobalWarning => typeof w === 'object' && w !== null) : [],

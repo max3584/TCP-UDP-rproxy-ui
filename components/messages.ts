@@ -138,7 +138,12 @@ const EXPLAIN: Record<string, string> = {
   global_unix_only: UNIX_ONLY_MESSAGE,
   global_forbidden: 'UI のトークンに rproxy の admin のスコープがありません（global の設定には admin が要ります）。',
   global_unsupported: GLOBAL_UNSUPPORTED_MESSAGE,
-  protected_file: 'rproxy の証明書のストア・ACME の保存先・秘密のファイルなど、rproxy が守っているパスは指定できません。',
+  protected_file: 'rproxy が守っているパス（証明書のストア・ACME の保存先・秘密のファイルなど）は指定できません。',
+  global_protected_file: 'rproxy が守っているパス（証明書のストア・ACME の保存先・秘密のファイルなど）は指定できません。API で入れるアクセスログは、rproxy の RPROXY_API_ACCESS_LOG_DIR（なければ RPROXY_LOG_FILE のディレクトリ）のすぐ下のファイルだけです。',
+  crowdsec_unavailable: '新しい CrowdSec の LAPI が答えませんでした（10 秒）。今の設定のまま何も変えていません。LAPI の URL・キーと、rproxy から届くかを確かめてください。',
+  not_loaded: 'rproxy が起動のときに保存した global の値を DB から読めていないため、今は変えられません（書くと保存した値を消してしまうため）。DB に届くようになれば rproxy が読み直します。',
+  upgrading: 'rproxy が引き継ぎ（更新）の途中です。少し待ってからやり直してください。',
+  shutting_down: 'rproxy が終了の途中です。起動し直してからやり直してください。',
   forbidden_admin: '管理者だけが使えます。',
 };
 

@@ -40,6 +40,8 @@ test.describe('global settings', () => {
     const card = page.getByTestId('global-node').first();
     // migration 013 の rproxy_global に保存する
     await expect(card.getByTestId('global-storage')).toContainText('データベース（rproxy_global）');
+    // 起動のときに保存した値を読めている（読めなければ警告を出して適用できない）
+    await expect(card.getByTestId('global-not-loaded')).toHaveCount(0);
     // 起動のときだけの項目は表示だけ
     await expect(card.getByTestId('global-item-performance')).toContainText('再起動が要る');
     // Unix ソケットだけの項目は TCP では変えられない（UI は rproxy の unix_only に従う）

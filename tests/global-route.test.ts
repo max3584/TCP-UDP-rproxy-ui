@@ -156,6 +156,18 @@ describe('/api/forward/global', () => {
     const applied = await call('POST', { body: { target: 'a', values: { crowdsec: null } } });
     expect(applied.status).toBe(403);
     expect(applied.body.code).toBe('global_unix_only');
+    // rproxy の文の「TCP でも受け付ける設定」は勧めない。unix: の url だけを案内する
+    expect(applied.body.error).not.toContain('RELOAD_UNIX_ONLY');
+    expect(applied.body.error).toContain('RPROXY_API_SOCKET');
+  });
+
+  it('passes on 502 crowdsec_unavailable and 503 not_loaded', async () => {
+    mocks.patchGlobalSettings.mockRejectedValueOnce(new RproxyError('the new LAPI did not answer in 10s', 'crowdsec_unavailable', 502));
+    const a = await call('POST', { body: { target: 'b', values: { crowdsec: { lapi_url: 'http://127.0.0.1:8080', api_key_file: '/etc/k' } } } });
+    expect(a).toMatchObject({ status: 502, body: { code: 'crowdsec_unavailable' } });
+    mocks.patchGlobalSettings.mockRejectedValueOnce(new RproxyError('the stored values are not loaded', 'not_loaded', 503));
+    const b = await call('POST', { body: { target: 'a', values: { udp_max_sessions: 1 } } });
+    expect(b).toMatchObject({ status: 503, body: { code: 'not_loaded' } });
   });
 });
 
@@ -163,7 +175,7 @@ describe('globalFailure', () => {
   it('renames the codes that clash with the rules, and keeps unknown ones with rproxy\'s text', () => {
     expect(globalFailure(new RproxyError('x', 'restart_only', 409))).toMatchObject({ status: 409, code: 'global_restart_only' });
     expect(globalFailure(new RproxyError('x', 'in_use', 409))).toMatchObject({ status: 409, code: 'global_in_use' });
-    expect(globalFailure(new RproxyError('outside', 'protected_file', 403))).toMatchObject({ status: 403, code: 'protected_file' });
+    expect(globalFailure(new RproxyError('outside', 'protected_file', 403))).toMatchObject({ status: 403, code: 'global_protected_file' });
     expect(globalFailure(new RproxyError('not loaded yet', 'not_ready', 503))).toMatchObject({ status: 503, code: 'not_ready', error: 'not loaded yet' });
     expect(globalFailure(new RproxyError('new refusal', 'some_new_code', 422))).toMatchObject({ status: 422, code: 'some_new_code', error: 'new refusal' });
     expect(globalFailure(new RproxyError('lacks admin', 'forbidden', 403))).toMatchObject({ status: 502, code: 'global_forbidden' });
