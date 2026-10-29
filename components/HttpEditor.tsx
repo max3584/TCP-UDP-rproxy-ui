@@ -9,6 +9,7 @@ import { BALANCE_HELP } from './targets';
 import { FILE_OWNER_NOTE } from './messages';
 import { USER_FILES_NOTE } from './userlimits';
 import {
+  CACHE_STATUSES,
   HttpOption,
   HttpRules,
   MIDDLEWARE_KINDS,
@@ -44,6 +45,9 @@ export interface HttpEditorProps {
 
 // ファイルのパスの欄を読み取り専用にするか（HttpEditor の filesLocked）
 const FilesLocked = createContext(false);
+
+// この rproxy で使えるミドルウェアの種類か（null は分からない＝出す。ただし cache は書いてあるときだけ）
+const kindAvailable = (list: readonly string[] | null, kind: string) => (list === null ? kind !== 'cache' : list.includes(kind));
 
 // rproxy が使えると言う項目か（null は分からない＝出す）
 const supports = (list: readonly string[] | null, name: string) => list === null || list.includes(name);
@@ -137,11 +141,23 @@ const FIELDS: Record<string, FieldDef[]> = {
   ],
 };
 
+// 応答のキャッシュ（rproxy-api #340。features.middlewares に cache があるときだけ）。status と header は CacheConfig が出す
+const CACHE_FIELDS: FieldDef[] = [
+  { key: 'ttl', label: '持つ時間（ttl。100ms〜24h。必須）', type: 'text', placeholder: '1s' },
+  { key: 'stale_on_error', label: '転送先が落ちたときに古い答えを返す時間（stale_on_error。既定 0s）', type: 'text', placeholder: '30s' },
+  { key: 'max_body', label: '持つ本文の上限（max_body。バイト、既定 1048576 = 1 MiB、64 MiB まで）', type: 'number', placeholder: '1048576' },
+  { key: 'max_entries', label: '持つ答えの数の上限（max_entries。既定 1024）', type: 'number', placeholder: '1024' },
+  { key: 'max_memory', label: 'メモリの上限（max_memory。バイト、既定 67108864 = 64 MiB）', type: 'number', placeholder: '67108864' },
+  { key: 'vary', label: 'キーに入れるリクエストのヘッダ（vary。カンマ区切り）', type: 'list', placeholder: 'Accept-Language' },
+  { key: 'share_credentials', label: 'Cookie・Authorization のあるリクエストも共有する（share_credentials）', type: 'bool' },
+  { key: 'share_after_auth', label: '認証の後でも答えを共有する（share_after_auth）', type: 'bool' },
+];
+
 // 使えない項目に値があるときの読み取り専用の表示（消さずにそのまま送る）
-const Preserved: React.FC<{ label: string; value: unknown }> = ({ label, value }) => (
+const Preserved: React.FC<{ label: string; value: unknown; note?: string }> = ({ label, value, note }) => (
   <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 mt-1 break-all" data-testid="http-preserved">
     {label}: <span className="font-mono">{typeof value === 'string' ? value : JSON.stringify(value)}</span>
-    （この rproxy では使えないので編集できません。そのまま残して送ります）
+    {note ?? '（この rproxy では使えないので編集できません。そのまま残して送ります）'}
   </p>
 );
 
@@ -274,6 +290,63 @@ const TypedConfig: React.FC<{ id: string; fields: FieldDef[]; value: Record<stri
           </div>
         );
       })}
+    </div>
+  );
+};
+
+// ---- 応答のキャッシュ（#340）：種類ごとの欄に、持つ状態コード（チェックボックス）と結果のヘッダ（付けないこともできる）を足す ----
+
+const CacheConfig: React.FC<{ id: string; value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void }> = ({ id, value, onChange }) => {
+  const status = Array.isArray(value.status) && value.status.length > 0 ? (value.status as number[]) : [200];
+  const header = typeof value.header === 'string' ? value.header : undefined;
+  const setKey = (key: string, v: unknown) => {
+    const next = { ...value };
+    if (v === undefined) delete next[key];
+    else next[key] = v;
+    onChange(next);
+  };
+  const toggleStatus = (st: number, on: boolean) => {
+    const list = CACHE_STATUSES.filter((s) => (s === st ? on : status.includes(s)));
+    // 空と [200] は既定（省く）
+    setKey('status', list.length === 0 || (list.length === 1 && list[0] === 200) ? undefined : list);
+  };
+  return (
+    <div data-testid="cache-config">
+      <TypedConfig id={id} fields={CACHE_FIELDS} value={value} httpOptions={null} onChange={onChange} />
+      <fieldset className="mt-2">
+        <legend className={labelClass}>持つ状態コード（status。既定 200 だけ）</legend>
+        <div className="flex flex-wrap gap-3">
+          {CACHE_STATUSES.map((st) => (
+            <label key={st} htmlFor={`${id}-status-${st}`} className="flex items-center gap-1 text-sm text-gray-800">
+              <input id={`${id}-status-${st}`} type="checkbox" checked={status.includes(st)} onChange={(e) => toggleStatus(st, e.target.checked)} />
+              {st}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+        <div>
+          <label htmlFor={`${id}-header`} className={labelClass}>結果（HIT・MISS・STALE・BYPASS）を知らせる応答のヘッダ（header。既定 X-Cache）</label>
+          <input
+            id={`${id}-header`}
+            className={monoInput}
+            placeholder="X-Cache"
+            disabled={header === ''}
+            value={header ?? ''}
+            onChange={(e) => setKey('header', e.target.value.trim() === '' ? undefined : e.target.value.trim())}
+          />
+        </div>
+        <label htmlFor={`${id}-no-header`} className="flex items-center gap-2 text-sm text-gray-800">
+          <input id={`${id}-no-header`} type="checkbox" checked={header === ''} onChange={(e) => setKey('header', e.target.checked ? '' : undefined)} />
+          結果のヘッダを付けない
+        </label>
+      </div>
+      <p className="text-xs text-gray-600 mt-1">
+        GET の応答をメモリに持ち、持つ時間のあいだは転送先へ送らずに答えます（HEAD は GET の答えから）。キーはホスト・パス・クエリと vary のヘッダです。Set-Cookie や Cache-Control: no-store・private・no-cache のある応答は持ちません。
+      </p>
+      <p className="text-xs text-gray-600 mt-1">
+        IP の許可リスト・GeoIP・CrowdSec・Basic 認証・ForwardAuth・OIDC は、ルートで cache より前に置いてください（キャッシュから答えたリクエストは後ろのミドルウェアを通りません）。
+      </p>
     </div>
   );
 };
@@ -502,7 +575,8 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
   const serviceNames = Object.keys(services);
   const mwNames = Object.keys(mws);
   // 選べるミドルウェアの種類（features.middlewares。使っている種類は残す）
-  const kinds = Object.keys(MIDDLEWARE_KINDS).filter((k) => middlewares === null || middlewares.includes(k));
+  // cache（#340）は features.middlewares に書いてあるときだけ（features を取れないときも出さない）
+  const kinds = Object.keys(MIDDLEWARE_KINDS).filter((k) => kindAvailable(middlewares, k));
   // 転送先ごとに付けられるミドルウェア（書き換えるだけの種類）
   const serverMwCandidates = mwNames.filter((m) => SERVER_MIDDLEWARES.includes(middlewareKind(mws[m])));
 
@@ -851,7 +925,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           const id = `http-mw-${i}`;
           const kind = middlewareKind(m);
           const config = (m[kind] ?? {}) as Record<string, unknown>;
-          const unavailable = middlewares !== null && !middlewares.includes(kind);
+          const unavailable = !kindAvailable(middlewares, kind);
           return (
             <div key={i} className={boxClass} data-testid="http-middleware">
               <div className="flex flex-wrap gap-2 items-end mb-2">
@@ -881,7 +955,11 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                 <button type="button" className={removeButton} onClick={() => removeMiddleware(name)}>削除</button>
               </div>
               {unavailable && <p className="text-amber-900 text-xs mb-2">この種類は、この rproxy ではまだ使えません（GET /capabilities の features.middlewares にありません）。</p>}
-              {kind === 'mirror'
+              {kind === 'cache'
+                ? unavailable
+                  ? <Preserved label="キャッシュの設定" value={config} note="（この rproxy では使えないので編集できません。値は消さずに残します）" />
+                  : <CacheConfig id={id} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
+                : kind === 'mirror'
                 ? <MirrorConfig id={id} value={config} services={serviceNames} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
                 : FIELDS[kind]
                   ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} httpOptions={httpOptions} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />

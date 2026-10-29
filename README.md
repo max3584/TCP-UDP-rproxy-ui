@@ -259,6 +259,28 @@ rproxy-api の Gateway API 向けの項目（rproxy-api #237。`GET /capabilitie
 
 保存の前に rproxy と同じ規則で確かめます（URL と状態コードはどちらか一方、`h2` は https:// の転送先・`h2c` は http:// の転送先、転送先ごとのミドルウェアの種類、ミラーの送り先のサービス、CORS のオリジン、サービスの TLS の組み合わせ、サーバ名ごとの転送先への TLS を書ける名前とクライアント証明書・秘密鍵・中間 CA の組み合わせなど）。
 
+## 応答のキャッシュ（cache）
+
+rproxy-api の `cache` ミドルウェア（rproxy-api #340。`GET /capabilities` の `features.middlewares` に `cache` があるときだけ）は、L7 タブのミドルウェアの種類「応答のキャッシュ」で作成・編集できます。
+GET の応答をメモリに持ち、持つ時間（`ttl`、100ms〜24h。必須）のあいだは転送先へ送らずに答えます。多くのクライアントが同じ JSON を数秒おきに取りに来る構成で、転送先へのリクエストを減らすためのものです。
+
+| 欄 | 項目 | 既定 |
+|---|---|---|
+| 持つ時間 | `ttl` | （必須） |
+| 転送先が落ちたときに古い答えを返す時間 | `stale_on_error` | `0s` |
+| 持つ本文の上限（バイト。64 MiB まで） | `max_body` | 1 MiB |
+| 持つ答えの数の上限 | `max_entries` | 1024 |
+| メモリの上限（バイト） | `max_memory` | 64 MiB |
+| キーに入れるリクエストのヘッダ | `vary` | なし |
+| 持つ状態コード（200・203・204・300・301・308・404・410） | `status` | `[200]` |
+| Cookie・Authorization のあるリクエストも共有する | `share_credentials` | false |
+| 認証の後でも答えを共有する | `share_after_auth` | false |
+| 結果（HIT・MISS・STALE・BYPASS）を知らせる応答のヘッダ（付けないこともできる） | `header` | `X-Cache` |
+
+保存の前に rproxy と同じ規則で確かめます：ルートで `cache` より後ろに `ip_allow`・`geoip`・`crowdsec`・`basic_auth`・`forward_auth`・`oidc` を置けない（キャッシュから答えると通らない）、前に `basic_auth`・`forward_auth`・`oidc` があれば `share_after_auth` が要る（`oidc` はセッションの Cookie が付くので `share_credentials` も）、1 つのルートに `cache` は 1 つ。
+使えない rproxy では種類を選べず、すでにある `cache` の設定は読み取り専用で残します。
+詳細画面の「HTTP のリクエスト」に、ヒット・ミス・古い値・対象外の数とキャッシュから答えた割合（ルートごとにはミドルウェアごとの数）を出します。
+
 ## 宛先を複数にする
 
 「基本」タブの「宛先を追加」で宛先を複数にでき、振り分け方を選べる（rproxy-api v0.3.3 以降。L4 の TCP / UDP のルール）。

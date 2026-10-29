@@ -180,6 +180,7 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 - `api-rules.spec.ts`：rproxy の API を直接呼んで作ったルールが、利用者には見えず（404）、管理者にはダッシュボードと詳細に「API」で出て、編集で rproxy の転送先が変わり、削除で rproxy から消えること（rproxy の版を問わない）
 - `usage.spec.ts`：作ったルールに通信を流すと、UI の集計（E2E では `RPROXY_UI_USAGE_SECS=30`）でルールの利用量が増え、詳細画面のグラフ・利用量の画面の表・CSV に出ること（010 の表がなければ飛ばす）
 - `v04.spec.ts`：v0.4 の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームの「制限・GeoIP」でラベルと送信元ごとの同時接続 1 を付けて追加し、詳細画面にラベルが出て、2 本目の接続がすぐ閉じられること。`features.dry_run` のときは「差分を見る」で作成・変更の差分（接続を切らずに変わる、`labels`）が出ること
+- `cache.spec.ts`：応答のキャッシュ（rproxy の `features.middlewares` に `cache` があるときだけ。まだなら飛ばす）。フォームで cache の後ろに ip_allow を置くと保存の前に断ること、cache を付けて追加し、1 回目は `X-Cache: MISS`・2 回目は `HIT` で転送先へは 1 回だけ届くこと、詳細画面に設定とヒット・ミスの数が出ること、編集画面で読み直せること
 - `gateway.spec.ts`：Gateway API 向けの L7・TLS の項目（rproxy の `features` が対応しているときだけ。まだなら飛ばす）。フォームでルートの時間の上限・Host の書き換え・ヘッダを足す・ミラー・418 で答える転送先を付けて追加し、実際に Host が変わりヘッダが足され、写しがミラーの送り先に届き、`/teapot` が 418 を返すこと、詳細画面と編集画面に出ること。TLS の sni のサーバ名ごとの転送先を複数の宛先（フェイルオーバー）にして、ClientHello が 1 番目の宛先へ届き、詳細・編集画面に出ること。375px ではみ出さず、ライト・ダークで白地に白文字がないこと
 - `proxy-protocol.spec.ts`：rproxy-api v0.4.13 の `proxy_protocol` と `tls.routes[].source_ip`（rproxy の `features.proxy_protocol_in`・`route_source_ip` があるときだけ。まだなら飛ばす）。フォームの「詳細」で PROXY protocol の受け取り（`/0` は送る前に断る）と allow_from を付けて追加し、ヘッダのクライアントが allow_from の内なら転送され（ヘッダは転送先に届かない）、外・ヘッダなしなら断られること、変更の画面でそのまま保存しても残り、外すと rproxy からも外れること。TLS の sni のサーバ名ごとの転送先に `proxy_v1` を選んで追加し、変更の画面でそのまま保存しても残り（以前は保存で消えた）、その転送先に ClientHello の前の PROXY v1 のヘッダが届くこと
 - `route-upstream.spec.ts`：rproxy-api v0.4.7 の `tls.routes[].upstream`（rproxy の `features.tls_route_upstream` があり openssl があるときだけ。まだなら飛ばす）。TCP の終端のルールのサーバ名ごとの転送先に「転送先への TLS」（検証するサーバ名・検証しない）を付けて追加し（クライアント証明書だけで秘密鍵がなければ送る前に断る）、その名前だけ転送先へ TLS で、指定したサーバ名でつながること、変更の画面でそのまま保存しても残ること、「この名前は平文」にすると `{}` で保存され TLS でつながなくなること
@@ -208,6 +209,14 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 | tls.routes の targets | `normalizeTls` の形（既定の balance は省く）、両方・どちらもない・targets のない balance・範囲のポートの誤り、ダッシュボードの検索、読み取り専用の表示 |
 
 エクスポートして読み込み直すと同じルールになることは `tests/export-import.test.ts`（Gateway API の項目を使う L7 のルールと targets のある sni のルール）。
+
+## 単体テスト：応答のキャッシュ（`tests/httpcache.test.ts`、rproxy-api #340）
+
+| テスト | 確かめること |
+|---|---|
+| validateHttp | docs/API.md の例とひな形が通り、`ttl`（100ms〜24h）・`stale_on_error`・`max_body`・`max_entries`・`max_memory`（`max_body` 以上）・`vary`・`status`・`header`・知らない項目の誤り（rproxy の `cache.rs` と同じ規則）。ルートの置き場所（後ろの ip_allow などの通すかを決めるもの、前の認証と `share_after_auth`、oidc と `share_credentials`、1 つのルートに 1 つ、転送先ごとには不可）と、`features.middlewares` にないときの種類の誤り |
+| HttpEditor | `features.middlewares` に `cache` があるときだけ欄（状態コードのチェックボックス・結果のヘッダを付けない）を出し、ないとき・features がないときは選べず読み取り専用で残すこと |
+| HttpSummary・stats | 詳細画面の設定、`stats.http.cache` の表示と割合、ルートごとの数、グループのノードの合計 |
 
 ## 単体テスト：v0.4 のルールの項目（`tests/v04.test.ts`・`tests/forward-v04.test.ts`）
 

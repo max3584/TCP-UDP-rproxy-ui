@@ -259,6 +259,28 @@ TLS to the backend per server name can be set only on names rproxy terminates (n
 
 Before saving, the form checks the same rules as rproxy (a URL or a status code, `h2` with https:// backends and `h2c` with http:// backends, the kinds of per-backend middlewares, the mirror's service, CORS origins, combinations of the service TLS, which names may have TLS to the backend and how its client certificate, private key and intermediate CAs go together, and so on).
 
+## Response cache (cache)
+
+The rproxy-api `cache` middleware (rproxy-api #340; only when `features.middlewares` of `GET /capabilities` has `cache`) can be created and edited as the middleware kind "Response cache" in the L7 tab.
+It keeps GET responses in memory and answers from there without asking the backend for the time to keep (`ttl`, 100ms to 24h, required). It is meant to cut requests to the backend when many clients fetch the same JSON every few seconds.
+
+| Field | Setting | Default |
+|---|---|---|
+| Time to keep | `ttl` | (required) |
+| Time to serve an expired answer when the backend fails | `stale_on_error` | `0s` |
+| Largest body kept (bytes, up to 64 MiB) | `max_body` | 1 MiB |
+| Most answers kept | `max_entries` | 1024 |
+| Memory limit (bytes) | `max_memory` | 64 MiB |
+| Request headers in the key | `vary` | none |
+| Statuses kept (200, 203, 204, 300, 301, 308, 404, 410) | `status` | `[200]` |
+| Share answers for requests with Cookie or Authorization too | `share_credentials` | false |
+| Share answers after sign-in too | `share_after_auth` | false |
+| Response header with the result (HIT, MISS, STALE, BYPASS; can be left out) | `header` | `X-Cache` |
+
+Before saving, the form checks the same rules as rproxy: in a route, `ip_allow`, `geoip`, `crowdsec`, `basic_auth`, `forward_auth` and `oidc` cannot come after `cache` (answers from the cache would not pass them), `basic_auth`, `forward_auth` or `oidc` before it needs `share_after_auth` (`oidc` also needs `share_credentials`, as the session cookie comes with every request), and a route takes one `cache`.
+With an rproxy that cannot use it, the kind cannot be chosen, and existing `cache` settings are kept read-only.
+"HTTP requests" on the details page shows the hits, misses, stale answers and bypasses, and the share answered from the cache (per route, the counts per middleware).
+
 ## Multiple targets
 
 "Add backend" in the "Basic" tab lets a rule have multiple backends, with a choice of "Load balancing" (rproxy-api v0.3.3 or later; L4 TCP / UDP rules).
