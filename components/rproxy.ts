@@ -144,6 +144,8 @@ export interface CapabilityFeatures {
   // v0.4.13：PROXY protocol の受け取り（ルールの proxy_protocol、#296）と tls.routes[] ごとの source_ip（#297）
   proxy_protocol_in?: boolean;
   route_source_ip?: boolean;
+  // v0.4.19：宛先ごとの上限（targets[]・tls.routes[].targets[]・L7 の servers[] の max_connections、#341）
+  target_max_connections?: boolean;
   // 設定ファイルの global.performance で効く項目の名前
   performance?: string[];
   // v0.4.19：global の設定の API（GET / PATCH /config/global、#342）

@@ -11,6 +11,7 @@ import type { AcmeCertStatus } from './acme';
 import { normalizeV04, v04Of } from './v04';
 import type { Condition, V04Settings } from './v04';
 import { joinList, joinSentences, t, translate } from '@/i18n/core';
+import { targetsAllFull } from './targets';
 
 export const RULE_STATES: RuleState[] = ['running', 'failed', 'missing', 'unknown', 'paused'];
 
@@ -284,15 +285,33 @@ export function certProblem(rule: Pick<ForwardRules, 'certStatus'>): string | nu
   }));
 }
 
-// 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール。それぞれ元の順番のまま）
+// 宛先ごとの上限（rproxy-api #341）：上限に達していない宛先が残っていない（新しい接続・リクエストを断っている）。問題がなければ null
+// 上限はノードごとなので、ノードが 2 つ以上のルールはノードごとの stats で確かめ、断っているノードの名前を出す
+export function targetFullNodes(rule: Pick<ForwardRules, 'state' | 'stats' | 'nodes' | 'http'>): string[] | null {
+  const nodes = rule.nodes ?? [];
+  if (nodes.length > 1) return nodes.filter((n) => n.state === 'running' && targetsAllFull(n.stats, rule.http)).map((n) => n.node);
+  return rule.state === 'running' && targetsAllFull(rule.stats, rule.http) ? [] : null;
+}
+
+export function targetFullProblem(rule: Pick<ForwardRules, 'state' | 'stats' | 'nodes' | 'http'>): string | null {
+  const nodes = targetFullNodes(rule);
+  if (nodes === null || ((rule.nodes ?? []).length > 1 && nodes.length === 0)) return null;
+  return nodes.length > 0
+    ? translate(`ノード ${nodes.join(', ')} で、すべての宛先が同時接続の上限に達していて、新しい接続を断っています。`)
+    : translate('すべての宛先が同時接続の上限に達していて、新しい接続を断っています。');
+}
+
+// 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール、次に宛先がすべて上限のルール。それぞれ元の順番のまま）
 // （ACME の証明書を取れない・更新できないルールは証明書の期限と同じ扱い。acmeProblem）
 export function needsAttention(rules: ForwardRules[]): ForwardRules[] {
   const certIssue = (r: ForwardRules) => certProblem(r) !== null || acmeProblem(r) !== null;
   const certs = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && certIssue(r));
+  const full = (r: ForwardRules) => targetFullProblem(r) !== null;
+  const fulls = rules.filter((r) => !certIssue(r) && full(r));
   // 複数のノード：UI の定義とずれているノードがある・act の判定に警告があるルール（#98）
-  const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && !certIssue(r)
+  const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && !certIssue(r) && !full(r)
     && (driftedNodes(r).length > 0 || (r.ha?.warning ?? null) !== null));
-  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs, ...nodeIssues];
+  return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs, ...fulls, ...nodeIssues];
 }
 
 export interface RuleFilter {
@@ -610,11 +629,15 @@ export function toRule(rule: ForwardRule): ForwardRule {
 const STATE_ORDER: RuleState[] = ['failed', 'missing', 'unknown', 'running', 'paused'];
 
 // 数を足す（weight・port は宛先の設定なので足さずに最初の値。真偽値はどれかが true なら true、文字列は最初の値）
-const KEEP_FIRST = new Set(['weight', 'port', 'counters_since', 'ejected_until']);
+// max_connections（宛先ごとの上限。#341）はノードごとの上限なので足さない
+const KEEP_FIRST = new Set(['weight', 'port', 'counters_since', 'ejected_until', 'max_connections']);
+// 足し合わせた値では意味のない項目（いっぱいかはノードごと。#341。ノードごとの stats で見る）
+const DROP_ON_SUM = new Set(['full']);
 
 function sumValues(a: unknown, b: unknown, key = ''): unknown {
   if (a === undefined || a === null) return b;
   if (b === undefined || b === null) return a;
+  if (DROP_ON_SUM.has(key)) return undefined;
   if (typeof a === 'number' && typeof b === 'number') return KEEP_FIRST.has(key) ? a : a + b;
   if (typeof a === 'boolean' && typeof b === 'boolean') return a || b;
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -622,7 +645,11 @@ function sumValues(a: unknown, b: unknown, key = ''): unknown {
   }
   if (typeof a === 'object' && typeof b === 'object') {
     const out: Record<string, unknown> = { ...(a as Record<string, unknown>) };
-    for (const [k, v] of Object.entries(b as Record<string, unknown>)) out[k] = sumValues(out[k], v, k);
+    for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
+      const merged = sumValues(out[k], v, k);
+      if (merged === undefined) delete out[k];
+      else out[k] = merged;
+    }
     return out;
   }
   return a;

@@ -500,7 +500,7 @@ export function normalizeTargets(value: unknown): Target[] {
   const targets = items.map((t, i): Target => {
     const where = `宛先 ${i + 1}`;
     if (!isObject(t)) throw invalid(`${where} の形式が不正です。`);
-    checkKeys(t, ['addr', 'port', 'weight', 'backup'], 'targets');
+    checkKeys(t, ['addr', 'port', 'weight', 'backup', 'max_connections'], 'targets');
     const addr = requiredString(t.addr, `${where} のアドレス`);
     if (!isRemoteAddr(addr)) throw invalid(`${where} には IP アドレスかホスト名を指定してください。`);
     if (!isPort(t.port)) throw invalid(`${where} のポート番号は1から65535の範囲で指定してください。`);
@@ -512,12 +512,26 @@ export function normalizeTargets(value: unknown): Target[] {
       if (t.weight !== 1) target.weight = t.weight;
     }
     if (optionalBool(t.backup, `${where} の backup`)) target.backup = true;
+    const max = normalizeMaxConnections(t.max_connections, where);
+    if (max !== undefined) target.max_connections = max;
     return target;
   });
   if (targets.length > 0 && targets.every((t) => t.backup)) {
     throw invalid('予備（backup）でない宛先を 1 件以上指定してください。');
   }
   return targets;
+}
+
+// 宛先ごとの上限（rproxy v0.4.19 の targets[].max_connections・servers[].max_connections。#341）の最大（rproxy の u32）
+export const MAX_TARGET_CONNECTIONS = 4294967295;
+
+// 宛先ごとの上限を確かめる（rproxy と同じく 1 以上の整数。省略・null は上限なし）
+export function normalizeMaxConnections(value: unknown, where: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_TARGET_CONNECTIONS) {
+    throw invalid(`${where} の同時接続の上限は1以上の整数で指定してください。`);
+  }
+  return value;
 }
 
 export function normalizeBalance(value: unknown): Balance {

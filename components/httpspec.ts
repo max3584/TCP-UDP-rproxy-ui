@@ -34,6 +34,9 @@ export interface ServerSpec {
   status?: number;
   // この転送先へ送るリクエストにだけ働くミドルウェア（#229。SERVER_MIDDLEWARES の種類だけ）
   middlewares?: string[];
+  // この転送先で同時に処理するリクエストの上限（rproxy v0.4.19、#341。features.target_max_connections）。
+  // いっぱいの転送先は飛ばし、すべていっぱいなら 503。状態コードの転送先には書けない
+  max_connections?: number;
 }
 
 // 転送先との HTTP の版（#233。省略は http1）
@@ -617,6 +620,9 @@ export function httpOptionsUsed(spec: HttpRules): HttpOption[] {
   return HTTP_OPTIONS.filter((o) => used.has(o));
 }
 
+// 転送先ごとの上限の最大（rproxy の u32）
+const MAX_SERVER_CONNECTIONS = 4294967295;
+
 // 誤りの一覧（空なら問題なし）。features.middlewares を渡すと、この rproxy で使えない種類も誤りにする
 export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly string[]): string[] {
   const errors: string[] = [];
@@ -634,10 +640,14 @@ export function validateHttp(spec: HttpRules, availableMiddlewares?: readonly st
         if (url !== '') errors.push(`サービス「${name}」の転送先は URL と状態コードのどちらか一方にしてください。`);
         if (!(Number.isInteger(srv.status) && srv.status >= 100 && srv.status <= 599)) errors.push(`サービス「${name}」の転送先の状態コードは 100〜599 にしてください。`);
         if ((srv.middlewares ?? []).length > 0) errors.push(`サービス「${name}」の状態コードで答える転送先には、ミドルウェアを付けられません。`);
+        if (srv.max_connections !== undefined) errors.push(`サービス「${name}」の状態コードで答える転送先には、同時に処理する上限を付けられません。`);
       } else if (!isHttpUrl(url)) {
         errors.push(`サービス「${name}」の転送先「${url}」は http:// か https:// で始まる URL にしてください（ポートは 1〜65535 の数字）。`);
       }
       if (srv.weight !== undefined && !(Number.isInteger(srv.weight) && srv.weight >= 1)) errors.push(`サービス「${name}」の重みは 1 以上の整数にしてください。`);
+      if (srv.max_connections !== undefined && !(Number.isInteger(srv.max_connections) && srv.max_connections >= 1 && srv.max_connections <= MAX_SERVER_CONNECTIONS)) {
+        errors.push(`サービス「${name}」の転送先の同時に処理する上限は 1 以上の整数にしてください。`);
+      }
       for (const mw of srv.middlewares ?? []) {
         if (!(mw in middlewares)) errors.push(`サービス「${name}」の転送先のミドルウェア「${mw}」がありません。`);
         else if (!SERVER_MIDDLEWARES.includes(middlewareKind(middlewares[mw]))) {
@@ -723,6 +733,8 @@ function cleanServer(srv: ServerSpec): ServerSpec {
   const out: ServerSpec = srv.status !== undefined ? { status: srv.status } : { url: (srv.url ?? '').trim() };
   if (srv.weight !== undefined && srv.weight !== 1) out.weight = srv.weight;
   if (srv.status === undefined && srv.middlewares && srv.middlewares.length > 0) out.middlewares = srv.middlewares;
+  // 状態コードの転送先の上限は validateHttp が誤りにする（消さずに送って rproxy にも断らせる）
+  if (srv.max_connections !== undefined) out.max_connections = srv.max_connections;
   return out;
 }
 

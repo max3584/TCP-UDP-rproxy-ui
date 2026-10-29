@@ -4,6 +4,7 @@ import type { ForwardRule } from './lib';
 import { hostPort, portsLabel } from './dashboard';
 import { tc, translate } from '@/i18n/core';
 import { v04Fields } from './v04';
+import { targetCapsOf, withoutTargetCaps } from './targets';
 
 // RESEND は 1 つのノードへの送り直し（#98。内容は変えない）、OVERRIDE はノードごとの上書きの変更（内容はそのノードで動かす内容）
 export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND' | 'OVERRIDE';
@@ -76,8 +77,11 @@ const ruleState = (rule: ForwardRule) => (rule.enabled === false ? translate('�
 
 // 前の版からの違いを、画面に出す短い文にする（値の小さい項目は「前 → 後」、大きい項目は変わったことだけ）。
 // 文は今の言語で作る（API が返す。値の「有効」などは場面に合わせて訳す）
-export function ruleChanges(prev: ForwardRule | null, next: ForwardRule | null): string[] {
-  if (prev === null || next === null) return [];
+export function ruleChanges(prevRule: ForwardRule | null, nextRule: ForwardRule | null): string[] {
+  if (prevRule === null || nextRule === null) return [];
+  // 宛先ごとの上限（#341）は別の文にする（宛先・TLS・L7 の変更からは外して比べる）
+  const prev = withoutTargetCaps(prevRule);
+  const next = withoutTargetCaps(nextRule);
   const out: string[] = [];
   const change = (label: string, a: string, b: string) => out.push(`${translate(label)}: ${a} → ${b}`);
   const value = (v: unknown) => (v === null || v === undefined || v === '' ? translate(NONE) : String(v));
@@ -116,6 +120,7 @@ export function ruleChanges(prev: ForwardRule | null, next: ForwardRule | null):
   if (!same(pv.geoip, nv.geoip)) note('GeoIP を変更');
   if (!same(pv.outlier_detection, nv.outlier_detection)) note('受け身のヘルスチェックを変更');
   if (!same(pv.proxy_protocol, nv.proxy_protocol)) note('PROXY protocol の受け取りを変更');
+  if (!same(targetCapsOf(prevRule), targetCapsOf(nextRule))) note('宛先ごとの上限を変更');
   // 一時停止・再開（#63）
   scalar('状態', ruleState(prev), ruleState(next));
   return out;

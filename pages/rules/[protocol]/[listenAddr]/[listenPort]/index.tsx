@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { routeNames } from '@/components/lib';
 import type { CacheCounts, CertStatus, ForwardRules, HttpStats } from '@/components/lib';
-import { healthCheckLabel, targetStatus } from '@/components/targets';
+import { capText, fullNodes, healthCheckLabel, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
 import {
   BALANCE_LABELS,
   CERT_ROLE_LABELS,
@@ -36,7 +36,7 @@ import {
   targetChoices,
 } from '@/components/dashboard';
 import OverrideEditor from '@/components/OverrideEditor';
-import { AllowFromBadge, ApiBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, K8sBadge, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
+import { AllowFromBadge, ApiBadge, TargetFullBadge, AutoRefreshToggle, ConfirmDialog, DriftBadge, ErrorBanner, HaWarning, K8sBadge, NodeStates, RoleBadge, StateBadge, StaticBadge, errorDetail, postRule, useAutoRefresh, useNodes, useRule } from '@/components/ui';
 import Tabs, { tabPanelProps } from '@/components/Tabs';
 import { DRIFT_LABELS } from '@/components/drift';
 import type { NodeLiveState } from '@/components/lib';
@@ -51,7 +51,14 @@ import { CONDITION_LABELS, asnLabel, conditionProblem, rateLabel, v04Fields } fr
 import type { Condition } from '@/components/v04';
 
 // 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
-const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
+const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
+  // 宛先ごとの上限（#341）の欄は、どれかの宛先に上限があるときだけ
+  const capped = rule.targets.some((t) => t.max_connections !== undefined) || (rule.stats?.targets ?? []).some((t) => t.max_connections !== undefined);
+  // 宛先が 1 つでヘルスチェックのないルールは、rproxy が上限のためだけに状態を出す（生死は報告しない）
+  const health = reportsTargetHealth(rule);
+  // ノードが 2 つ以上のルールの「全体」：数はノードの合計、上限といっぱいかはノードごと
+  const aggregate = (rule.nodes?.length ?? 0) > 1;
+  return (
   <div className="mt-3 table-scroll">
   <table className="data-table w-full text-sm" data-testid="targets-table">
     <thead>
@@ -61,7 +68,7 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
         <th scope="col">重み</th>
         <th scope="col">予備</th>
         <th scope="col">状態</th>
-        <th scope="col">接続数</th>
+        <th scope="col">{capped ? (aggregate ? '接続数（合計）' : '接続数 / 上限') : '接続数'}</th>
         {rule.stats?.targets?.some((t) => t.ejections !== undefined) && <th scope="col">外した回数</th>}
       </tr>
     </thead>
@@ -75,7 +82,7 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
             <td>{rule.balance === 'failover' ? '-' : t.weight ?? 1}</td>
             <td>{t.backup ? '予備' : ''}</td>
             <td>
-              {s?.up === undefined || s === null
+              {s?.up === undefined || s === null || !health
                 ? '-'
                 : s.up
                   ? <span className="badge bg-green-100 text-green-800">稼働</span>
@@ -84,15 +91,27 @@ const TargetsTable: React.FC<{ rule: ForwardRules }> = ({ rule }) => (
                 <span className="badge ml-1 bg-amber-100 text-amber-900" title={`受け身のヘルスチェックで ${formatTimestamp(s.ejected_until)} まで外しています`}>外している</span>
               )}
             </td>
-            <td>{s?.connections !== undefined ? formatCount(s.connections) : '-'}</td>
+            <td className="tabular-nums" data-testid="target-connections">
+              {(capped ? capText(s?.connections, t.max_connections ?? s?.max_connections, aggregate) : null) ?? (s?.connections !== undefined ? formatCount(s.connections) : '-')}
+              {aggregate
+                ? (() => {
+                  const on = fullNodes(rule.nodes, (st) => targetStatus(rule.targets, st?.targets, i));
+                  return on.length > 0 && <TargetFullBadge nodes={on} />;
+                })()
+                : s?.full === true && <TargetFullBadge />}
+            </td>
             {rule.stats?.targets?.some((x) => x.ejections !== undefined) && <td>{s?.ejections !== undefined ? formatCount(s.ejections) : '-'}</td>}
           </tr>
         );
       })}
     </tbody>
   </table>
+  {capped && (
+    <p className="mt-1 text-xs text-gray-600">上限に達した宛先は飛ばし、すべての宛先が上限なら新しい接続を断ります（断った数は「制限で断った接続」に数えます）。</p>
+  )}
   </div>
-);
+  );
+};
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
   <section className="card p-4" aria-labelledby={id}>
@@ -233,13 +252,25 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
                   <td className="font-mono break-all">
                     {r.targets && r.targets.length > 0 ? (
                       <div data-testid="tls-route-targets">
-                        {r.targets.map((t, j) => (
-                          <div key={j}>
-                            {targetHostPort(t, rule)}
-                            {t.weight !== undefined && <span className="font-sans text-xs text-gray-700">{`（重み ${t.weight}）`}</span>}
-                            {t.backup && <span className="font-sans text-xs text-gray-700">（予備）</span>}
-                          </div>
-                        ))}
+                        {r.targets.map((t, j) => {
+                          // その route の宛先の今の数・いっぱいか（rproxy の stats.tls_routes。#341）
+                          const routeTargetStatus = (st: ForwardRules['stats']) => targetStatus(r.targets ?? [], tlsRouteStatus(routeNames(r), st?.tls_routes, i)?.targets, j);
+                          const live = routeTargetStatus(rule.stats);
+                          const aggregate = (rule.nodes?.length ?? 0) > 1;
+                          const usage = live?.connections !== undefined ? capText(live.connections, t.max_connections ?? live.max_connections, aggregate) : null;
+                          const fullOn = aggregate ? fullNodes(rule.nodes, routeTargetStatus) : [];
+                          return (
+                            <div key={j}>
+                              {targetHostPort(t, rule)}
+                              {t.weight !== undefined && <span className="font-sans text-xs text-gray-700">{`（重み ${t.weight}）`}</span>}
+                              {t.backup && <span className="font-sans text-xs text-gray-700">（予備）</span>}
+                              {usage !== null
+                                ? <span className="font-sans text-xs text-gray-700" data-testid="tls-route-target-connections">{`（接続 ${usage}）`}</span>
+                                : t.max_connections !== undefined && <span className="font-sans text-xs text-gray-700" data-testid="tls-route-target-max">{`（上限 ${formatCount(t.max_connections)}）`}</span>}
+                              {aggregate ? fullOn.length > 0 && <TargetFullBadge nodes={fullOn} /> : live?.full === true && <TargetFullBadge />}
+                            </div>
+                          );
+                        })}
                         <div className="font-sans text-xs text-gray-700">振り分け方: {BALANCE_LABELS[r.balance ?? 'round_robin']}</div>
                       </div>
                     ) : hostPort(r.remote_addr ?? '', portsLabel(r.remote_port ?? 0, count > 1 ? (r.remote_port ?? 0) + count - 1 : null))}
@@ -852,7 +883,7 @@ const RuleDetailPage: React.FC = () => {
 
           {view.http !== null && (
             <Section id="section-http" title="L7 (HTTP)">
-              <HttpSummary http={view.http} />
+              <HttpSummary http={view.http} services={view.stats?.http?.services} aggregate={(view.nodes?.length ?? 0) > 1} />
             </Section>
           )}
 
