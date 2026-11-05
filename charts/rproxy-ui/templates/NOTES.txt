@@ -1,6 +1,10 @@
+{{- $mode := include "rproxy-ui.authMode" . -}}
 rproxy-ui {{ .Chart.AppVersion }} is installed as {{ include "rproxy-ui.fullname" . }} (namespace {{ .Release.Namespace }}).
 
-- URL: {{ .Values.url }} (register {{ .Values.url }}/api/auth/callback/keycloak in Keycloak)
+- URL: {{ .Values.url }}{{ if ne $mode "token" }} (register {{ .Values.url }}/api/auth/callback/keycloak in Keycloak){{ end }}
+{{- if ne $mode "keycloak" }}
+- Token sign-in: tokens from the Secret {{ .Values.auth.tokensSecret }} (key {{ .Values.auth.tokensKey }}); make one with: docker run --rm {{ include "rproxy-ui.image" . }} node rproxy-ui-token.mjs new --name <name> --role admin --stdout
+{{- end }}
 - Database: {{ include "rproxy-ui.dbHost" . }}:{{ .Values.db.port }}/{{ .Values.db.database }}{{ if .Values.mariadb.enabled }} (bundled MariaDB, one pod, no HA){{ end }}
 {{- if .Values.migrate.enabled }}
 - Migrations ran in the Job {{ include "rproxy-ui.fullname" . }}-migrate (kubectl logs job/{{ include "rproxy-ui.fullname" . }}-migrate while it exists)

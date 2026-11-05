@@ -1,4 +1,5 @@
-import { signOut, signIn, useSession } from 'next-auth/react';
+import { signOut, useSession } from 'next-auth/react';
+import { startSignIn } from '@/components/signin';
 import { LOCALES, Locale } from '@/i18n/core';
 import { useLocale } from '@/i18n/context';
 
@@ -45,7 +46,7 @@ export const AccountControls: React.FC<{ className?: string }> = ({ className = 
         </>
       ) : (
         <span className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-4 rounded-sm cursor-pointer">
-          <button onClick={() => signIn('keycloak')}>
+          <button onClick={() => void startSignIn()}>
             Sign In
           </button>
         </span>

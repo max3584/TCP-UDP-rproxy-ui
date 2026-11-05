@@ -93,6 +93,42 @@ if [ -z "$css" ] || [ "$(code "$css")" != 200 ]; then fail "static files are not
 # listens on 127.0.0.1 only by default
 ! ss -Hltn 'sport = :3000' | grep -v '127.0.0.1' | grep -q . || fail "listening beyond 127.0.0.1"
 
+echo "== token sign-in (RPROXY_UI_AUTH=both, #179)"
+[ "$(stat -c '%a %U:%G' /etc/rproxy-ui)" = "750 root:rproxy-ui" ] || fail "/etc/rproxy-ui mode/owner"
+tokens=/etc/rproxy-ui/tokens.yaml
+token=$(sudo rproxy-ui-token new --name admin --role admin --file $tokens --owner rproxy-ui) || fail "rproxy-ui-token new"
+[ "$(sudo stat -c '%a %U' $tokens)" = "600 rproxy-ui" ] || fail "token file mode/owner"
+! sudo grep -q "$token" $tokens || fail "the plain token is in the token file"
+sudo grep -q "sha256: $(printf %s "$token" | sha256sum | cut -d' ' -f1)" $tokens || fail "no sha256 in the token file"
+echo "RPROXY_UI_AUTH=both" | sudo tee -a $ENV_FILE >/dev/null
+echo "RPROXY_UI_TOKENS_FILE=$tokens" | sudo tee -a $ENV_FILE >/dev/null
+sudo systemctl restart rproxy-ui
+for _ in $(seq 60); do [ "$(code /)" = 200 ] && break; sleep 0.5; done
+curl -s http://127.0.0.1:3000/api/auth/providers | grep -q '"token"' || fail "no token provider"
+jar=$(mktemp)
+csrf=$(curl -s -c "$jar" -b "$jar" http://127.0.0.1:3000/api/auth/csrf | sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p')
+signin() { curl -s -o /dev/null -w '%{http_code}' -c "$jar" -b "$jar" -H 'Sec-Fetch-Site: same-origin' \
+	--data-urlencode "token=$1" --data-urlencode "csrfToken=$csrf" --data-urlencode json=true http://127.0.0.1:3000/api/auth/callback/token; }
+[ "$(signin wrong-token)" = 401 ] || fail "a wrong token was not refused"
+[ "$(signin "$token")" = 200 ] || fail "token sign-in failed"
+curl -s -b "$jar" http://127.0.0.1:3000/api/auth/session | grep -q '"id":"token:admin"' || fail "no token session"
+! sudo journalctl -u rproxy-ui --no-pager | grep -qF "$token" || fail "the token is in the log"
+# revoking: the next session check ends the session
+sudo rproxy-ui-token remove --name admin --file $tokens || fail "rproxy-ui-token remove"
+[ "$(sudo stat -c '%U' $tokens)" = rproxy-ui ] || fail "remove changed the owner"
+[ "$(curl -s -b "$jar" http://127.0.0.1:3000/api/auth/session)" = '{}' ] || fail "the session survived the removal"
+# a token file others can read stops the UI at start
+sudo chmod 0644 $tokens
+sudo systemctl restart rproxy-ui || true
+sleep 2
+! systemctl is-active --quiet rproxy-ui || [ "$(code /)" != 200 ] || fail "started with a token file readable by others"
+sudo journalctl -u rproxy-ui --no-pager | grep -q 'RPROXY_UI_TOKENS_FILE.*0644' || fail "no reason in the log"
+sudo sed -i '/^RPROXY_UI_AUTH=/d; /^RPROXY_UI_TOKENS_FILE=/d' $ENV_FILE
+sudo rm -f $tokens "$jar"
+sudo systemctl restart rproxy-ui
+for _ in $(seq 60); do [ "$(code /)" = 200 ] && break; sleep 0.5; done
+[ "$(code /)" = 200 ] || fail "not running after the token test"
+
 echo "== reinstall keeps the settings"
 apt_install --reinstall "$deb"
 [ "$(sudo sed -n 's/^NEXTAUTH_SECRET=//p' $ENV_FILE)" = "$secret" ] || fail "reinstall replaced NEXTAUTH_SECRET"

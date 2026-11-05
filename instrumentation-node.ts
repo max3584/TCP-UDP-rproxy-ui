@@ -20,6 +20,9 @@ export async function registerNode(): Promise<void> {
     console.error(`rproxy-ui: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+  // サインインの方法（RPROXY_UI_AUTH）とトークンのファイル（RPROXY_UI_TOKENS_FILE。#179）の誤りは起動時に止める
+  const { checkAuthAtStartup } = await import('./components/tokenauth');
+  checkAuthAtStartup();
   if (!(process.env.RPROXY_UI_NODES ?? '').trim()) {
     await startUsageCollector();
     return;

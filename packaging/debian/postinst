@@ -24,8 +24,11 @@ if [ "$1" = "configure" ]; then
 	if ! id -nG rproxy-ui | tr ' ' '\n' | grep -qx rproxy; then
 		usermod -aG rproxy rproxy-ui
 	fi
-	# secrets (Keycloak, DB, rproxy token): systemd reads the file, the service user does not need to
-	chown root:root /etc/rproxy-ui "$ENV_FILE"
+	# secrets (Keycloak, DB, rproxy token): systemd reads the env file, the service user does not need to.
+	# The directory is the service's group's (0750) so that the UI can read files it owns there: the token file of
+	# the token sign-in (RPROXY_UI_TOKENS_FILE, rproxy-ui 0600; rproxy-ui-token), nodes.yaml, ha.tokens
+	chown root:root "$ENV_FILE"
+	chown root:rproxy-ui /etc/rproxy-ui
 	chmod 0750 /etc/rproxy-ui
 	chmod 0600 "$ENV_FILE"
 
@@ -55,7 +58,7 @@ if [ "$1" = "configure" ]; then
 			;;
 		esac
 	fi
-	echo "rproxy-ui: set NEXTAUTH_URL, KEYCLOAK_* and DB_* in $ENV_FILE, then: systemctl enable --now rproxy-ui"
+	echo "rproxy-ui: set NEXTAUTH_URL, DB_* and KEYCLOAK_* (or the token sign-in: RPROXY_UI_AUTH=token, rproxy-ui-token) in $ENV_FILE, then: systemctl enable --now rproxy-ui"
 fi
 
 # Automatically added by build-deb.sh (debhelper snippets)

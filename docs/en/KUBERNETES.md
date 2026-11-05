@@ -27,7 +27,7 @@ The chart creates no secrets (give their names with `existingSecret`; `helm temp
 
 ```shell
 kubectl create namespace rproxy-ui
-# the UI (required): NextAuth's secret, the Keycloak client secret, the password of the UI's DB user
+# the UI (required): NextAuth's secret, the Keycloak client secret (not with tokens only), the password of the UI's DB user
 kubectl -n rproxy-ui create secret generic rproxy-ui \
   --from-literal=NEXTAUTH_SECRET="$(openssl rand -base64 32)" \
   --from-literal=KEYCLOAK_CLIENT_SECRET='<Keycloak client secret>' \
@@ -79,6 +79,32 @@ mariadb:
 - The migration Job creates the database and the UI's user (`db.user`, password `DB_PASSWORD` of `existingSecret`) as root.
 - **No HA** (one pod: while the pod or its node is down the UI has no DB; the data stays on the PVC). Where that is not acceptable, use an external DB (replicated MariaDB, Galera) or a MariaDB operator.
 - Deleting the pod keeps the PVC and the data comes back. `helm uninstall` does not delete the StatefulSet's PVC either (delete it by hand).
+
+## Installing without Keycloak (token sign-in)
+
+For the minimal setup without Keycloak use `auth.mode: token` (`both` for Keycloak as well), and put the token file (README, "Token sign-in (without Keycloak)") in a Secret. `KEYCLOAK_CLIENT_SECRET` in `existingSecret` and `keycloak.issuer` are not needed.
+
+```shell
+# make a token (the image's command; the token is printed once, the tokens: row has only its sha256)
+docker run --rm ghcr.io/max3584/rproxy-ui:<version> node rproxy-ui-token.mjs new --name admin --role admin --stdout
+# write the printed row into tokens.yaml (a tokens: list) and make it a Secret
+kubectl -n rproxy-ui create secret generic rproxy-ui-tokens --from-file=tokens.yaml
+```
+
+```yaml
+url: https://rproxy-ui.example.com
+existingSecret: rproxy-ui           # only NEXTAUTH_SECRET and DB_PASSWORD
+auth:
+  mode: token
+  tokensSecret: rproxy-ui-tokens    # key tokens.yaml (auth.tokensKey)
+  trustedProxies: 10.0.0.0/8        # the CIDR of the Ingress controller / Gateway pods (the lockout of failures takes the source from X-Forwarded-For)
+roles: {userRole: rproxy-user}      # for role: user tokens
+mariadb: {enabled: true, existingSecret: rproxy-ui-mariadb}
+```
+
+- The Secret is mounted read-only at `/etc/rproxy-ui/auth` (`root`, group fsGroup, `0440`). The UI accepts group read on a root-owned file.
+- To add or remove tokens, update the Secret (`kubectl create secret ... --dry-run=client -o yaml | kubectl apply -f -`). Once the kubelet swaps the pod's file (about a minute), sessions of a removed token end at the next check. No restart.
+- The lockout of failures (429) counts per pod. Behind an Ingress or a Gateway (HTTP proxies), without `auth.trustedProxies` everyone is the proxy's one source and is locked out together.
 
 ## Migrations
 
@@ -226,8 +252,9 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `image.repository`, `tag`, `digest` | `ghcr.io/max3584/rproxy-ui`, the chart's appVersion | |
 | `replicas` | `2` | |
 | `url` | (required) | `NEXTAUTH_URL` |
-| `existingSecret` | (required) | `NEXTAUTH_SECRET`, `KEYCLOAK_CLIENT_SECRET`, `DB_PASSWORD` |
-| `keycloak.issuer`, `clientId` | (required), `rproxy-ui` | |
+| `existingSecret` | (required) | `NEXTAUTH_SECRET`, `KEYCLOAK_CLIENT_SECRET` (with Keycloak), `DB_PASSWORD` |
+| `auth.mode`, `tokensSecret`, `tokensKey`, `trustedProxies` | `keycloak`, empty, `tokens.yaml`, empty | `RPROXY_UI_AUTH` (`keycloak`, `token`, `both`), the token file's Secret (required with `token` and `both`), `RPROXY_UI_TRUSTED_PROXIES` ("Installing without Keycloak" above) |
+| `keycloak.issuer`, `clientId` | (required with `keycloak` and `both`), `rproxy-ui` | |
 | `roles.*` | empty | `RPROXY_UI_ROLES_CLAIM`, `_ADMIN_ROLE`, `_USER_ROLE`, `_USER_PORTS`, `_USER_NODES`, `_USER_TARGETS`, `_USER_CERTS`, `_USER_CERTS_BY_SUB` (`userCertsBySub`), `_USER_CERTS_BY_ROLE` (`userCertsByRole`), `_USER_CACHE_MAX_MEMORY` (`userCacheMaxMemory`), `_USER_CACHE_MAX_ENTRIES` (`userCacheMaxEntries`), `RPROXY_UI_PROTECTED_TARGETS` (`protectedTargets`; Pod IPs change, so write the Pod and Service CIDRs; with `userRole` empty, people without `rproxy-admin` cannot use the UI) |
 | `db.host`, `port`, `database`, `user` | empty, 3306, `rproxy`, `rproxy_ui` | |
 | `db.tls.enabled`, `caSecret`, `caKey`, `verify` | `false`, empty, `ca.crt`, `true` | TLS to an external DB ("TLS to an external DB" above) |

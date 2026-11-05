@@ -45,6 +45,10 @@ install -m 0644 README.md "$stage/usr/share/doc/rproxy-ui/README.md"
 install -m 0644 README.en.md "$stage/usr/share/doc/rproxy-ui/README.en.md"
 install -m 0644 LICENSE "$stage/usr/share/doc/rproxy-ui/copyright"
 cp -a db "$stage/usr/share/rproxy-ui/db"
+# トークンでのサインインのトークンを作るコマンド（#179。yaml は /usr/lib/rproxy-ui/node_modules から読む）
+install -m 0755 scripts/rproxy-ui-token.mjs "$lib/rproxy-ui-token.mjs"
+mkdir -p "$stage/usr/bin"
+ln -s ../lib/rproxy-ui/rproxy-ui-token.mjs "$stage/usr/bin/rproxy-ui-token"
 # keepalived と組むスクリプトと設定の例（#109）
 mkdir -p "$stage/usr/share/doc/rproxy-ui/examples"
 cp -a contrib/keepalived "$stage/usr/share/doc/rproxy-ui/examples/keepalived"
@@ -53,7 +57,7 @@ echo /etc/rproxy-ui/rproxy-ui.env > "$stage/DEBIAN/conffiles"
 # the same modes whatever the umask of the build machine
 chmod -R u=rwX,go=rX "$stage"
 chmod 0600 "$stage/etc/rproxy-ui/rproxy-ui.env"
-chmod 0755 "$stage"/DEBIAN/postinst "$stage"/DEBIAN/prerm "$stage"/DEBIAN/postrm
+chmod 0755 "$stage"/DEBIAN/postinst "$stage"/DEBIAN/prerm "$stage"/DEBIAN/postrm "$lib/rproxy-ui-token.mjs"
 
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: rproxy-ui

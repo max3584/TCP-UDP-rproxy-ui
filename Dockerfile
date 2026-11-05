@@ -32,6 +32,8 @@ COPY --from=build /src/.next/standalone/ ./
 COPY --from=build /src/.next/static ./.next/static
 COPY --from=build /src/public ./public
 COPY --from=build /src/db ./db
+# トークンでのサインインのトークンを作るコマンド（#179。docker run --rm <イメージ> node rproxy-ui-token.mjs new --name <名前> --role admin --stdout）
+COPY --from=build /src/scripts/rproxy-ui-token.mjs ./rproxy-ui-token.mjs
 # the cache is the only place the server writes under /app (an emptyDir in the chart; writable here without one)
 RUN mkdir -p .next/cache && chown 65532:65532 .next/cache
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000

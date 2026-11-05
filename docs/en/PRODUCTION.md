@@ -3,7 +3,7 @@
 日本語: [../PRODUCTION.md](../PRODUCTION.md)
 
 Steps to install rproxy-api and the UI (rproxy-ui) on one host (Debian 13 / Ubuntu 24.04) and publish the dashboard over HTTPS through rproxy.
-This assumes the DB (MariaDB) and Keycloak are on other hosts.
+This assumes the DB (MariaDB) and Keycloak are on other hosts. Without Keycloak, skip 3. and see "Running without Keycloak (token sign-in)" in 5.
 
 ```
 Browser ──HTTPS 443──▶ rproxy-api (TLS termination, only dashboard.example.com passes, allow_from)
@@ -231,6 +231,27 @@ tokens:
 ```
 
 `TOKEN` is the value put in the UI's `RPROXY_API_TOKEN` (generate it with e.g. `openssl rand -hex 32`). After changing the token file, run `sudo systemctl reload rproxy-api`.
+
+### Running without Keycloak (token sign-in)
+
+For the minimal setup without Keycloak (the UI, MariaDB and rproxy), skip 3. and sign in with tokens an administrator issues (README, "Token sign-in (without Keycloak)").
+
+```shell
+# make a token (shown once; the file gets only its sha256; owned by rproxy-ui, 600)
+sudo rproxy-ui-token new --name admin --role admin --file /etc/rproxy-ui/tokens.yaml --owner rproxy-ui
+```
+
+Leave `KEYCLOAK_*` in `/etc/rproxy-ui/rproxy-ui.env` empty and add (with `both`, Keycloak works too):
+
+```shell
+RPROXY_UI_AUTH=token
+RPROXY_UI_TOKENS_FILE=/etc/rproxy-ui/tokens.yaml
+# RPROXY_UI_USER_ROLE=rproxy-user       # for role: user tokens (empty: admins only)
+```
+
+- `/etc/rproxy-ui` is `root:rproxy-ui` 750 (the package sets it). Keep the token file owned by `rproxy-ui` with mode 600 (with another owner or mode the UI does not start).
+- To revoke: `sudo rproxy-ui-token remove --name <name> --file /etc/rproxy-ui/tokens.yaml` (that token's sessions end at the next check; no restart).
+- A source with repeated failures is locked out for 15 minutes (429). rproxy in front is L4, so the source is the peer address (`RPROXY_UI_TRUSTED_PROXIES` is not needed). With rproxy's `source_ip` at `proxy` (the default), every peer the UI sees is rproxy (127.0.0.1) and they are locked out together: limit the dashboard's static rule to the users' addresses with `allow_from`.
 
 ### Security headers and sessions
 

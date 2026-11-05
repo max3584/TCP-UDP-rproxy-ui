@@ -8,7 +8,7 @@
 
 English: [README.en.md](README.en.md)
 
-[rproxy-api](https://github.com/max3584/rproxy-api) の転送ルールを管理する Web UI（Next.js、Keycloak でサインイン、ルールは MariaDB に保存）。
+[rproxy-api](https://github.com/max3584/rproxy-api) の転送ルールを管理する Web UI（Next.js、Keycloak かトークンでサインイン、ルールは MariaDB に保存）。
 バージョンは rproxy-api と別々に進める（UI が動くのに必要な rproxy-api の最小の版はリリースノートに書く。docs/RELEASING.md）。
 
 ## 画面
@@ -54,7 +54,7 @@ echo "deb [signed-by=/usr/share/keyrings/rproxy-archive-keyring.gpg] https://max
 sudo apt update && sudo apt install rproxy-ui
 ```
 
-- 設定は `/etc/rproxy-ui/rproxy-ui.env`（600）。`NEXTAUTH_URL`、`KEYCLOAK_*`、`DB_*` を書いてから `sudo systemctl enable --now rproxy-ui` で起動する（インストールしただけでは起動しない）
+- 設定は `/etc/rproxy-ui/rproxy-ui.env`（600）。`NEXTAUTH_URL`、`KEYCLOAK_*`（Keycloak なしならトークン。下の「トークンでのサインイン（Keycloak なし）」）、`DB_*` を書いてから `sudo systemctl enable --now rproxy-ui` で起動する（インストールしただけでは起動しない）
 - `NEXTAUTH_SECRET` はインストール時に生成する。同じホストに rproxy-api があれば、API の URL と、そのトークンファイル（`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`。1 行に 1 トークンの書き方のとき）も入れる
 - `rproxy-ui` ユーザーは rproxy-api と共有するグループ `rproxy` に入る（なければインストール時に作る。ユニットの `SupplementaryGroups=rproxy`）。rproxy-api のファイル（`rproxy-api:rproxy` や `root:rproxy` でグループが読めるトークンファイル・証明書・制御 API の Unix ソケット）を、コピーせずにそのまま読める。前の版で `RPROXY_API_TOKEN` にコピーしたトークンはそのまま使う
 - 既定の待ち受けは `127.0.0.1:3000`（`HOSTNAME` / `PORT`）。外から見せるときは rproxy の固定ルール（TLS の終端とサーバ名での振り分け、`allow_from`）を前に置く（rproxy-api の README「固定ルールと、ダッシュボードの公開」）
@@ -105,6 +105,9 @@ DB_PASSWORD="[password]"
 KEYCLOAK_CLIENT_ID="[client_id]"
 KEYCLOAK_CLIENT_SECRET="[client_secret]"
 KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
+# Keycloak の代わりに（か、一緒に）トークンでサインインするとき（README の「トークンでのサインイン（Keycloak なし）」）
+# RPROXY_UI_AUTH="token"                 # keycloak（既定）・token・both
+# RPROXY_UI_TOKENS_FILE="/home/me/rproxy-ui-tokens.yaml"   # npm run token:new -- --name me --role admin --file ... で作る
 
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
@@ -135,9 +138,47 @@ Keycloak のレルムは `keycloak/realm-rproxy-dev.json` から作れる（管�
 
 Keycloak クライアントの「Valid redirect URIs」には `${NEXTAUTH_URL}/api/auth/callback/keycloak` を登録してください。
 
+## トークンでのサインイン（Keycloak なし）
+
+Keycloak を置かずに、UI・MariaDB・rproxy だけ（最小構成）で使うときは、管理者が発行するアクセストークンでサインインする（NextAuth の Credentials。#179）。
+
+| `RPROXY_UI_AUTH` | サインイン |
+|---|---|
+| `keycloak`（既定） | 今までどおり Keycloak だけ（`RPROXY_UI_AUTH` がなく、`KEYCLOAK_ISSUER` がなく `RPROXY_UI_TOKENS_FILE` があれば `token`） |
+| `token` | トークンだけ。`KEYCLOAK_*` は要らない |
+| `both` | サインインのページ（`/signin`）にトークンの欄と「Keycloak でサインイン」のボタン |
+
+トークンのファイル（`RPROXY_UI_TOKENS_FILE`、YAML）にはトークンの SHA-256 だけを書く（平文のトークンは置かない）。
+
+```yaml
+tokens:
+  - name: admin            # 英数字で始まる 64 文字までの英数字・. _ -（重ならないこと）
+    sha256: 9f86d0...      # トークンの SHA-256（16 進 64 文字。printf %s "$TOKEN" | sha256sum）
+    role: admin            # admin（RPROXY_UI_ADMIN_ROLE）か user（RPROXY_UI_USER_ROLE）
+  - name: alice
+    sha256: 2c26b4...
+    role: user
+    sub: 0b6f2c1e-...      # 任意。ルールの持ち主と履歴の auth_id（既定は token:<name>）。Keycloak の sub にすれば同じ人のルールになる
+```
+
+- トークンは `rproxy-ui-token` で作る（.deb では `rproxy-ui-token`、リポジトリでは `npm run token -- ...`、イメージでは `node rproxy-ui-token.mjs`）。トークンは 1 回だけ表示し、ファイルには sha256 だけを書く（なければ 0600 で作る。置き換えは rename）。
+  ```shell
+  sudo rproxy-ui-token new --name admin --role admin --file /etc/rproxy-ui/tokens.yaml --owner rproxy-ui
+  sudo rproxy-ui-token list --file /etc/rproxy-ui/tokens.yaml
+  sudo rproxy-ui-token remove --name admin --file /etc/rproxy-ui/tokens.yaml
+  rproxy-ui-token new --name admin --role admin --stdout    # ファイルに書かずに、トークンと tokens: の行を出す（Kubernetes の Secret）
+  ```
+- ファイルは UI のユーザーの持ち物で、group・other の権限がないこと（600・400）。Kubernetes の Secret のボリューム（root の持ち物、group は fsGroup、440）のように root の持ち物なら group が読めるのはよい。ほかの持ち主・権限のファイルは読まずに起動を止める（動いている間に変わったときは止めずに、どのトークンも通さない）。中身の誤り（知らない項目・平文の `token:`・重なる name / sha256 など）も同じ。
+- ファイルは変わったら読み直す（再起動は要らない）。トークンのセッションは確かめるたびにファイルを見て（`RPROXY_UI_ROLE_REFRESH_SECS` によらない）、行が消えた・sha256 が変わった（入れ替え）・`role` や `sub` が変わったら、次の確認で無効になる（画面はサインインへ、API は 401）。
+- `role: user` は `RPROXY_UI_USER_ROLE` のロールになる。`RPROXY_UI_USER_ROLE` が空（既定）なら利用者はいないので、`role: user` のトークンでは使えない（403 `no_role`。起動時に警告）。利用者の制限（`RPROXY_UI_USER_*`）は Keycloak の利用者と同じに効く（`RPROXY_UI_USER_CERTS_BY_SUB` のキーはそのトークンの sub）。
+- セッションの長さは Keycloak と同じ `RPROXY_UI_SESSION_MAX_AGE`（サインインから。使い続けても延びない）。クッキーも同じ（httpOnly・SameSite=Lax、`NEXTAUTH_URL` が https:// なら Secure）。トークンそのものはクッキーにもログにも入れない（セッションには行の name と sha256 から作った印だけ）。
+- 照合は sha256 をすべての行と一定時間で比べる。同じ送信元から 15 分の間に 5 回を超えて試すと（成功で数え直す）、その送信元は 15 分間 429（`Retry-After`）になる（正しいトークンでも）。IPv6 は /64 ごと。数えるのは UI のプロセスごと。HTTP のプロキシ（nginx・Ingress・Gateway）の後ろでは、そのアドレスを `RPROXY_UI_TRUSTED_PROXIES`（CIDR をカンマで）に書く（X-Forwarded-For を右から見て、信じるプロキシでない最初のアドレスを送信元にする。書かなければ全員がプロキシの 1 つの送信元になり、まとめて締め出される）。前の rproxy（L4）は X-Forwarded-For を付けないので要らない。
+- サインインの要求（`POST /api/auth/callback/token`）は NextAuth の CSRF トークンに加えて、ほかのサイトからなら 403（API と同じ `Sec-Fetch-Site`・`Origin` の確認）。サインインのページは CSP（nonce）の下で動く。
+- サインアウトは UI のセッションを消すだけ（Keycloak には何も送らない）。
+
 ## ロール（権限）
 
-Keycloak のロールで、だれが何をできるかを決める（API route がリクエストごとに確かめる）。
+Keycloak のロール（トークンでは `role`）で、だれが何をできるかを決める（API route がリクエストごとに確かめる）。
 
 | ロール | できること |
 |---|---|

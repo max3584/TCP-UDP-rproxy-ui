@@ -1,5 +1,11 @@
 {{- $_ := required "url is required (NEXTAUTH_URL)" .Values.url }}
-{{- $_ := required "keycloak.issuer is required" .Values.keycloak.issuer }}
+{{- $mode := include "rproxy-ui.authMode" . }}
+{{- if ne $mode "token" }}
+{{- $_ := required "keycloak.issuer is required (or auth.mode=token)" .Values.keycloak.issuer }}
+{{- end }}
+{{- if ne $mode "keycloak" }}
+{{- $_ := required "auth.tokensSecret is required with auth.mode token or both" .Values.auth.tokensSecret }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,12 +51,23 @@ spec:
               value: {{ .Values.url | quote }}
             - name: NEXTAUTH_SECRET
               valueFrom: {secretKeyRef: {name: {{ include "rproxy-ui.existingSecret" . }}, key: NEXTAUTH_SECRET}}
+            - {name: RPROXY_UI_AUTH, value: {{ $mode | quote }}}
+            {{- if ne $mode "token" }}
             - name: KEYCLOAK_ISSUER
               value: {{ .Values.keycloak.issuer | quote }}
             - name: KEYCLOAK_CLIENT_ID
               value: {{ .Values.keycloak.clientId | quote }}
             - name: KEYCLOAK_CLIENT_SECRET
               valueFrom: {secretKeyRef: {name: {{ include "rproxy-ui.existingSecret" . }}, key: KEYCLOAK_CLIENT_SECRET}}
+            {{- end }}
+            {{- if ne $mode "keycloak" }}
+            - name: RPROXY_UI_TOKENS_FILE
+              value: /etc/rproxy-ui/auth/{{ .Values.auth.tokensKey }}
+            {{- end }}
+            {{- with .Values.auth.trustedProxies }}
+            - name: RPROXY_UI_TRUSTED_PROXIES
+              value: {{ . | quote }}
+            {{- end }}
             {{- include "rproxy-ui.dbEnv" . | nindent 12 }}
             - name: RPROXY_UI_USAGE_SECS
               value: {{ .Values.usage.intervalSeconds | quote }}
@@ -106,6 +123,9 @@ spec:
             {{- if .Values.rproxy.discovery.enabled }}
             - {name: k8s-discovery, mountPath: /etc/rproxy-ui/k8s, readOnly: true}
             {{- end }}
+            {{- if ne $mode "keycloak" }}
+            - {name: auth-tokens, mountPath: /etc/rproxy-ui/auth, readOnly: true}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}{{ toYaml . | nindent 12 }}{{ end }}
       volumes:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
@@ -123,6 +143,15 @@ spec:
         # written by rproxy-gateway (ui.namespace); absent until a Gateway is shown to the UI
         - name: k8s-discovery
           secret: {secretName: {{ .Values.rproxy.discovery.secretName }}, optional: true, defaultMode: 0440}
+        {{- end }}
+        {{- if ne $mode "keycloak" }}
+        # the token file (RPROXY_UI_TOKENS_FILE): the UI reads a root-owned file only with no access for others
+        # (group read is fsGroup's); a wider defaultMode stops the UI at start
+        - name: auth-tokens
+          secret:
+            secretName: {{ .Values.auth.tokensSecret }}
+            defaultMode: 0440
+            items: [{key: {{ .Values.auth.tokensKey | quote }}, path: {{ .Values.auth.tokensKey | quote }}}]
         {{- end }}
         {{- with .Values.extraVolumes }}{{ toYaml . | nindent 8 }}{{ end }}
       {{- with .Values.nodeSelector }}

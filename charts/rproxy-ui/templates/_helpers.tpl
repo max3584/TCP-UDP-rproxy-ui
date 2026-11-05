@@ -56,7 +56,16 @@ app.kubernetes.io/component: database
 {{- end -}}
 
 {{- define "rproxy-ui.existingSecret" -}}
-{{- required "existingSecret is required: a Secret with NEXTAUTH_SECRET, KEYCLOAK_CLIENT_SECRET and DB_PASSWORD" .Values.existingSecret -}}
+{{- required "existingSecret is required: a Secret with NEXTAUTH_SECRET, DB_PASSWORD and (with Keycloak) KEYCLOAK_CLIENT_SECRET" .Values.existingSecret -}}
+{{- end -}}
+
+{{/* auth.mode (RPROXY_UI_AUTH): keycloak, token or both */}}
+{{- define "rproxy-ui.authMode" -}}
+{{- $mode := default "keycloak" .Values.auth.mode -}}
+{{- if not (has $mode (list "keycloak" "token" "both")) -}}
+{{- fail (printf "auth.mode must be keycloak, token or both: %s" $mode) -}}
+{{- end -}}
+{{- $mode -}}
 {{- end -}}
 
 {{/* DB_* for the UI and the migration Job (the password from existingSecret) */}}
