@@ -1,7 +1,7 @@
 // トークンでのサインイン（#179）。Keycloak のクッキーを作らず、画面のサインインのページからトークンでサインインする。
 // playwright.config.ts の 2 つめの UI（TOKEN_BASE_URL。RPROXY_UI_AUTH=both、トークンは tests/ui/token-fixture.cjs）を相手にする。
 // サインインのページが CSP の下で動くこと（違反がないこと）、取り消し（ファイルから行を消す）で次の確認からセッションが切れること、
-// 失敗の続く送信元が締め出される（429）ことも確かめる
+// 誤ったトークンの続く送信元の誤ったトークンが 429 になり、正しいトークンは通ることも確かめる
 import { expect, test, type Page } from '@playwright/test';
 import { TOKEN_BASE_URL } from '../../playwright.config';
 import { E2E_TOKENS, E2E_USER_SUB, writeTokens } from './token-fixture.cjs';
@@ -99,16 +99,19 @@ test.describe('token sign-in', () => {
     expect(res.status()).toBe(403);
   });
 
-  test('a source with repeated failures is locked out (429), even with the right token', async ({ page }) => {
-    // this test's own source (X-Forwarded-For through the trusted 127.0.0.1): the other tests keep signing in
+  test('a source with repeated wrong tokens gets 429 for wrong tokens; the right token still signs in', async ({ page }) => {
+    // this test's own source (X-Forwarded-For through the trusted 127.0.0.1): the other tests keep their count
     await page.route('**/api/auth/callback/token', (route) => route.continue({ headers: { ...route.request().headers(), 'x-forwarded-for': '198.51.100.77' } }));
     await page.goto('/signin');
     for (let i = 0; i < 5; i++) {
       expect(await signIn(page, `rpui_wrong-${i}`)).toBe(401);
       await expect(page.locator('main').getByRole('alert')).toHaveText('トークンが違います。');
     }
-    expect(await signIn(page, E2E_TOKENS.admin)).toBe(429);
-    await expect(page.locator('main').getByRole('alert')).toContainText('しばらくサインインできません');
+    expect(await signIn(page, 'rpui_wrong-5')).toBe(429);
+    await expect(page.locator('main').getByRole('alert')).toContainText('しばらく断っています');
     expect(await session(page)).toEqual({});
+    expect(await signIn(page, E2E_TOKENS.admin)).toBe(200);
+    await page.waitForURL((url) => url.pathname === '/');
+    expect((await session(page)).user?.name).toBe('e2e-admin');
   });
 });

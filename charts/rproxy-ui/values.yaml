@@ -30,8 +30,9 @@ auth:
   # or so and take effect on the next session check (a removed token signs out)
   tokensSecret: ""
   tokensKey: tokens.yaml
-  # CIDRs of the HTTP proxies in front (the Ingress controller, the Gateway) whose X-Forwarded-For gives the client
-  # address for the lockout of failed token sign-ins (RPROXY_UI_TRUSTED_PROXIES). Empty: the peer address
+  # CIDRs of the HTTP proxies in front (the Ingress controller, the Gateway pods) whose X-Forwarded-For gives the client
+  # address for the lockout of wrong tokens (RPROXY_UI_TRUSTED_PROXIES). As narrow as possible: only the proxies' pods
+  # (a whole pod CIDR lets other pods forge X-Forwarded-For). Empty: the peer address
   trustedProxies: ""
 
 keycloak:

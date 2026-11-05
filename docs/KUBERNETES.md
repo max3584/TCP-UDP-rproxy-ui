@@ -97,14 +97,14 @@ existingSecret: rproxy-ui           # NEXTAUTH_SECRET と DB_PASSWORD だけで�
 auth:
   mode: token
   tokensSecret: rproxy-ui-tokens    # キー tokens.yaml（auth.tokensKey）
-  trustedProxies: 10.0.0.0/8        # Ingress のコントローラ・Gateway の Pod の CIDR（失敗の締め出しの送信元を X-Forwarded-For から取る）
+  trustedProxies: 10.244.7.0/28     # Ingress のコントローラ・Gateway の Pod だけを含む、できるだけ狭い範囲（誤りの締め出しの送信元を X-Forwarded-For から取る）
 roles: {userRole: rproxy-user}      # role: user のトークンを使うなら
 mariadb: {enabled: true, existingSecret: rproxy-ui-mariadb}
 ```
 
 - Secret は `/etc/rproxy-ui/auth` に読むだけで付く（`root`・group は fsGroup・`0440`）。UI は root の持ち物なら group が読めるのを認める。
 - トークンを足す・消すときは Secret を書き換える（`kubectl create secret ... --dry-run=client -o yaml | kubectl apply -f -`）。kubelet が Pod のファイルを入れ替えると（1 分ほど）、消したトークンのセッションは次の確認で切れる。再起動は要らない。
-- 失敗の締め出し（429）は Pod ごとに数える。Ingress・Gateway（HTTP のプロキシ）の後ろでは `auth.trustedProxies` を書かないと、全員がプロキシの 1 つの送信元になってまとめて締め出される。
+- 誤ったトークンの締め出し（429。正しいトークンは通す）は Pod ごとに数える。Ingress・Gateway（HTTP のプロキシ）の後ろでは `auth.trustedProxies` を書かないと、全員がプロキシの 1 つの送信元として数えられる（ログに警告が出る）。`auth.trustedProxies` はプロキシの Pod だけを含むできるだけ狭い範囲にする（クラスタの Pod の CIDR 全体にすると、ほかの Pod が X-Forwarded-For を偽れる）。上限は `extraEnv` の `RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS`・`RPROXY_UI_TOKEN_LOCKOUT_SECS`。トークンは必ず `rproxy-ui-token` で作る。
 
 ## migration
 

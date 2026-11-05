@@ -1887,7 +1887,7 @@ export const en: Record<string, string> = {
   "ふつうのファイルではありません": "Not a regular file",
   "RPROXY_UI_TRUSTED_PROXIES は CIDR か IP アドレスをカンマで区切って書いてください: {0}": "Write RPROXY_UI_TRUSTED_PROXIES as comma-separated CIDRs or IP addresses: {0}",
   "RPROXY_UI_TOKENS_FILE（{0}）:": "RPROXY_UI_TOKENS_FILE ({0}):",
-  "失敗が続いたため、この送信元からはしばらくサインインできません。{0} 秒後にもう一度試してください。": "Too many failed attempts: sign-in from this address is blocked for now. Try again in {0} seconds.",
+  "誤ったトークンが続いたため、この送信元からのトークンをしばらく断っています（正しいトークンなら通ります）。トークンを確かめてください。{0} 秒後に解けます。": "Too many wrong tokens: tokens from this address are refused for now (a right token still works). Check the token. This ends in {0} seconds.",
   "サインインのページが古くなっています。ページを読み込み直してから、もう一度試してください。": "This sign-in page is out of date. Reload the page and try again.",
   "サインインできませんでした。しばらくしてからもう一度試してください。": "Could not sign in. Try again later.",
   "トークンを入力してください。": "Enter a token.",
@@ -1897,4 +1897,5 @@ export const en: Record<string, string> = {
   "サインインしています…": "Signing in…",
   "トークンでサインイン": "Sign in with a token",
   "Keycloak でサインイン": "Sign in with Keycloak",
+  "{0} は 1 から {1} までの整数にしてください: {2}": "{0} must be an integer from 1 to {1}: {2}",
 };

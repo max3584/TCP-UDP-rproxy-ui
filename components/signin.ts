@@ -12,13 +12,19 @@ export async function startSignIn(): Promise<void> {
   await signIn('keycloak');
 }
 
-// サインインのあとに戻る先。同じサイトのパスだけ（ほかのサイトへ移す罠にしない）。読めなければ /
+// サインインのあとに戻る先。同じサイトのパスだけ（ほかのサイトへ移す罠にしない）。読めなければ /。
+// バックスラッシュ・制御文字を含むもの、正規化したあとに // や /\ で始まるもの（/.//evil.example・/%2e//evil.example など。
+// ブラウザはプロトコル相対の URL としてほかのサイトへ移る）も / にする
+const UNSAFE_CHARS = /[\\\u0000-\u001f\u007f]/;
+
 export function safeCallbackUrl(value: unknown, origin: string): string {
-  if (typeof value !== 'string' || value === '') return '/';
+  if (typeof value !== 'string' || value === '' || UNSAFE_CHARS.test(value)) return '/';
   try {
     const url = new URL(value, origin);
     if (url.origin !== origin) return '/';
-    return `${url.pathname}${url.search}${url.hash}`;
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    if (!path.startsWith('/') || path.startsWith('//') || path.startsWith('/\\') || UNSAFE_CHARS.test(path)) return '/';
+    return path;
   } catch {
     return '/';
   }

@@ -6,11 +6,11 @@ import { isCrossSiteRequest } from '@/components/apiguard';
 import { Logger, sessionUser } from '@/components/lib';
 import { accessOf, roleConfig } from '@/components/roles';
 import {
-  checkSession, keycloakLogout, keycloakRefresh, sessionConfig, sessionDeadline, sharedRefresher, signInToken, type SessionToken,
+  SessionInvalid, checkSession, keycloakLogout, keycloakRefresh, sessionConfig, sessionDeadline, sharedRefresher, signInToken, type SessionToken,
 } from '@/components/session';
 import {
-  AuthConfigError, Lockout, TokenStore, authSettings, checkTokenSession, sourceKey, tokenSignInToken, tokenUser, trustedProxies,
-  type AuthSettings, type TokenUser,
+  AuthConfigError, DEFAULT_LOCKOUT, Lockout, TokenStore, authSettings, checkTokenSession, lockoutOptions, sourceKey, tokenSignInToken, tokenUser,
+  trustedProxies, warnUntrustedForwarded, type AuthSettings, type LockoutOptions, type TokenUser,
 } from '@/components/tokenauth';
 
 // セッションの長さとロールの聞き直し（components/session.ts。RPROXY_UI_SESSION_MAX_AGE・RPROXY_UI_ROLE_REFRESH_SECS）
@@ -20,17 +20,17 @@ const log = Logger('info', { action: 'token-auth' });
 
 // サインインの方法（RPROXY_UI_AUTH。components/tokenauth.ts）。誤りは instrumentation-node.ts が起動時に止める。
 // ここでは今までどおり Keycloak だけにする（ビルドの時など、起動時の確認を通らずに読まれることがある）
-function settings(): { auth: AuthSettings; trusted: string[] } {
+function settings(): { auth: AuthSettings; trusted: string[]; limits: LockoutOptions } {
   try {
-    return { auth: authSettings(), trusted: trustedProxies() };
+    return { auth: authSettings(), trusted: trustedProxies(), limits: lockoutOptions() };
   } catch (err) {
     if (!(err instanceof AuthConfigError)) throw err;
-    return { auth: { mode: 'keycloak', keycloak: true, token: false, tokensFile: null }, trusted: [] };
+    return { auth: { mode: 'keycloak', keycloak: true, token: false, tokensFile: null }, trusted: [], limits: DEFAULT_LOCKOUT };
   }
 }
-const { auth, trusted } = settings();
+const { auth, trusted, limits } = settings();
 const tokens = auth.tokensFile ? new TokenStore(auth.tokensFile) : null;
-const lockout = new Lockout();
+const lockout = new Lockout(limits);
 
 // トークンでのサインイン（NextAuth の Credentials）。source（締め出しの単位の送信元）は、サインインの要求を受けた handler が渡す。
 // getServerSession が使う authOptions では source がなく、authorize は何も通さない
@@ -41,13 +41,9 @@ function tokenProvider(source: string | null) {
     credentials: { token: { label: 'Token', type: 'password' } },
     async authorize(credentials): Promise<User | null> {
       if (!tokens || source === null) return null;
+      // 誤りの数え方と 429 は handler（照合したその場で数える）。トークンそのものはログに出さない
       const entry = tokens.verify(credentials?.token);
-      // トークンそのものはログに出さない
-      if (!entry) {
-        log.warn({ source }, 'トークンでのサインインに失敗しました（一致するトークンがありません）');
-        return null;
-      }
-      lockout.succeeded(source);
+      if (!entry) return null;
       log.info({ source, name: entry.name, sub: entry.sub, role: entry.role }, 'トークンでサインインしました');
       return tokenUser(entry) as unknown as User;
     },
@@ -82,6 +78,8 @@ export const authOptions: NextAuthOptions = {
       if (account) return signInToken(token, account);
       // トークンのセッションは、トークンのファイルの今の内容で確かめる（消えた・入れ替えた・ロールが変わったら無効）
       if ((token as SessionToken).authMethod === 'token') return checkTokenSession(token as SessionToken, sessionCfg, tokens);
+      // RPROXY_UI_AUTH=token では Keycloak のセッション（前の設定のクッキーなど）を使わせない
+      if (!auth.keycloak) throw new SessionInvalid('keycloak sign-in is not enabled');
       // 期限を過ぎた・Keycloak が断ったら例外になり、NextAuth がセッションのクッキーを消す
       return checkSession(token as SessionToken, sessionCfg, refresh);
     },
@@ -124,19 +122,26 @@ const isTokenSignIn = (req: NextApiRequest): boolean => {
 };
 
 // トークンのサインインの要求（POST /api/auth/callback/token）だけ、NextAuth の前に確かめる：
-// ほかのサイトからの要求は 403（NextAuth の CSRF トークンに加えて。#164 と同じ確認）、失敗の続く送信元は 429（Retry-After）
+// ほかのサイトからの要求は 403（NextAuth の CSRF トークンに加えて。#164 と同じ確認）。
+// トークンをここで照合し、誤りならその場で数える（同時に送っても数え漏れない）。誤りの続く送信元の誤ったトークンは 429（Retry-After）。
+// 正しいトークンは締め出し中でも NextAuth に渡す（Lockout の説明）
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!auth.token || !isTokenSignIn(req)) return NextAuth(req, res, authOptions);
   if (isCrossSiteRequest(req)) {
     res.status(403).json({ code: 'csrf' });
     return;
   }
+  warnUntrustedForwarded(req.headers['x-forwarded-for'], trusted);
   const source = sourceKey(req.socket?.remoteAddress, req.headers['x-forwarded-for'], trusted);
-  const wait = lockout.attempt(source);
-  if (wait > 0) {
-    res.setHeader('Retry-After', String(wait));
-    res.status(429).json({ code: 'too_many_attempts', retryAfter: wait });
-    return;
+  const presented = (req.body as Record<string, unknown> | undefined)?.token;
+  if (!tokens?.verify(presented)) {
+    const wait = lockout.failed(source);
+    log.warn({ source, locked: wait > 0 }, 'トークンでのサインインに失敗しました（一致するトークンがありません）');
+    if (wait > 0) {
+      res.setHeader('Retry-After', String(wait));
+      res.status(429).json({ code: 'too_many_attempts', retryAfter: wait });
+      return;
+    }
   }
   return NextAuth(req, res, { ...authOptions, providers: providers(source) });
 }

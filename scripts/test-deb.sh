@@ -96,6 +96,9 @@ if [ -z "$css" ] || [ "$(code "$css")" != 200 ]; then fail "static files are not
 echo "== token sign-in (RPROXY_UI_AUTH=both, #179)"
 [ "$(stat -c '%a %U:%G' /etc/rproxy-ui)" = "750 root:rproxy-ui" ] || fail "/etc/rproxy-ui mode/owner"
 tokens=/etc/rproxy-ui/tokens.yaml
+# root without --owner would make a root:root 0600 file the UI cannot read: refused
+! sudo rproxy-ui-token new --name admin --role admin --file $tokens >/dev/null 2>&1 || fail "root made a new token file without --owner"
+[ ! -e $tokens ] || fail "a refused rproxy-ui-token new left a file"
 token=$(sudo rproxy-ui-token new --name admin --role admin --file $tokens --owner rproxy-ui) || fail "rproxy-ui-token new"
 [ "$(sudo stat -c '%a %U' $tokens)" = "600 rproxy-ui" ] || fail "token file mode/owner"
 ! sudo grep -q "$token" $tokens || fail "the plain token is in the token file"

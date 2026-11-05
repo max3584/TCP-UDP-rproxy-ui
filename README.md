@@ -153,7 +153,7 @@ Keycloak を置かずに、UI・MariaDB・rproxy だけ（最小構成）で使�
 ```yaml
 tokens:
   - name: admin            # 英数字で始まる 64 文字までの英数字・. _ -（重ならないこと）
-    sha256: 9f86d0...      # トークンの SHA-256（16 進 64 文字。printf %s "$TOKEN" | sha256sum）
+    sha256: 9f86d0...      # トークンの SHA-256（16 進 64 文字）。トークンは rproxy-ui-token で作る（下）
     role: admin            # admin（RPROXY_UI_ADMIN_ROLE）か user（RPROXY_UI_USER_ROLE）
   - name: alice
     sha256: 2c26b4...
@@ -172,7 +172,8 @@ tokens:
 - ファイルは変わったら読み直す（再起動は要らない）。トークンのセッションは確かめるたびにファイルを見て（`RPROXY_UI_ROLE_REFRESH_SECS` によらない）、行が消えた・sha256 が変わった（入れ替え）・`role` や `sub` が変わったら、次の確認で無効になる（画面はサインインへ、API は 401）。
 - `role: user` は `RPROXY_UI_USER_ROLE` のロールになる。`RPROXY_UI_USER_ROLE` が空（既定）なら利用者はいないので、`role: user` のトークンでは使えない（403 `no_role`。起動時に警告）。利用者の制限（`RPROXY_UI_USER_*`）は Keycloak の利用者と同じに効く（`RPROXY_UI_USER_CERTS_BY_SUB` のキーはそのトークンの sub）。
 - セッションの長さは Keycloak と同じ `RPROXY_UI_SESSION_MAX_AGE`（サインインから。使い続けても延びない）。クッキーも同じ（httpOnly・SameSite=Lax、`NEXTAUTH_URL` が https:// なら Secure）。トークンそのものはクッキーにもログにも入れない（セッションには行の name と sha256 から作った印だけ）。
-- 照合は sha256 をすべての行と一定時間で比べる。同じ送信元から 15 分の間に 5 回を超えて試すと（成功で数え直す）、その送信元は 15 分間 429（`Retry-After`）になる（正しいトークンでも）。IPv6 は /64 ごと。数えるのは UI のプロセスごと。HTTP のプロキシ（nginx・Ingress・Gateway）の後ろでは、そのアドレスを `RPROXY_UI_TRUSTED_PROXIES`（CIDR をカンマで）に書く（X-Forwarded-For を右から見て、信じるプロキシでない最初のアドレスを送信元にする。書かなければ全員がプロキシの 1 つの送信元になり、まとめて締め出される）。前の rproxy（L4）は X-Forwarded-For を付けないので要らない。
+- 照合は sha256 をすべての行と一定時間で比べる。同じ送信元から誤ったトークンが 15 分の間に 5 回を超えると、その送信元の誤ったトークンは 15 分間 429（`Retry-After`）になる（`RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS`・`RPROXY_UI_TOKEN_LOCKOUT_SECS`。既定 5・900 秒）。正しいトークンは締め出し中でも通す（同じ送信元に見えるほかの利用者を、誤りを送り続ける人が締め出せないように）。成功しても誤りの数は戻さない。IPv6 は /64 ごと。数えるのは UI のプロセスごと。HTTP のプロキシ（nginx・Ingress・Gateway）の後ろでは、そのアドレスをできるだけ狭く `RPROXY_UI_TRUSTED_PROXIES`（CIDR をカンマで）に書く（X-Forwarded-For を右から見て、信じるプロキシでない最初のアドレスを送信元にする。広く書くと、その範囲から X-Forwarded-For を偽って送信元を変えられる。書かなければ全員がプロキシの 1 つの送信元として数えられる。そのときに X-Forwarded-For の付いた要求が来ると、ログに 1 回警告を出す）。前の rproxy（L4）は X-Forwarded-For を付けないので要らない。
+- 締め出しは推測を遅くするだけで、守りの本体はトークンの長さ。トークンは必ず `rproxy-ui-token` で作る（256 ビットのランダムな値）。自分で作るなら 128 ビット以上のランダムな値（`openssl rand -base64 32` など）にし、パスワードや覚えられる文字列にしない（ファイルの sha256 からは強さを確かめられない）。
 - サインインの要求（`POST /api/auth/callback/token`）は NextAuth の CSRF トークンに加えて、ほかのサイトからなら 403（API と同じ `Sec-Fetch-Site`・`Origin` の確認）。サインインのページは CSP（nonce）の下で動く。
 - サインアウトは UI のセッションを消すだけ（Keycloak には何も送らない）。
 

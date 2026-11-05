@@ -7,7 +7,7 @@ import * as YAML from 'yaml';
 import { roleConfig } from '@/components/roles';
 import { SessionInvalid, type SessionToken } from '@/components/session';
 import {
-  AuthConfigError, Lockout, TOKEN_NAME, TokenFileError, TokenStore, authSettings, checkTokenSession, parseTokensFile, readTokensFile,
+  AuthConfigError, DEFAULT_LOCKOUT, Lockout, TOKEN_NAME, lockoutOptions, warnUntrustedForwarded, TokenFileError, TokenStore, authSettings, checkTokenSession, parseTokensFile, readTokensFile,
   sha256Hex, sourceKey, tokenFileModeProblem, tokenFingerprint, tokenRoles, tokenSignInToken, tokenSub, tokenUser, trustedProxies,
 } from '@/components/tokenauth';
 import { safeCallbackUrl, tokenSignInResult } from '@/components/signin';
@@ -216,36 +216,53 @@ describe('roles and the session', () => {
 describe('Lockout', () => {
   const opts = { maxAttempts: 3, windowSecs: 60, lockSecs: 120, maxEntries: 3 };
 
-  it('allows maxAttempts tries in the window, then locks the source (even for a correct token) for lockSecs', () => {
+  it('allows maxAttempts wrong tokens in the window, then answers wrong tokens with 429 for lockSecs', () => {
     const l = new Lockout(opts);
-    expect([l.attempt('a', T0), l.attempt('a', T0 + 1), l.attempt('a', T0 + 2)]).toEqual([0, 0, 0]);
-    expect(l.attempt('a', T0 + 3)).toBe(120);
-    expect(l.attempt('a', T0 + 63)).toBe(60);
+    expect([l.failed('a', T0), l.failed('a', T0 + 1), l.failed('a', T0 + 2)]).toEqual([0, 0, 0]);
+    expect(l.failed('a', T0 + 3)).toBe(120);
+    expect(l.failed('a', T0 + 63)).toBe(60);
     // another source is not affected
-    expect(l.attempt('b', T0 + 3)).toBe(0);
+    expect(l.failed('b', T0 + 3)).toBe(0);
     // after the lock: a fresh window
-    expect(l.attempt('a', T0 + 123)).toBe(0);
+    expect(l.failed('a', T0 + 123)).toBe(0);
   });
 
-  it('starts over after a success and after the window', () => {
-    const l = new Lockout(opts);
-    l.attempt('a', T0);
-    l.attempt('a', T0);
-    l.succeeded('a');
-    expect([l.attempt('a', T0), l.attempt('a', T0), l.attempt('a', T0)]).toEqual([0, 0, 0]);
+  it('starts over only after the window (no reset by a success)', () => {
     const w = new Lockout(opts);
-    w.attempt('a', T0);
-    w.attempt('a', T0);
-    w.attempt('a', T0);
-    expect(w.attempt('a', T0 + 60)).toBe(0);
+    w.failed('a', T0);
+    w.failed('a', T0);
+    w.failed('a', T0);
+    expect(w.failed('a', T0 + 59)).toBe(120);
+    const x = new Lockout(opts);
+    x.failed('a', T0);
+    x.failed('a', T0);
+    x.failed('a', T0);
+    expect(x.failed('a', T0 + 60)).toBe(0);
   });
 
   it('forgets the oldest sources beyond maxEntries', () => {
     const l = new Lockout(opts);
-    for (let i = 0; i < 4; i++) l.attempt('a', T0);
-    expect(l.attempt('a', T0)).toBeGreaterThan(0);
-    for (const s of ['b', 'c', 'd']) l.attempt(s, T0);
-    expect(l.attempt('a', T0)).toBe(0);
+    for (let i = 0; i < 4; i++) l.failed('a', T0);
+    expect(l.failed('a', T0)).toBeGreaterThan(0);
+    for (const s of ['b', 'c', 'd']) l.failed(s, T0);
+    expect(l.failed('a', T0)).toBe(0);
+  });
+
+  it('reads RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS and RPROXY_UI_TOKEN_LOCKOUT_SECS', () => {
+    expect(lockoutOptions({})).toEqual(DEFAULT_LOCKOUT);
+    expect(DEFAULT_LOCKOUT).toMatchObject({ maxAttempts: 5, windowSecs: 900, lockSecs: 900 });
+    expect(lockoutOptions({ RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS: '10', RPROXY_UI_TOKEN_LOCKOUT_SECS: '60' })).toMatchObject({ maxAttempts: 10, windowSecs: 60, lockSecs: 60 });
+    for (const bad of ['0', '-1', '1.5', 'x', '100000']) {
+      expect(() => lockoutOptions({ RPROXY_UI_TOKEN_LOCKOUT_SECS: bad }), bad).toThrow(AuthConfigError);
+      expect(() => lockoutOptions({ RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS: bad === '100000' ? '1001' : bad }), bad).toThrow(AuthConfigError);
+    }
+  });
+
+  it('warns once about X-Forwarded-For without RPROXY_UI_TRUSTED_PROXIES', () => {
+    expect(warnUntrustedForwarded('203.0.113.5', ['10.0.0.0/8'])).toBe(false);
+    expect(warnUntrustedForwarded(undefined, [])).toBe(false);
+    expect(warnUntrustedForwarded('203.0.113.5', [])).toBe(true);
+    expect(warnUntrustedForwarded('203.0.113.5', [])).toBe(false);
   });
 });
 
@@ -276,7 +293,14 @@ describe('sign-in page helpers (components/signin.ts)', () => {
   it('keeps the callback URL on this site', () => {
     expect(safeCallbackUrl('/rules/new?x=1#a', origin)).toBe('/rules/new?x=1#a');
     expect(safeCallbackUrl('https://ui.example/history', origin)).toBe('/history');
-    for (const bad of ['https://evil.example/', '//evil.example/x', 'javascript:alert(1)', '', undefined, ['/x']]) expect(safeCallbackUrl(bad, origin)).toBe('/');
+    const bad = [
+      'https://evil.example/', '//evil.example/x', 'javascript:alert(1)', '', undefined, ['/x'],
+      // normalized into a protocol-relative path (M1 of the review)
+      '/.//evil.example', '/..//evil.example', '/%2e//evil.example', '/%2E%2E//evil.example', 'https://ui.example//evil.example',
+      '/./\\evil.example', '/\\evil.example', '\\\\evil.example', '/x\\y', '/a\tb', '/a\nb', '/a\u0000b',
+    ];
+    for (const v of bad) expect(safeCallbackUrl(v, origin), String(v)).toBe('/');
+    expect(safeCallbackUrl('/a//b', origin)).toBe('/a//b');
   });
 
   it('reads the answer of POST /api/auth/callback/token', () => {
@@ -324,7 +348,10 @@ describe('scripts/rproxy-ui-token.mjs', () => {
       const out: string[] = [];
       const err: string[] = [];
       const sink = (a: string[]) => ({ write: (s: string) => { a.push(s); return true; } });
-      expect(await tool.main(['new', '--name', 'admin', '--role', 'admin', '--file', path], {}, sink(out), sink(err))).toBe(0);
+      // root（CI のコンテナ）が新しく作るときは --owner が要る（root:root 0600 は UI が読めない）
+      const root = process.getuid?.() === 0;
+      if (root) await expect(tool.main(['new', '--name', 'admin', '--role', 'admin', '--file', path], {}, sink(out), sink(err))).rejects.toThrow(/--owner/);
+      expect(await tool.main(['new', '--name', 'admin', '--role', 'admin', '--file', path, ...(root ? ['--owner', '0'] : [])], {}, sink(out), sink(err))).toBe(0);
       const token = out.join('').trim();
       expect(token).toMatch(/^rpui_/);
       expect(err.join('')).not.toContain(token);
@@ -416,14 +443,43 @@ describe('the NextAuth handler', () => {
       expect(r.statusCode).toBe(401);
     }
     r = res();
-    await mod.default(post(TOKEN_A) as never, r as never);
+    await mod.default(post('rpui_wrong') as never, r as never);
     expect(r.statusCode).toBe(429);
     expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
     expect(r.body).toMatchObject({ code: 'too_many_attempts' });
-    // another source still signs in
+    // the right token still signs in while the source is locked (the lockout only stops guesses) ...
     r = res();
-    await mod.default(post(TOKEN_A, undefined, '198.51.100.7') as never, r as never);
+    await mod.default(post(TOKEN_A) as never, r as never);
     expect(r.statusCode).toBe(200);
+    // ... and does not reset the count
+    r = res();
+    await mod.default(post('rpui_wrong') as never, r as never);
+    expect(r.statusCode).toBe(429);
+    // another source is not locked
+    r = res();
+    await mod.default(post('rpui_wrong', undefined, '198.51.100.7') as never, r as never);
+    expect(r.statusCode).toBe(401);
+  });
+
+  it('a success does not reset the count of wrong tokens; the limits come from the env', async () => {
+    const { mod } = await load({ RPROXY_UI_AUTH: 'token', RPROXY_UI_TOKENS_FILE: join(dir, 'tokens.yaml'), RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS: '2' });
+    const statuses: number[] = [];
+    for (const t of ['rpui_wrong', TOKEN_A, 'rpui_wrong', 'rpui_wrong']) {
+      const r = res();
+      await mod.default(post(t) as never, r as never);
+      statuses.push(r.statusCode);
+    }
+    expect(statuses).toEqual([401, 200, 401, 429]);
+  });
+
+  it('token only: a Keycloak session (no authMethod) is refused; both: it goes on to the Keycloak check', async () => {
+    const kc = { sub: 'kc-1', roles: ['rproxy-admin'], authTime: Math.floor(Date.now() / 1000), rolesAt: Math.floor(Date.now() / 1000) };
+    const jwt = (m: { authOptions: { callbacks?: { jwt?: (a: never) => unknown } } }) => m.authOptions.callbacks!.jwt!({ token: kc } as never);
+    const only = await load({ RPROXY_UI_AUTH: 'token', RPROXY_UI_TOKENS_FILE: join(dir, 'tokens.yaml') });
+    await expect(jwt(only.mod)).rejects.toThrow(/keycloak sign-in is not enabled/);
+    vi.resetModules();
+    const both = await load({ RPROXY_UI_AUTH: 'both', RPROXY_UI_TOKENS_FILE: join(dir, 'tokens.yaml'), KEYCLOAK_ISSUER: 'https://kc.example/realms/r' });
+    await expect(jwt(both.mod)).resolves.toMatchObject({ sub: 'kc-1' });
   });
 
   it('a session check from getServerSession cannot sign in (no source)', async () => {

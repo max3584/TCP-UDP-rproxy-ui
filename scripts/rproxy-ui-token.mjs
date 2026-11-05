@@ -10,13 +10,13 @@
 // - new：ランダムなトークン（rpui_ + 32 バイト）を作り、標準出力に 1 回だけ出す。ファイルには sha256 だけを書く（平文は残さない）。
 //   --stdout はファイルに書かず、トークンと tokens: の行（YAML）を出す（Kubernetes の Secret に入れるとき）。
 // - ファイルは --file か RPROXY_UI_TOKENS_FILE。新しく作るときは 0600。置き換えは同じディレクトリの一時ファイルから rename（UI は
-//   次のセッションの確認で読み直す）。root で動かすときは --owner で持ち主（.deb では rproxy-ui）を決める（既定は今の持ち主）。
+//   次のセッションの確認で読み直す）。root で新しく作るときは --owner で持ち主（.deb では rproxy-ui）を決める（既にあれば既定は今の持ち主）。
 // - 既にあるファイルは、UI と同じく持ち主が自分（root なら誰でも）で group・other の権限がないものだけ書き換える。
 // 規則（name の形・role・同じ name や sha256 を断る）は components/tokenauth.ts の parseTokensFile と同じ（tests/tokenauth.test.ts が比べる）。
 // 依存は yaml だけ（UI と同じもの。.deb では /usr/lib/rproxy-ui/node_modules から読む）
 import { createHash, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { chownSync, closeSync, existsSync, fstatSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fchownSync, existsSync, fstatSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -147,18 +147,19 @@ function readChecked(path, uid) {
   }
 }
 
-// 同じディレクトリの一時ファイル（0600）に書いて rename
+// 同じディレクトリの一時ファイル（0600、O_EXCL で新しく作る）に書いて rename。持ち主は開いたファイルに fchown で付ける
+// （名前で chown すると、閉じたあとに入れ替えられたファイル・シンボリックリンクの先を変えてしまう）
 function writeAtomic(path, text, owner) {
   const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`);
   const fd = openSync(tmp, 'wx', 0o600);
   try {
-    writeSync(fd, text);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  try {
-    if (owner) chownSync(tmp, owner.uid, owner.gid);
+    try {
+      if (owner) fchownSync(fd, owner.uid, owner.gid);
+      writeSync(fd, text);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(tmp, path);
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* 消せなくても元の誤りを出す */ }
@@ -202,7 +203,11 @@ export async function main(argv, env = process.env, out = process.stdout, err = 
     for (const r of Array.isArray(doc.tokens) ? doc.tokens : []) out.write(`${r?.name}\t${r?.role}\t${r?.sub ?? `token:${r?.name}`}\n`);
     return 0;
   }
-  // root で既にあるファイルを書き換えるときは、持ち主を変えない
+  // root で既にあるファイルを書き換えるときは、持ち主を変えない。root で新しく作るときは --owner が要る
+  // （root:root 0600 のファイルは UI が読めない）
+  if (uid === 0 && !st && !opts.owner && opts.cmd === 'new') {
+    throw new Error('root で新しいファイルを作るときは --owner に UI を動かすユーザー（.deb では rproxy-ui）を指定してください');
+  }
   const owner = opts.owner ? uidOf(opts.owner) : uid === 0 && st ? { uid: st.uid, gid: st.gid } : null;
   if (owner && owner.gid < 0) owner.gid = st ? st.gid : owner.uid;
   if (opts.cmd === 'remove') {

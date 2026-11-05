@@ -12,7 +12,7 @@ const inputClass = 'border border-gray-300 rounded-sm px-2 py-2 w-full bg-white 
 function message(kind: string, retryAfter = 0): string {
   switch (kind) {
     case 'invalid': return t('トークンが違います。');
-    case 'locked': return t('失敗が続いたため、この送信元からはしばらくサインインできません。{0} 秒後にもう一度試してください。', { 0: retryAfter });
+    case 'locked': return t('誤ったトークンが続いたため、この送信元からのトークンをしばらく断っています（正しいトークンなら通ります）。トークンを確かめてください。{0} 秒後に解けます。', { 0: retryAfter });
     case 'csrf': return t('サインインのページが古くなっています。ページを読み込み直してから、もう一度試してください。');
     default: return t('サインインできませんでした。しばらくしてからもう一度試してください。');
   }

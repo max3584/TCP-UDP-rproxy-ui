@@ -4,5 +4,5 @@ existingSecret: rproxy-ui
 auth:
   mode: token
   tokensSecret: rproxy-ui-tokens
-  trustedProxies: 10.0.0.0/8
+  trustedProxies: 10.244.7.0/28
 mariadb: {enabled: true, existingSecret: rproxy-ui-mariadb}

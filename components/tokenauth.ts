@@ -5,7 +5,7 @@
 //   ファイルは UI のユーザーの持ち物で 0600（group・other の権限なし）。Kubernetes の Secret のボリューム（root の持ち物、
 //   group は fsGroup、0440）のために、root の持ち物ならグループが読めるのは認める（tokenFileModeProblem）。ほかは読まずに断る。
 // - ファイルは変わったら（stat の更新時刻・大きさ・inode）読み直す（TokenStore）。読めない・誤りのあるときはどのトークンも通さない。
-// - 照合は sha256 を全部の行と一定時間で比べる（verifyToken）。失敗の続く送信元は締め出す（Lockout。429）。
+// - 照合は sha256 を全部の行と一定時間で比べる（verify）。誤ったトークンの続く送信元は締め出す（Lockout。429。正しいトークンは通す）。
 // - セッションは Keycloak と同じ長さ（RPROXY_UI_SESSION_MAX_AGE）。セッションを確かめるたびにファイルを見て、トークンが消えた・
 //   入れ替わった・ロールや sub が変わったら無効にする（checkTokenSession）。
 // サーバ側だけで使う（node:fs・node:crypto）
@@ -279,8 +279,11 @@ export function checkTokenSession(token: SessionToken, cfg: SessionConfig, store
   return { ...token, roles: tokenRoles(entry!.role, roleConfig(env)), rolesAt: now };
 }
 
-// 失敗の続く送信元の締め出し。window 秒の中で maxAttempts 回まで試せる（成功で数え直す）。超えたら lock 秒は断る（正しいトークンでも）。
-// 照合の前に数える（同時にたくさん送っても maxAttempts を超えない）。プロセスの中だけ（UI を複数動かせばそれぞれで数える）
+// 誤ったトークンの続く送信元の締め出し。window 秒の中で maxAttempts 回まで誤れる。超えたら lock 秒は誤ったトークンに 429。
+// 正しいトークンは締め出し中でも通す（トークンは 256 ビットのランダムな値なので、締め出しは推測を止めるためだけ。
+// 同じ送信元に見える利用者（前のプロキシ・NAT）を、誤りを送り続ける人がまとめて締め出せないように）。
+// 成功しても誤りの数は戻さない（正しいトークンを持つ人が、ほかのトークンを推測し続けられないように）。
+// 照合したその場で数える（同時にたくさん送っても maxAttempts を超えて照合させない）。プロセスの中だけ（UI を複数動かせばそれぞれで数える）
 export interface LockoutOptions {
   maxAttempts: number;
   windowSecs: number;
@@ -291,13 +294,29 @@ export interface LockoutOptions {
 
 export const DEFAULT_LOCKOUT: LockoutOptions = { maxAttempts: 5, windowSecs: 15 * 60, lockSecs: 15 * 60, maxEntries: 10_000 };
 
+function positiveInt(env: Env, name: string, fallback: number, max: number): number {
+  const raw = (env[name] ?? '').trim();
+  if (raw === '') return fallback;
+  const n = Number(raw);
+  if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(n) || n < 1 || n > max) {
+    throw new AuthConfigError(`${name} は 1 から ${max} までの整数にしてください: ${raw}`);
+  }
+  return n;
+}
+
+// RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS（誤れる回数。既定 5）・RPROXY_UI_TOKEN_LOCKOUT_SECS（数える間と締め出す長さ。既定 900 秒）
+export function lockoutOptions(env: Env = process.env): LockoutOptions {
+  const secs = positiveInt(env, 'RPROXY_UI_TOKEN_LOCKOUT_SECS', DEFAULT_LOCKOUT.lockSecs, 86_400);
+  return { ...DEFAULT_LOCKOUT, maxAttempts: positiveInt(env, 'RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS', DEFAULT_LOCKOUT.maxAttempts, 1000), windowSecs: secs, lockSecs: secs };
+}
+
 export class Lockout {
   private readonly seen = new Map<string, { first: number; count: number; until: number }>();
 
   constructor(private readonly opts: LockoutOptions = DEFAULT_LOCKOUT) {}
 
-  // 試してよければ 0（数を 1 つ増やす）、締め出し中なら待つ秒
-  attempt(source: string, now = nowSecs()): number {
+  // 誤ったトークンを 1 回数える。まだ誤れるなら 0（401）、締め出し中・今回で超えたなら待つ秒（429）
+  failed(source: string, now = nowSecs()): number {
     let s = this.seen.get(source);
     if (s && s.until > now) return s.until - now;
     if (!s || now - s.first >= this.opts.windowSecs || s.until !== 0) s = { first: now, count: 0, until: 0 };
@@ -305,15 +324,11 @@ export class Lockout {
     if (s.count > this.opts.maxAttempts) {
       s.until = now + this.opts.lockSecs;
       this.remember(source, s);
-      log.warn({ source, lockSecs: this.opts.lockSecs }, 'トークンでのサインインの失敗が続いたので、この送信元を締め出します');
+      log.warn({ source, lockSecs: this.opts.lockSecs }, '誤ったトークンが続いたので、この送信元の誤ったトークンを締め出します（正しいトークンは通します）');
       return this.opts.lockSecs;
     }
     this.remember(source, s);
     return 0;
-  }
-
-  succeeded(source: string): void {
-    this.seen.delete(source);
   }
 
   private remember(source: string, s: { first: number; count: number; until: number }): void {
@@ -336,6 +351,16 @@ export function trustedProxies(env: Env = process.env): string[] {
     if (!c.ok) throw new AuthConfigError(`RPROXY_UI_TRUSTED_PROXIES は CIDR か IP アドレスをカンマで区切って書いてください: ${item}`);
     return c.value;
   });
+}
+
+// RPROXY_UI_TRUSTED_PROXIES がないのに X-Forwarded-For が来た（HTTP のプロキシの後ろ）なら、1 回だけ警告する
+// （全員がプロキシの 1 つの送信元に見え、締め出しをまとめて数える）
+let warnedForwarded = false;
+export function warnUntrustedForwarded(forwardedFor: string | string[] | undefined, trusted: string[]): boolean {
+  if (warnedForwarded || trusted.length > 0 || forwardedFor === undefined || forwardedFor.length === 0) return false;
+  warnedForwarded = true;
+  log.warn('X-Forwarded-For の付いたサインインの要求が来ましたが、RPROXY_UI_TRUSTED_PROXIES がありません。前の HTTP のプロキシのアドレスを書かないと、誤ったトークンの締め出しはプロキシの 1 つの送信元でまとめて数えます');
+  return true;
 }
 
 // 締め出しの単位（送信元）。IPv6 は /64 ごと（1 つの利用者が持つ範囲）。接続の相手が信頼するプロキシなら、
@@ -365,6 +390,7 @@ export function checkAuthAtStartup(env: Env = process.env): void {
   try {
     const auth = authSettings(env);
     trustedProxies(env);
+    lockoutOptions(env);
     if (!auth.tokensFile) return;
     const entries = readTokensFile(auth.tokensFile);
     const cfg = roleConfig(env);

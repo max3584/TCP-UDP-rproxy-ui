@@ -97,14 +97,14 @@ existingSecret: rproxy-ui           # only NEXTAUTH_SECRET and DB_PASSWORD
 auth:
   mode: token
   tokensSecret: rproxy-ui-tokens    # key tokens.yaml (auth.tokensKey)
-  trustedProxies: 10.0.0.0/8        # the CIDR of the Ingress controller / Gateway pods (the lockout of failures takes the source from X-Forwarded-For)
+  trustedProxies: 10.244.7.0/28     # the narrowest range holding only the Ingress controller / Gateway pods (the lockout takes the source from X-Forwarded-For)
 roles: {userRole: rproxy-user}      # for role: user tokens
 mariadb: {enabled: true, existingSecret: rproxy-ui-mariadb}
 ```
 
 - The Secret is mounted read-only at `/etc/rproxy-ui/auth` (`root`, group fsGroup, `0440`). The UI accepts group read on a root-owned file.
 - To add or remove tokens, update the Secret (`kubectl create secret ... --dry-run=client -o yaml | kubectl apply -f -`). Once the kubelet swaps the pod's file (about a minute), sessions of a removed token end at the next check. No restart.
-- The lockout of failures (429) counts per pod. Behind an Ingress or a Gateway (HTTP proxies), without `auth.trustedProxies` everyone is the proxy's one source and is locked out together.
+- The lockout of wrong tokens (429; right tokens are accepted) counts per pod. Behind an Ingress or a Gateway (HTTP proxies), without `auth.trustedProxies` everyone counts as the proxy's one source (a warning is logged). Keep `auth.trustedProxies` as narrow as possible, holding only the proxy pods (the whole pod CIDR would let other pods forge X-Forwarded-For). The limits are `RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS` and `RPROXY_UI_TOKEN_LOCKOUT_SECS` through `extraEnv`. Always make tokens with `rproxy-ui-token`.
 
 ## Migrations
 
