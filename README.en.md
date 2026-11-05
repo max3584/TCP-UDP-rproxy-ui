@@ -8,7 +8,7 @@
 
 日本語: [README.md](README.md)
 
-A web UI for managing the forwarding rules of [rproxy-api](https://github.com/max3584/rproxy-api) (Next.js, sign-in with Keycloak, rules stored in MariaDB).
+A web UI for managing the forwarding rules of [rproxy-api](https://github.com/max3584/rproxy-api) (Next.js, sign-in with Keycloak or tokens, rules stored in MariaDB).
 Versions are numbered independently of rproxy-api (the release notes state the minimum rproxy-api version the UI needs; see [docs/en/RELEASING.md](docs/en/RELEASING.md)).
 
 ## Screenshots
@@ -54,7 +54,7 @@ echo "deb [signed-by=/usr/share/keyrings/rproxy-archive-keyring.gpg] https://max
 sudo apt update && sudo apt install rproxy-ui
 ```
 
-- The settings are in `/etc/rproxy-ui/rproxy-ui.env` (600). Fill in `NEXTAUTH_URL`, `KEYCLOAK_*` and `DB_*`, then start it with `sudo systemctl enable --now rproxy-ui` (installing alone does not start it)
+- The settings are in `/etc/rproxy-ui/rproxy-ui.env` (600). Fill in `NEXTAUTH_URL`, `KEYCLOAK_*` (without Keycloak, tokens: "Token sign-in (without Keycloak)" below) and `DB_*`, then start it with `sudo systemctl enable --now rproxy-ui` (installing alone does not start it)
 - `NEXTAUTH_SECRET` is generated at install time. If rproxy-api is on the same host, its API URL and its token file (`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`, when it holds one token per line) are filled in too
 - The `rproxy-ui` user joins the group `rproxy` shared with rproxy-api (created at install time if missing; the unit has `SupplementaryGroups=rproxy`), so it reads rproxy-api's group-readable files (token file, certificates, the control API's Unix socket, owned by `rproxy-api:rproxy` or `root:rproxy`) in place instead of copying them. A token copied into `RPROXY_API_TOKEN` by an earlier version keeps being used
 - It listens on `127.0.0.1:3000` by default (`HOSTNAME` / `PORT`). To expose it, put an rproxy static rule in front of it (TLS termination, routing by server name, `allow_from`; see "Static rules and exposing the dashboard" in the rproxy-api README)
@@ -105,6 +105,9 @@ DB_PASSWORD="[password]"
 KEYCLOAK_CLIENT_ID="[client_id]"
 KEYCLOAK_CLIENT_SECRET="[client_secret]"
 KEYCLOAK_ISSUER="https://[keycloak-host]/realms/[realm]"
+# signing in with tokens instead of (or as well as) Keycloak (README, "Token sign-in (without Keycloak)")
+# RPROXY_UI_AUTH="token"                 # keycloak (default), token or both
+# RPROXY_UI_TOKENS_FILE="/home/me/rproxy-ui-tokens.yaml"   # made with npm run token:new -- --name me --role admin --file ...
 
 # rproxy
 RPROXY_API_URL="http://127.0.0.1:8080"
@@ -135,9 +138,48 @@ The file is for development (no password policy or OTP, http URIs). To base prod
 
 Register `${NEXTAUTH_URL}/api/auth/callback/keycloak` in "Valid redirect URIs" of the Keycloak client.
 
+## Token sign-in (without Keycloak)
+
+To run without Keycloak, with only the UI, MariaDB and rproxy (the minimal setup), users sign in with access tokens an administrator issues (NextAuth's Credentials; #179).
+
+| `RPROXY_UI_AUTH` | Sign-in |
+|---|---|
+| `keycloak` (default) | Keycloak only, as before (without `RPROXY_UI_AUTH`, no `KEYCLOAK_ISSUER` and a `RPROXY_UI_TOKENS_FILE` mean `token`) |
+| `token` | Tokens only. No `KEYCLOAK_*` needed |
+| `both` | The sign-in page (`/signin`) has a token field and a "Sign in with Keycloak" button |
+
+The token file (`RPROXY_UI_TOKENS_FILE`, YAML) holds only the tokens' SHA-256 (never the plain tokens).
+
+```yaml
+tokens:
+  - name: admin            # up to 64 letters, digits, . _ - starting with a letter or digit (unique)
+    sha256: 9f86d0...      # the token's SHA-256 (64 hex digits). Make tokens with rproxy-ui-token (below)
+    role: admin            # admin (RPROXY_UI_ADMIN_ROLE) or user (RPROXY_UI_USER_ROLE)
+  - name: alice
+    sha256: 2c26b4...
+    role: user
+    sub: 0b6f2c1e-...      # optional: the owner of the rules and the history's auth_id (default token:<name>); a Keycloak sub makes them that person's rules
+```
+
+- Make tokens with `rproxy-ui-token` (`rproxy-ui-token` with the .deb, `npm run token -- ...` in the repository, `node rproxy-ui-token.mjs` in the image). The token is shown once; the file gets only its sha256 (created 0600 when missing; replaced by a rename).
+  ```shell
+  sudo rproxy-ui-token new --name admin --role admin --file /etc/rproxy-ui/tokens.yaml --owner rproxy-ui
+  sudo rproxy-ui-token list --file /etc/rproxy-ui/tokens.yaml
+  sudo rproxy-ui-token remove --name admin --file /etc/rproxy-ui/tokens.yaml
+  rproxy-ui-token new --name admin --role admin --stdout    # writes no file: prints the token and its tokens: row (Kubernetes Secret)
+  ```
+- The file is the UI user's, with no group or other access (600, 400). A root-owned file, like a Kubernetes Secret volume (root's, group fsGroup, 440), may be group-readable. A file with another owner or mode is not read and the UI does not start (if that happens while it runs, it keeps running and lets no token in). The same goes for mistakes in it (unknown keys, a plain `token:`, a repeated name or sha256, ...).
+- The file is read again when it changes (no restart). Token sessions look at it on every check (whatever `RPROXY_UI_ROLE_REFRESH_SECS` is): when the row is removed, its sha256 changes (a replaced token), or its `role` or `sub` changes, the session ends at the next check (pages go to the sign-in, the API answers 401).
+- `role: user` gets the `RPROXY_UI_USER_ROLE` role. With `RPROXY_UI_USER_ROLE` empty (the default) there are no users, so `role: user` tokens cannot use the UI (403 `no_role`; a warning at start). The limits for users (`RPROXY_UI_USER_*`) apply as for Keycloak users (`RPROXY_UI_USER_CERTS_BY_SUB` uses the token's sub).
+- Sessions last `RPROXY_UI_SESSION_MAX_AGE`, as with Keycloak (from the sign-in; using the UI does not extend them), with the same cookie (httpOnly, SameSite=Lax, Secure when `NEXTAUTH_URL` is https://). The token itself is in no cookie and no log (the session keeps the row's name and a mark derived from its sha256).
+- The token's sha256 is compared with every row in constant time. More than 5 wrong tokens from one source in 15 minutes make that source's wrong tokens get 429 (`Retry-After`) for 15 minutes (`RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS`, `RPROXY_UI_TOKEN_LOCKOUT_SECS`; default 5 and 900 seconds). A right token is accepted even while the source is locked out (so someone sending wrong tokens cannot lock out other users who share the source). A success does not reset the count. IPv6 counts per /64, and each UI process counts on its own. Behind an HTTP proxy (nginx, an Ingress, a Gateway), list its addresses as narrowly as possible in `RPROXY_UI_TRUSTED_PROXIES` (comma-separated CIDRs): X-Forwarded-For is read from the right and the first address that is not a trusted proxy is the source (a wide range lets clients in it pick their source with a forged X-Forwarded-For). Without it everyone counts as the proxy's one source, and a request with X-Forwarded-For logs a warning once. rproxy in front (L4) adds no X-Forwarded-For and needs nothing.
+- The lockout only marks and logs sources of wrong tokens (429). As it still accepts a right token, it does not limit or slow guessing: the protection is the token's entropy alone. Always make tokens with `rproxy-ui-token` (256 random bits). If you make them yourself, use at least 128 random bits (e.g. `openssl rand -base64 32`), never a password or a memorable string (its strength cannot be checked from the sha256 in the file).
+- The sign-in request (`POST /api/auth/callback/token`) needs NextAuth's CSRF token, and one from another site is refused with 403 (the `Sec-Fetch-Site` / `Origin` check of the API). The sign-in page works under the CSP (nonce).
+- Signing out only removes the UI's session (nothing is sent to Keycloak).
+
 ## Roles (permissions)
 
-Keycloak roles decide who can do what (the API routes check on every request).
+Keycloak roles (`role` for tokens) decide who can do what (the API routes check on every request).
 
 | Role | What it can do |
 |---|---|

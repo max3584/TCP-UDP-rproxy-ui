@@ -1,4 +1,5 @@
-import { useSession, signIn, signOut } from 'next-auth/react';
+import { useSession, signOut } from 'next-auth/react';
+import { startSignIn } from '@/components/signin';
 import { sessionUser } from '@/components/lib';
 
 const Profile: React.FC = () => {
@@ -15,7 +16,7 @@ const Profile: React.FC = () => {
         <div className="bg-white text-gray-900 p-8 rounded-lg shadow-lg w-full max-w-md text-center">
           <p className="text-lg font-medium mb-4">You are not signed in</p>
           <button
-            onClick={() => signIn('keycloak')}
+            onClick={() => void startSignIn()}
             className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-sm transition duration-300 ease-in-out"
           >
             Sign In

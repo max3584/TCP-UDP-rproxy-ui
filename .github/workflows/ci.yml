@@ -65,6 +65,23 @@ jobs:
           cat migrate.log
           grep -q 'ECONNREFUSED\|connect' migrate.log
           if grep -q 'ドライバが見つかりません' migrate.log; then exit 1; fi
+          # the token command of the token sign-in (#179) runs in the image (yaml from the image's node_modules)
+          docker run --rm --read-only rproxy-ui:ci node rproxy-ui-token.mjs new --name ci --role admin --stdout > token.out
+          grep -q '^token: rpui_' token.out
+          grep -Eq 'sha256: [0-9a-f]{64}' token.out
+          # and the UI starts with a root-owned 0440 token file (a Kubernetes Secret volume) and RPROXY_UI_AUTH=token
+          printf 'tokens:\n  - name: ci\n    sha256: %s\n    role: admin\n' "$(grep -Eo '[0-9a-f]{64}' token.out)" > tokens.yaml
+          sudo chown root:65532 tokens.yaml && sudo chmod 0440 tokens.yaml
+          docker run -d --name ui-token --read-only --tmpfs /tmp --tmpfs /app/.next/cache:uid=65532,gid=65532 --group-add 65532 \
+            -v "$PWD/tokens.yaml:/etc/rproxy-ui/auth/tokens.yaml:ro" -e RPROXY_UI_AUTH=token -e RPROXY_UI_TOKENS_FILE=/etc/rproxy-ui/auth/tokens.yaml \
+            -e NEXTAUTH_URL=http://127.0.0.1:3001 -e NEXTAUTH_SECRET=ci -p 3001:3000 rproxy-ui:ci
+          for i in $(seq 1 30); do
+            if out=$(curl -sf http://127.0.0.1:3001/api/auth/providers); then echo "$out"; break; fi
+            sleep 1
+          done
+          echo "$out" | grep -q '"token"'
+          docker logs ui-token 2>&1 | grep -q 'RPROXY_UI_AUTH=token'
+          docker rm -f ui-token
           # no native modules, no build-time secrets
           test -z "$(docker run --rm rproxy-ui:ci find /app -name '*.node' -o -name '.env*' | head -1)"
       - name: logs
@@ -99,6 +116,9 @@ jobs:
           done
           # values without the required ones are refused
           if helm template ui charts/rproxy-ui >/dev/null 2>&1; then echo "rendered without existingSecret/url"; exit 1; fi
+          # token sign-in (auth.mode token / both, #179) needs the token Secret; a wrong mode is refused
+          if helm template ui charts/rproxy-ui -f charts/rproxy-ui/ci/token-values.yaml --set auth.tokensSecret= >/dev/null 2>&1; then echo "auth.mode=token without auth.tokensSecret"; exit 1; fi
+          if helm template ui charts/rproxy-ui -f charts/rproxy-ui/ci/token-values.yaml --set auth.mode=password >/dev/null 2>&1; then echo "auth.mode=password rendered"; exit 1; fi
 
   # .deb の作成と確かめは Debian が対象そのものなので、debian:trixie-slim（Debian 13）で動かす。
   # test-deb.sh は systemd（systemctl enable --now、journalctl）が要り、ジョブのコンテナでは systemd を PID 1 にできないので、

@@ -3,7 +3,7 @@
 English: [en/PRODUCTION.md](en/PRODUCTION.md)
 
 rproxy-api と UI（rproxy-ui）を 1 台のホスト（Debian 13 / Ubuntu 24.04）に入れ、ダッシュボードを rproxy 経由の HTTPS で公開する手順。
-DB（MariaDB）と Keycloak は別のホストにある前提で書く。
+DB（MariaDB）と Keycloak は別のホストにある前提で書く。Keycloak を置かないなら、3. を飛ばして 5. の「Keycloak なしで動かす（トークンでのサインイン）」。
 
 ```
 ブラウザ ──HTTPS 443──▶ rproxy-api（TLS の終端、dashboard.example.com だけ通す、allow_from）
@@ -231,6 +231,28 @@ tokens:
 ```
 
 `TOKEN` は UI の `RPROXY_API_TOKEN` に入れる値（`openssl rand -hex 32` などで作る）。トークンファイルを変えたら `sudo systemctl reload rproxy-api`。
+
+### Keycloak なしで動かす（トークンでのサインイン）
+
+Keycloak を置かない最小構成（UI・MariaDB・rproxy）では、3. を飛ばし、管理者が発行するトークンでサインインする（README の「トークンでのサインイン（Keycloak なし）」）。
+
+```shell
+# トークンを作る（1 回だけ表示する。ファイルには sha256 だけ。rproxy-ui の持ち物で 600）
+sudo rproxy-ui-token new --name admin --role admin --file /etc/rproxy-ui/tokens.yaml --owner rproxy-ui
+```
+
+`/etc/rproxy-ui/rproxy-ui.env` の `KEYCLOAK_*` は空のままにして、次を足す（`both` なら Keycloak も使える）:
+
+```shell
+RPROXY_UI_AUTH=token
+RPROXY_UI_TOKENS_FILE=/etc/rproxy-ui/tokens.yaml
+# RPROXY_UI_USER_ROLE=rproxy-user       # role: user のトークンを使うなら（空なら admin だけ）
+```
+
+- `/etc/rproxy-ui` は `root:rproxy-ui` 750（パッケージが直す）。トークンのファイルは `rproxy-ui` の持ち物で 600 にする（ほかの持ち主・権限なら UI は起動しない）。
+- 取り消しは `sudo rproxy-ui-token remove --name <名前> --file /etc/rproxy-ui/tokens.yaml`（そのトークンのセッションは次の確認で切れる。再起動は要らない）。
+- 誤ったトークンの続く送信元の誤ったトークンは 15 分 429 になる（正しいトークンは通す。`RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS`・`RPROXY_UI_TOKEN_LOCKOUT_SECS`）。前は rproxy（L4）なので送信元は接続の相手のまま（`RPROXY_UI_TRUSTED_PROXIES` は要らない）。rproxy の `source_ip` を `proxy`（既定）にしていると、UI から見た相手はすべて rproxy（127.0.0.1）になり、誤りはまとめて数える（正しいトークンの人は締め出されない）。ダッシュボードの固定ルールの `allow_from` で、使う人のアドレスに絞っておく。
+- トークンは必ず `rproxy-ui-token` で作る（256 ビットのランダムな値。自分で作るなら 128 ビット以上のランダムな値）。締め出しは誤ったトークンの送信元に印を付けてログに出す（429）だけで、推測の回数を限らず、遅くもしない。守りはトークンの強さだけ。
 
 ### セキュリティのヘッダとセッション
 

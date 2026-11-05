@@ -57,6 +57,12 @@ export interface SessionToken extends JWT {
   rolesAt?: number;
   // 届かなかったとき、次に聞き直してよい時刻（Unix 秒）
   retryAt?: number;
+  // トークンでサインインしたセッション（#179。components/tokenauth.ts）。Keycloak のセッションにはない
+  authMethod?: 'token';
+  // トークンのファイルの行の name・印（sha256 から作る。入れ替えたら変わる）・ロール
+  tokenName?: string;
+  tokenFp?: string;
+  tokenRole?: 'admin' | 'user';
 }
 
 export class SessionInvalid extends Error {}

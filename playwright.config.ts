@@ -8,6 +8,11 @@ export const NEXTAUTH_SECRET = 'ui-e2e-secret-not-for-production';
 // サインインの E2E（tests/ui/csp.spec.ts）が動かす偽の Keycloak（OIDC の discovery と認可のエンドポイントだけ）
 export const FAKE_ISSUER_PORT = Number(process.env.UI_E2E_ISSUER_PORT ?? 3198);
 export const FAKE_ISSUER = `http://127.0.0.1:${FAKE_ISSUER_PORT}/realms/e2e`;
+// トークンでのサインイン（#179、tests/ui/token-signin.spec.ts）の UI。同じビルドを RPROXY_UI_AUTH=both で別のポートに動かす
+const tokenPort = Number(process.env.UI_E2E_TOKEN_PORT ?? 3101);
+export const TOKEN_BASE_URL = `http://127.0.0.1:${tokenPort}`;
+// 締め出しの試験は X-Forwarded-For で送信元を変える（ほかの試験の 127.0.0.1 を締め出さない）
+export const TOKEN_TRUSTED_PROXY = '127.0.0.1';
 
 export default defineConfig({
   testDir: 'tests/ui',
@@ -34,7 +39,7 @@ export default defineConfig({
         : {}),
     },
   }],
-  webServer: {
+  webServer: [{
     // keep idle connections for 2 minutes: Node closes them after 5 s by default, and a request sent on a connection
     // the server is closing at that moment fails with "socket hang up" (#143)
     command: `npx next start -p ${port} -H 127.0.0.1 --keepAliveTimeout 120000`,
@@ -52,5 +57,23 @@ export default defineConfig({
       // 利用量の集計（#101）を早く回す（tests/ui/usage.spec.ts。30 秒が最短）
       RPROXY_UI_USAGE_SECS: process.env.RPROXY_UI_USAGE_SECS ?? '30',
     },
-  },
+  }, {
+    // トークンでのサインイン（RPROXY_UI_AUTH=both）。トークンのファイルは tests/ui/token-fixture.cjs が書く。利用量の集計は止める（上の UI と数えない）
+    command: `node tests/ui/token-fixture.cjs && npx next start -p ${tokenPort} -H 127.0.0.1 --keepAliveTimeout 120000`,
+    url: `${TOKEN_BASE_URL}/api/auth/providers`,
+    reuseExistingServer: !process.env.CI,
+    timeout: 60_000,
+    env: {
+      NEXTAUTH_URL: TOKEN_BASE_URL,
+      NEXTAUTH_SECRET,
+      RPROXY_UI_AUTH: 'both',
+      RPROXY_UI_TOKENS_FILE: 'tests/ui/.auth/tokens.yaml',
+      RPROXY_UI_TRUSTED_PROXIES: TOKEN_TRUSTED_PROXY,
+      KEYCLOAK_CLIENT_ID: 'rproxy-ui',
+      KEYCLOAK_CLIENT_SECRET: 'unused',
+      KEYCLOAK_ISSUER: FAKE_ISSUER,
+      RPROXY_UI_ROLE_REFRESH_SECS: '0',
+      RPROXY_UI_USAGE_SECS: '0',
+    },
+  }],
 });

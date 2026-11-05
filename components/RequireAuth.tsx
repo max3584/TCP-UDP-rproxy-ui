@@ -1,13 +1,14 @@
-// サインインしていなければ Keycloak のサインインへ移す（サインイン後は元のページに戻る）。
+// サインインしていなければサインインへ移す（Keycloak か、トークンを使うなら /signin。components/signin.ts。サインイン後は元のページに戻る）。
 // データは API（/api/forward/*）がサーバ側でセッションを確かめて守っている。これは画面を出さないための確認。
 
 import React, { useEffect } from 'react';
-import { signIn, useSession } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import type { sessionUser } from './lib';
 import { NO_ROLE_MESSAGE } from './messages';
+import { startSignIn } from './signin';
 
-// サインインしていなくても開けるページ（Profile はサインインのボタンがある入口）
-export const PUBLIC_PATHS: readonly string[] = ['/profile'];
+// サインインしていなくても開けるページ（Profile はサインインのボタンがある入口、/signin はトークンでのサインインのページ）
+export const PUBLIC_PATHS: readonly string[] = ['/profile', '/signin'];
 
 export const isPublicPath = (pathname: string): boolean => PUBLIC_PATHS.includes(pathname);
 
@@ -17,7 +18,7 @@ const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   useEffect(() => {
     if (status === 'unauthenticated') {
       // callbackUrl を省くと、サインイン後に今のページ（例 /rules/new）へ戻る
-      void signIn('keycloak');
+      void startSignIn();
     }
   }, [status]);
 

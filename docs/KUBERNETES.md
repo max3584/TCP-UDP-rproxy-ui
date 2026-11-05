@@ -27,7 +27,7 @@ chart は秘密を作らない（`existingSecret` で名前を渡す。`helm tem
 
 ```shell
 kubectl create namespace rproxy-ui
-# UI（必須）：NextAuth の秘密、Keycloak のクライアントの秘密、UI の DB ユーザーのパスワード
+# UI（必須）：NextAuth の秘密、Keycloak のクライアントの秘密（トークンだけなら要らない）、UI の DB ユーザーのパスワード
 kubectl -n rproxy-ui create secret generic rproxy-ui \
   --from-literal=NEXTAUTH_SECRET="$(openssl rand -base64 32)" \
   --from-literal=KEYCLOAK_CLIENT_SECRET='<Keycloak のクライアントの秘密>' \
@@ -79,6 +79,32 @@ mariadb:
 - データベースと UI のユーザー（`db.user`、パスワードは `existingSecret` の `DB_PASSWORD`）は migration の Job が root で作る。
 - **冗長化しない**（1 台。Pod・ノードが止まると UI も DB を使えない。データは PVC に残る）。止まってはいけない環境では、外の DB（レプリケーションのある MariaDB・Galera）か MariaDB のオペレータを使う。
 - Pod を消しても PVC は残り、データは戻る。`helm uninstall` でも StatefulSet の PVC は消えない（消すときは手で消す）。
+
+## Keycloak なしで入れる（トークンでのサインイン）
+
+Keycloak を置かない最小構成では `auth.mode: token`（Keycloak と両方なら `both`）にし、トークンのファイル（README の「トークンでのサインイン（Keycloak なし）」）を Secret に入れる。`existingSecret` の `KEYCLOAK_CLIENT_SECRET` と `keycloak.issuer` は要らない。
+
+```shell
+# トークンを作る（イメージのコマンド。トークンは 1 回だけ出る。tokens: の行には sha256 だけ）
+docker run --rm ghcr.io/max3584/rproxy-ui:<版> node rproxy-ui-token.mjs new --name admin --role admin --stdout
+# 出た行を tokens.yaml（tokens: の一覧）に書いて Secret にする
+kubectl -n rproxy-ui create secret generic rproxy-ui-tokens --from-file=tokens.yaml
+```
+
+```yaml
+url: https://rproxy-ui.example.com
+existingSecret: rproxy-ui           # NEXTAUTH_SECRET と DB_PASSWORD だけでよい
+auth:
+  mode: token
+  tokensSecret: rproxy-ui-tokens    # キー tokens.yaml（auth.tokensKey）
+  trustedProxies: 10.244.7.0/28     # Ingress のコントローラ・Gateway の Pod だけを含む、できるだけ狭い範囲（誤りの締め出しの送信元を X-Forwarded-For から取る）
+roles: {userRole: rproxy-user}      # role: user のトークンを使うなら
+mariadb: {enabled: true, existingSecret: rproxy-ui-mariadb}
+```
+
+- Secret は `/etc/rproxy-ui/auth` に読むだけで付く（`root`・group は fsGroup・`0440`）。UI は root の持ち物なら group が読めるのを認める。
+- トークンを足す・消すときは Secret を書き換える（`kubectl create secret ... --dry-run=client -o yaml | kubectl apply -f -`）。kubelet が Pod のファイルを入れ替えると（1 分ほど）、消したトークンのセッションは次の確認で切れる。再起動は要らない。
+- 誤ったトークンの締め出し（429。正しいトークンは通す）は Pod ごとに数える。Ingress・Gateway（HTTP のプロキシ）の後ろでは `auth.trustedProxies` を書かないと、全員がプロキシの 1 つの送信元として数えられる（ログに警告が出る）。`auth.trustedProxies` はプロキシの Pod だけを含むできるだけ狭い範囲にする（クラスタの Pod の CIDR 全体にすると、ほかの Pod が X-Forwarded-For を偽れる）。上限は `extraEnv` の `RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS`・`RPROXY_UI_TOKEN_LOCKOUT_SECS`。トークンは必ず `rproxy-ui-token` で作る。
 
 ## migration
 
@@ -226,8 +252,9 @@ kubectl -n rproxy-ui scale deploy/rproxy-ui --replicas=2
 | `image.repository`・`tag`・`digest` | `ghcr.io/max3584/rproxy-ui`・chart の appVersion | |
 | `replicas` | `2` | |
 | `url` | （必須） | `NEXTAUTH_URL` |
-| `existingSecret` | （必須） | `NEXTAUTH_SECRET`・`KEYCLOAK_CLIENT_SECRET`・`DB_PASSWORD` |
-| `keycloak.issuer`・`clientId` | （必須）・`rproxy-ui` | |
+| `existingSecret` | （必須） | `NEXTAUTH_SECRET`・`KEYCLOAK_CLIENT_SECRET`（Keycloak のとき）・`DB_PASSWORD` |
+| `auth.mode`・`tokensSecret`・`tokensKey`・`trustedProxies` | `keycloak`・空・`tokens.yaml`・空 | `RPROXY_UI_AUTH`（`keycloak`・`token`・`both`）、トークンのファイルの Secret（`token`・`both` で必須）、`RPROXY_UI_TRUSTED_PROXIES`（上の「Keycloak なしで入れる」） |
+| `keycloak.issuer`・`clientId` | （`keycloak`・`both` で必須）・`rproxy-ui` | |
 | `roles.*` | 空 | `RPROXY_UI_ROLES_CLAIM`・`_ADMIN_ROLE`・`_USER_ROLE`・`_USER_PORTS`・`_USER_NODES`・`_USER_TARGETS`・`_USER_CERTS`・`_USER_CERTS_BY_SUB`（`userCertsBySub`）・`_USER_CERTS_BY_ROLE`（`userCertsByRole`）・`_USER_CACHE_MAX_MEMORY`（`userCacheMaxMemory`）・`_USER_CACHE_MAX_ENTRIES`（`userCacheMaxEntries`）・`RPROXY_UI_PROTECTED_TARGETS`（`protectedTargets`。Pod の IP は変わるので Pod と Service の CIDR を書く。`userRole` が空なら `rproxy-admin` のない人は使えない） |
 | `db.host`・`port`・`database`・`user` | 空・3306・`rproxy`・`rproxy_ui` | |
 | `db.tls.enabled`・`caSecret`・`caKey`・`verify` | `false`・空・`ca.crt`・`true` | 外の DB への TLS（上の「外の DB への TLS」） |

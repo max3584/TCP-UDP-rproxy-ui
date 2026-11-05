@@ -14,14 +14,29 @@ imagePullSecrets: []
 # JWTs (the same NEXTAUTH_SECRET everywhere): any number of replicas, no sticky sessions
 replicas: 2
 
-# the URL users open (NEXTAUTH_URL; register <url>/api/auth/callback/keycloak in Keycloak). Required
+# the URL users open (NEXTAUTH_URL; with Keycloak, register <url>/api/auth/callback/keycloak there). Required
 url: ""
 
-# Secret with NEXTAUTH_SECRET, KEYCLOAK_CLIENT_SECRET and DB_PASSWORD (the UI's DB user). Required
+# Secret with NEXTAUTH_SECRET, DB_PASSWORD (the UI's DB user) and, with Keycloak (auth.mode keycloak or both),
+# KEYCLOAK_CLIENT_SECRET. Required
 existingSecret: ""
 
+# how users sign in (RPROXY_UI_AUTH; README, "Token sign-in"): keycloak, token (no Keycloak: UI, MariaDB and rproxy
+# only) or both
+auth:
+  mode: keycloak
+  # token / both: Secret with the token file (YAML with only the tokens' sha256; rproxy-ui-token new --stdout makes
+  # the rows). Mounted read-only (root:fsGroup, 0440) at /etc/rproxy-ui/auth; edits reach the pods within a minute
+  # or so and take effect on the next session check (a removed token signs out)
+  tokensSecret: ""
+  tokensKey: tokens.yaml
+  # CIDRs of the HTTP proxies in front (the Ingress controller, the Gateway pods) whose X-Forwarded-For gives the client
+  # address for the lockout of wrong tokens (RPROXY_UI_TRUSTED_PROXIES). As narrow as possible: only the proxies' pods
+  # (a whole pod CIDR lets other pods forge X-Forwarded-For). Empty: the peer address
+  trustedProxies: ""
+
 keycloak:
-  # e.g. https://sso.example.com/realms/rproxy. Required
+  # e.g. https://sso.example.com/realms/rproxy. Required with auth.mode keycloak or both
   issuer: ""
   clientId: rproxy-ui
 
