@@ -252,7 +252,7 @@ RPROXY_UI_TOKENS_FILE=/etc/rproxy-ui/tokens.yaml
 - `/etc/rproxy-ui` は `root:rproxy-ui` 750（パッケージが直す）。トークンのファイルは `rproxy-ui` の持ち物で 600 にする（ほかの持ち主・権限なら UI は起動しない）。
 - 取り消しは `sudo rproxy-ui-token remove --name <名前> --file /etc/rproxy-ui/tokens.yaml`（そのトークンのセッションは次の確認で切れる。再起動は要らない）。
 - 誤ったトークンの続く送信元の誤ったトークンは 15 分 429 になる（正しいトークンは通す。`RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS`・`RPROXY_UI_TOKEN_LOCKOUT_SECS`）。前は rproxy（L4）なので送信元は接続の相手のまま（`RPROXY_UI_TRUSTED_PROXIES` は要らない）。rproxy の `source_ip` を `proxy`（既定）にしていると、UI から見た相手はすべて rproxy（127.0.0.1）になり、誤りはまとめて数える（正しいトークンの人は締め出されない）。ダッシュボードの固定ルールの `allow_from` で、使う人のアドレスに絞っておく。
-- トークンは必ず `rproxy-ui-token` で作る（256 ビットのランダムな値。締め出しは推測を遅くするだけ）。
+- トークンは必ず `rproxy-ui-token` で作る（256 ビットのランダムな値。自分で作るなら 128 ビット以上のランダムな値）。締め出しは誤ったトークンの送信元に印を付けてログに出す（429）だけで、推測の回数を限らず、遅くもしない。守りはトークンの強さだけ。
 
 ### セキュリティのヘッダとセッション
 

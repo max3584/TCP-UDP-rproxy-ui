@@ -252,7 +252,7 @@ RPROXY_UI_TOKENS_FILE=/etc/rproxy-ui/tokens.yaml
 - `/etc/rproxy-ui` is `root:rproxy-ui` 750 (the package sets it). Keep the token file owned by `rproxy-ui` with mode 600 (with another owner or mode the UI does not start).
 - To revoke: `sudo rproxy-ui-token remove --name <name> --file /etc/rproxy-ui/tokens.yaml` (that token's sessions end at the next check; no restart).
 - Wrong tokens from a source with repeated wrong tokens get 429 for 15 minutes (right tokens are accepted; `RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS`, `RPROXY_UI_TOKEN_LOCKOUT_SECS`). rproxy in front is L4, so the source is the peer address (`RPROXY_UI_TRUSTED_PROXIES` is not needed). With rproxy's `source_ip` at `proxy` (the default), every peer the UI sees is rproxy (127.0.0.1) and wrong tokens are counted together (users with right tokens are not locked out). Limit the dashboard's static rule to the users' addresses with `allow_from`.
-- Always make tokens with `rproxy-ui-token` (256 random bits; the lockout only slows guessing).
+- Always make tokens with `rproxy-ui-token` (256 random bits; if you make them yourself, at least 128 random bits). The lockout only marks and logs sources of wrong tokens (429) and does not limit or slow guessing: the protection is the token's entropy alone.
 
 ### Security headers and sessions
 
