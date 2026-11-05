@@ -125,6 +125,8 @@ sleep 2
 sudo journalctl -u rproxy-ui --no-pager | grep -q 'RPROXY_UI_TOKENS_FILE.*0644' || fail "no reason in the log"
 sudo sed -i '/^RPROXY_UI_AUTH=/d; /^RPROXY_UI_TOKENS_FILE=/d' $ENV_FILE
 sudo rm -f $tokens "$jar"
+# the failed starts above may have hit the start limit
+sudo systemctl reset-failed rproxy-ui || true
 sudo systemctl restart rproxy-ui
 for _ in $(seq 60); do [ "$(code /)" = 200 ] && break; sleep 0.5; done
 [ "$(code /)" = 200 ] || fail "not running after the token test"
