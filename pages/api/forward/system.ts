@@ -6,6 +6,11 @@ import { loadNodes, toRproxyNode, visibleNodes } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
 import { accessOf, nodesAllowed, roleConfig } from '@/components/roles';
 import { nodeSystemView, userSystemView } from '@/components/system';
+import type { NodeSystemView } from '@/components/system';
+import { targetNodes } from '@/components/nodes';
+import type { NodesConfig } from '@/components/nodes';
+import { getPool } from '@/components/ruledb';
+import { hasConnectTimeout } from '@/components/restorable';
 import { localizedApi } from '@/i18n/server';
 
 // rproxy の機能と設定（読み取り専用。/system の画面）。各ノードの GET /capabilities と GET /config をまとめる。
@@ -53,7 +58,30 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   const nodes = cfg.configured
     ? await Promise.all(visible.map((n) => one(n.name, (fn) => withNode(toRproxyNode(n), fn))))
     : [await one(cfg.nodes[0].name, (fn) => fn())];
+  if (admin) await markConnectTimeoutAtRisk(cfg, nodes, logger);
   return res.status(200).json({ nodes: admin ? nodes : nodes.map(userSystemView), ...(admin ? { admin: true } : {}) });
+}
+
+// UI の DB から connect_timeout を戻せないノード（features.db_connect_timeout がない）に、connect_timeout のある UI のルールが
+// 置かれていれば数える（UI #184。そのノードを再起動するとそのルールが戻らない）。問い合わせできないノードは数えない
+async function markConnectTimeoutAtRisk(cfg: NodesConfig, nodes: NodeSystemView[], logger: ReturnType<typeof Logger>): Promise<void> {
+  const lacking = nodes.filter((n) => n.reachable && n.features?.db_connect_timeout !== true);
+  if (lacking.length === 0) return;
+  let rows: { target?: unknown; options: unknown }[];
+  try {
+    rows = await getPool().query(
+      `SELECT ${cfg.configured ? 'target, ' : ''}options FROM forward_rules WHERE options LIKE '%connect\\_timeout%'`,
+    );
+  } catch (err) {
+    logger.warn(`connect_timeout のあるルールを数えられません: ${err}`);
+    for (const n of lacking) n.connectTimeoutAtRisk = null;
+    return;
+  }
+  const withTimeout = rows.filter((r) => hasConnectTimeout(r.options));
+  for (const n of lacking) {
+    n.connectTimeoutAtRisk = withTimeout.filter((r) => !cfg.configured
+      || (targetNodes(cfg, String(r.target ?? '')) ?? []).some((x) => x.name === n.node)).length;
+  }
 }
 
 export default localizedApi(handler);

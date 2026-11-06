@@ -25,6 +25,11 @@ const NodeCard: React.FC<{ n: NodeSystemView; many: boolean }> = ({ n, many }) =
         {n.build?.sha256 && (
           <p className="text-xs text-gray-700 break-all">バイナリの SHA-256: <span className="font-mono">{n.build.sha256}</span></p>
         )}
+        {(n.connectTimeoutAtRisk ?? 0) > 0 && (
+          <p className="text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1" role="alert" data-testid="connect-timeout-at-risk">
+            {`このノードは UI の DB から connect_timeout を戻せません（rproxy-api v0.4.21 より前）。connect_timeout を付けた UI のルール ${n.connectTimeoutAtRisk} 件がこのノード（を含むグループ）に置かれていて、このノードを再起動するとそのルールが戻りません。rproxy-api を v0.4.21 以降にするか、そのルールの connect_timeout を空にしてください。`}
+          </p>
+        )}
         <div>
           <h3 className="font-semibold mb-1">v0.4 の機能</h3>
           {n.features === null ? (

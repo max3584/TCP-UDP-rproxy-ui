@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
     deleteRule: vi.fn(),
     listRules: vi.fn(),
     getRule: vi.fn(),
+    getCapabilities: vi.fn(),
   };
 });
 
@@ -40,6 +41,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => ({
   deleteRule: mocks.deleteRule,
   listRules: mocks.listRules,
   getRule: mocks.getRule,
+  getCapabilities: mocks.getCapabilities,
 }));
 
 import handler from '@/pages/api/forward/[forward]';
@@ -419,6 +421,45 @@ describe('/api/forward/history and /api/forward/revert', () => {
     const out = await call('revert', { id: 11 });
     expect(out.body.result).toBe('modified');
     expect(mocks.modifyRule.mock.calls[0][1]).toMatchObject({ remote_addr: 'one.example', idle_timeout: '1h', half_close_timeout: '1m' });
+  });
+
+  // connect_timeout（UI #184）：値のない古い版に戻すと、rproxy へは 0s を送って外す（外すだけなので rproxy の機能は聞かない）
+  it('reverting to a version without connect_timeout sends 0s', async () => {
+    const now = rule({ srcPort: 8000, distAddr: 'two.example', connectTimeout: '3s' });
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM forward_rules_log l')) return [logRow(11, v1, 'UPDATE')];
+      if (sql.startsWith('SELECT auth_id FROM forward_rules')) return [{ auth_id: 'user-1' }];
+      if (sql.startsWith('SELECT auth_id, protocol')) return [row(now)];
+      return [];
+    });
+    conn.query.mockImplementation(async (sql: string) => (sql.startsWith('SELECT') ? [row(now)] : { affectedRows: 1 }));
+    const out = await call('revert', { id: 11 });
+    expect(out.body.result).toBe('modified');
+    expect(mocks.modifyRule.mock.calls[0][1]).toMatchObject({ remote_addr: 'one.example', connect_timeout: '0s' });
+  });
+
+  // connect_timeout（UI #184）：作り直し（source_ip が違う版に戻す）では、UI の DB から戻せない rproxy なら今のルールを消す前に断る
+  it('reverting by re-creating to a version with connect_timeout is refused before the delete when rproxy cannot restore it', async () => {
+    const now = rule({ srcPort: 8000, distAddr: 'two.example' });
+    const old = rule({ srcPort: 8000, distAddr: 'three.example', sourceIp: 'proxy_v2', connectTimeout: '3s' });
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM forward_rules_log l')) return [logRow(12, old, 'UPDATE')];
+      if (sql.startsWith('SELECT auth_id FROM forward_rules')) return [{ auth_id: 'user-1' }];
+      if (sql.startsWith('SELECT auth_id, protocol')) return [row(now)];
+      return [];
+    });
+    conn.query.mockImplementation(async (sql: string) => (sql.startsWith('SELECT') ? [row(now)] : { affectedRows: 1 }));
+    mocks.getCapabilities.mockResolvedValue({ features: { connect_timeout: true } });
+    const refused = await call('revert', { id: 12 });
+    expect([refused.status, refused.body.code]).toEqual([400, 'unsupported']);
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+    expect(mocks.addRule).not.toHaveBeenCalled();
+    expect(conn.query.mock.calls.some((c) => String(c[0]).startsWith('DELETE FROM forward_rules'))).toBe(false);
+    // 戻せる rproxy なら作り直す
+    mocks.getCapabilities.mockResolvedValue({ features: { connect_timeout: true, db_connect_timeout: true } });
+    const recreated = await call('revert', { id: 12 });
+    expect(recreated.body.result).toBe('recreated');
+    expect(mocks.addRule).toHaveBeenCalledWith(toRproxyRule(old));
   });
 
   it('reverts: re-creates a deleted rule, replaces an existing one, refuses what the user cannot see', async () => {

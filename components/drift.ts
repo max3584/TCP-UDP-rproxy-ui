@@ -28,6 +28,7 @@ export const DRIFT_LABELS: Record<DriftField, string> = {
   proxy_protocol: 'PROXY protocol の受け取り',
   idle_timeout: 'TCP の中継の時間切れ',
   half_close_timeout: '片側が送り終えた後の時間切れ',
+  connect_timeout: '宛先への接続の時間',
   target_max_connections: '宛先ごとの上限',
 };
 
@@ -85,8 +86,8 @@ export function ruleDrift(storedRule: ForwardRule, live: RproxyRuleStatus): Drif
   if (!same(stored.http, actual.http)) out.push('http');
   if (stored.crowdsec !== actual.crowdsec) out.push('crowdsec');
   if (!same(sorted(stored.extraListenAddrs), sorted(actual.extraListenAddrs))) out.push('extra_listen_addrs');
-  // v0.4 の項目（labels・limits・bandwidth・geoip・outlier_detection・proxy_protocol・idle_timeout・half_close_timeout）。
-  // 中継の時間切れは normalizeV04 が既定（1h・1m）を省き 3600s を 1h に揃えるので、そのまま比べられる
+  // v0.4 の項目（labels・limits・bandwidth・geoip・outlier_detection・proxy_protocol・idle_timeout・half_close_timeout・connect_timeout）。
+  // 中継の時間切れは normalizeV04 が既定（1h・1m）を省き 3600s を 1h に揃え、connect_timeout も 120s を 2m に揃えるので、そのまま比べられる
   const sv = v04Fields(stored);
   const av = v04Fields(actual);
   for (const key of V04_KEYS) if (!same(sv[key], av[key])) out.push(key);

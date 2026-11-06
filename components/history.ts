@@ -3,7 +3,7 @@
 import type { ForwardRule } from './lib';
 import { hostPort, portsLabel } from './dashboard';
 import { tc, translate } from '@/i18n/core';
-import { relayTimeoutText, v04Fields } from './v04';
+import { connectTimeoutText, relayTimeoutText, v04Fields } from './v04';
 import { targetCapsOf, withoutTargetCaps } from './targets';
 
 // RESEND は 1 つのノードへの送り直し（#98。内容は変えない）、OVERRIDE はノードごとの上書きの変更（内容はそのノードで動かす内容）
@@ -126,6 +126,10 @@ export function ruleChanges(prevRule: ForwardRule | null, nextRule: ForwardRule 
   }
   if (!same(pv.half_close_timeout, nv.half_close_timeout)) {
     change('片側が送り終えた後の時間切れ（half_close_timeout）', relayTimeoutText('half_close_timeout', pv.half_close_timeout), relayTimeoutText('half_close_timeout', nv.half_close_timeout));
+  }
+  // tcp の宛先への接続の時間（v0.4.3。UI からは v0.4.21）。省いたものは rproxy の既定
+  if (!same(pv.connect_timeout, nv.connect_timeout)) {
+    change('宛先への接続の時間（connect_timeout）', connectTimeoutText(pv.connect_timeout), connectTimeoutText(nv.connect_timeout));
   }
   if (!same(targetCapsOf(prevRule), targetCapsOf(nextRule))) note('宛先ごとの上限を変更');
   // 一時停止・再開（#63）

@@ -384,6 +384,19 @@ rproxy-api v0.4.20（#353）の L4 の TCP のルールの項目（rproxy-api �
 - DB の `options` 列にも書くので、rproxy を再起動して UI の DB から戻したルールも同じ値（`0s` を含む）になります（rproxy-api v0.4.20 以上）。空欄に戻して保存すると、rproxy へは既定（`1h`・`1m`）を送ります。
 - 詳細画面の「詳細」に出し（省いたものは「既定（1h）」）、変更の履歴に前と後の値、ずれ（複数の rproxy）にも出します。エクスポート・インポートでも残ります。
 
+## 宛先への接続の時間（connect_timeout）
+
+rproxy-api の L4 の TCP のルールの `connect_timeout`（v0.4.3。rproxy-api の docs/API.md「宛先への接続の時間」）。「詳細」タブの「宛先への接続の時間」で、rproxy が `GET /capabilities` の `features.db_connect_timeout` を返すとき（rproxy-api v0.4.21 以上）だけ編集できます。UDP と L7 のルール（L7 タブのサービスの `timeouts.connect`）には出しません。
+
+- 宛先への TCP の接続にかけてよい時間です。過ぎたら失敗として数え、ほかに宛先があれば次の宛先で接続し直します。空欄は rproxy の既定（ほかに宛先があれば `5s`、なければ `30s`）です。
+- `1500ms`・`3s` のように書き、`100ms`〜`10m` です（rproxy と同じ規則で保存の前に確かめます）。同じクラスタの中なら `1s`〜`3s` が目安です。
+- DB の `options` 列にも書くので、rproxy を再起動して UI の DB から戻したルールも同じ値になります。rproxy-api v0.4.20 までは UI の DB の `connect_timeout` を読まず、このキーのある行を丸ごと戻さない（再起動でルールが消える）ので、`features.connect_timeout` だけを返す rproxy では読み取り専用で残してそのまま送り、API（インポート・巻き戻し・コピー・移動を含む）で新しく付けたり変えたりすると 400 `unsupported` で断ります。
+- グループでは、置き場所のすべてのノードで確かめます（ノードは並べて聞きます）。フォームの欄も、すべてのノードが `features.db_connect_timeout` を返すときだけ編集でき、戻せないノードと問い合わせできないノードの名前を出します。作り直し（置き換え・巻き戻し・重なる先への移動）は、今のルールを消す前に確かめます。
+- 置き場所に問い合わせできないノードがあると、そのノードが戻るまで `connect_timeout` を付けたり変えたりできません（502 `unreachable`。戻せるか確かめられないため）。外すことと、今の値のままほかの項目を変えることはできます。
+- あとからグループに足したノード・版を下げたノードが `features.db_connect_timeout` を返さないと、そのノードを再起動したときに `connect_timeout` のあるルールが戻りません。「rproxy の機能と設定」（`/system`。管理者）は、そのノードに置かれた `connect_timeout` のあるルールの数を注意として出します。rproxy-api を v0.4.21 以降にするか、そのルールの `connect_timeout` を空にしてください。
+- 空欄に戻して保存すると、rproxy へは `0s`（外す）を送ります。
+- 詳細画面の「詳細」に出し（省いたものは「既定（ほかに宛先があれば 5s、なければ 30s）」）、変更の履歴に前と後の値、ずれ（複数の rproxy）にも出します。エクスポート・インポートでも残ります。
+
 ## UDP をサーバ名で振り分ける（DTLS・QUIC）
 
 UDP のルールでも、TLS タブのモードを「sni」にすると、最初のパケットのサーバ名で転送先を選べます（rproxy v0.3.8 から）。v0.3.18 以降の rproxy は版を返すので、v0.3.8 より古ければ「sni」を選べません（版を返さない古い rproxy では選べますが、v0.3.7 以前なら保存のときに断られるので、その旨を出します）。終端しないので証明書は要りません（転送先が持ちます）。プロファイル「HTTP/3（QUIC）をサーバ名で振り分ける（UDP 443）」「TURN の DTLS をサーバ名で振り分ける（UDP 5349）」から始められます。
@@ -456,7 +469,7 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 | TLS / DTLS | passthrough / sni / 終端（UDP では DTLS）、サーバ名ごとの転送先（TLS を終端しない名前は送信元 IP の渡し方、rproxy が終端する名前は転送先への TLS も）と、どのサーバ名にも一致しない接続の扱い（基本の転送先へ送る / 切断する）、証明書、TLS のオプション（最小バージョンと暗号スイート。TCP の終端）、クライアント証明書の検証（mTLS）、ALPN、転送先への再暗号化 |
 | メール (STARTTLS) | SMTP / IMAP / POP3 の STARTTLS（TCP で「終端」のときだけ） |
 | 制限・GeoIP | ラベル、L4 の制限、帯域の上限、GeoIP、受け身のヘルスチェック（rproxy-api v0.4。上の「v0.4 のルールの項目」） |
-| 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、TCP の中継の時間切れ（idle_timeout・half_close_timeout。L4 の TCP）、接続を許可する送信元（allow_from）、PROXY protocol の受け取り（proxy_protocol。TCP） |
+| 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、TCP の中継の時間切れ（idle_timeout・half_close_timeout。L4 の TCP）、宛先への接続の時間（connect_timeout。L4 の TCP）、接続を許可する送信元（allow_from）、PROXY protocol の受け取り（proxy_protocol。TCP） |
 
 - プロファイルは `../rproxy-api/docs/PROFILES.md` の推奨設定をフォームに入れるだけです。アドレスと証明書のパスは環境に合わせて入力してください。
 - 証明書・秘密鍵・CA のパスは rproxy-api のサーバ上のパスです。読めないと `tls_config` のエラーになります。

@@ -94,7 +94,7 @@ describe('idle_timeout・half_close_timeout の行き来（フォーム・DB・r
 
   it('「制限・GeoIP」タブの組み立ては中継の時間切れを落とさない', () => {
     const editable = {
-      labels: true, limits: true, bandwidth: true, geoip: true, outlier_detection: true, proxy_protocol: true, idle_timeout: true, half_close_timeout: true,
+      labels: true, limits: true, bandwidth: true, geoip: true, outlier_detection: true, proxy_protocol: true, idle_timeout: true, half_close_timeout: true, connect_timeout: true,
     };
     const v = buildV04(toV04Form({ idleTimeout: '0s' }), 'tcp', false, editable, { idleTimeout: '0s', halfCloseTimeout: '5m' });
     expect(v.idleTimeout).toBe('0s');

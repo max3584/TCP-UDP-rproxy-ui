@@ -388,6 +388,21 @@ describe('RuleForm: tcp の中継の時間切れ', () => {
   });
 });
 
+// rproxy-api v0.4.3 の connect_timeout（UI #184）。UI の DB から戻せる rproxy（features.db_connect_timeout）でなければ読み取り専用で残して送る
+describe('RuleForm: 宛先への接続の時間', () => {
+  it('rproxy が機能を返さないときは、今の値を読み取り専用で出す（欄は出さない）', () => {
+    const html = render({ ...terminateRule, tls: { mode: 'passthrough' }, connectTimeout: '1500ms' });
+    expect(html).toContain('data-testid="connect-timeout-preserved"');
+    expect(html).toContain('1500ms');
+    expect(html).not.toContain('id="rule-connect-timeout"');
+  });
+
+  it('値がなければ何も出さず、udp のルールにも出さない', () => {
+    expect(render({ ...terminateRule, tls: { mode: 'passthrough' } })).not.toContain('connect-timeout');
+    expect(render(udpRule)).not.toContain('connect-timeout');
+  });
+});
+
 // 管理者でない人（#155）：ファイルのパスの欄は読み取り専用、ファイルの証明書は足せず、登録済みの証明書を足せる。案内も出す
 describe('RuleForm for users who are not admins (#155)', () => {
   const withFiles: ForwardRule = { ...terminateRule, tls: { mode: 'terminate', certificates: [{ cert_file: '/etc/rproxy/a.pem', key_file: '/etc/rproxy/a.key' }, { cert: 'tenant-a' }] } };

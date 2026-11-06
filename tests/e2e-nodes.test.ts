@@ -451,4 +451,31 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect(after.n1.items.udp_max_sessions.source).toBe('default');
     expect(after.n2.items.trusted_proxies.source).toBe('default');
   });
+
+  // connect_timeout（UI #184）：UI の DB の options に書いた行が、再起動した rproxy にそのまま戻る（rproxy-api #379。
+  // それより前の rproxy は知らないキーとして行を丸ごと断る）。features.db_connect_timeout のない rproxy-api では UI が書かないので飛ばす
+  it('a rule with connect_timeout survives a restart through the node\'s view', async () => {
+    const { loadNodes, targetNodes, toRproxyNode } = await import('@/components/nodes');
+    const { getCapabilities, getRule, withNode } = await import('@/components/rproxy');
+    const n2 = toRproxyNode(targetNodes(loadNodes(), 'n2')![0]);
+    if ((await withNode(n2, () => getCapabilities())).features?.db_connect_timeout !== true) {
+      // 飛ばしたことをログに出す（CI の結果で見えるように）
+      console.log('e2e-nodes: skipped the connect_timeout restore check: n2 does not report features.db_connect_timeout (rproxy-api v0.4.21)');
+      return;
+    }
+    const PORT = 19409;
+    const key = { protocol: 'tcp' as const, listen_addr: '127.0.0.1', listen_port: PORT };
+    try {
+      const add = await call('add', { ...rule(PORT), target: 'n2', connectTimeout: '1500ms' });
+      expect(add.status, JSON.stringify(add.json)).toBe(200);
+      expect((await withNode(n2, () => getRule(key))).connect_timeout).toBe('1500ms');
+      execFileSync('docker', ['restart', container('n2')], { stdio: 'inherit' });
+      await waitFor(async () => {
+        expect(await rulesOn('n2')).toContain(PORT);
+      });
+      expect((await withNode(n2, () => getRule(key))).connect_timeout).toBe('1500ms');
+    } finally {
+      await call('delete', { protocol: 'tcp', srcAddr: '127.0.0.1', srcPort: PORT, target: 'n2' });
+    }
+  });
 });

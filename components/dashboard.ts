@@ -8,7 +8,7 @@ import { hostsOfMatch } from './httpspec';
 import { effectiveRule } from './overrides';
 import { acmeProblem, acmeStatusField } from './acme';
 import type { AcmeCertStatus } from './acme';
-import { normalizeRelayTimeout, normalizeV04, v04Of } from './v04';
+import { normalizeConnectTimeout, normalizeRelayTimeout, normalizeV04, v04Of } from './v04';
 import type { Condition, RelayTimeoutKey, V04Settings } from './v04';
 import { joinList, joinSentences, t, translate } from '@/i18n/core';
 import { targetsAllFull } from './targets';
@@ -225,6 +225,14 @@ function v04FromStatus(status: RproxyRuleStatus): V04Settings {
     if (idle !== undefined) raw.idleTimeout = idle;
     const halfClose = relay('half_close_timeout', src.half_close_timeout);
     if (halfClose !== undefined) raw.halfCloseTimeout = halfClose;
+    if (typeof src.connect_timeout === 'string') {
+      try {
+        const connect = normalizeConnectTimeout(src.connect_timeout, status.protocol, isHttpSpec(status.http));
+        if (connect) raw.connectTimeout = connect;
+      } catch {
+        raw.connectTimeout = src.connect_timeout;
+      }
+    }
     return raw;
   }
 }

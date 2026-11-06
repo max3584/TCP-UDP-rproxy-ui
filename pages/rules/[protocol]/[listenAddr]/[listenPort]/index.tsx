@@ -47,7 +47,7 @@ import HttpSummary from '@/components/HttpSummary';
 import HistoryList from '@/components/HistoryList';
 import UsagePanel from '@/components/UsageChart';
 import { joinList, translate } from '@/i18n/core';
-import { CONDITION_LABELS, asnLabel, conditionProblem, rateLabel, relayTimeoutText, v04Fields } from '@/components/v04';
+import { CONDITION_LABELS, asnLabel, conditionProblem, connectTimeoutText, rateLabel, relayTimeoutText, v04Fields } from '@/components/v04';
 import type { Condition } from '@/components/v04';
 
 // 宛先を複数にしたルールの宛先の一覧（状態と接続数は rproxy が返すときだけ）
@@ -396,9 +396,9 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
 
 // v0.4 の項目（ラベル・L4 の制限・帯域の上限・GeoIP・受け身のヘルスチェック）。どれもなければ出さない
 const V04Section: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
-  // PROXY protocol の受け取り（proxy_protocol）と中継の時間切れは「詳細」に出す
-  const { proxy_protocol: _pp, idle_timeout: _it, half_close_timeout: _hc, ...v } = v04Fields(rule);
-  void _pp; void _it; void _hc;
+  // PROXY protocol の受け取り（proxy_protocol）・中継の時間切れ・宛先への接続の時間は「詳細」に出す
+  const { proxy_protocol: _pp, idle_timeout: _it, half_close_timeout: _hc, connect_timeout: _ct, ...v } = v04Fields(rule);
+  void _pp; void _it; void _hc; void _ct;
   if (Object.keys(v).length === 0) return null;
   const items: [string, React.ReactNode][] = [];
   if (v.labels) {
@@ -921,6 +921,7 @@ const RuleDetailPage: React.FC = () => {
                 ...(view.protocol === 'tcp' && view.http === null ? [
                   ['何も運ばない接続の時間切れ（idle_timeout）', <span key="it" data-testid="idle-timeout">{relayTimeoutText('idle_timeout', view.idleTimeout)}</span>],
                   ['片側が送り終えた後の時間切れ（half_close_timeout）', <span key="hc" data-testid="half-close-timeout">{relayTimeoutText('half_close_timeout', view.halfCloseTimeout)}</span>],
+                  ['宛先への接続の時間（connect_timeout）', <span key="ct" data-testid="connect-timeout">{connectTimeoutText(view.connectTimeout)}</span>],
                 ] as [string, React.ReactNode][] : []),
                 ['接続を許可する送信元', view.allowFrom.length > 0
                   ? (

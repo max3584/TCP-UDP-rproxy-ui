@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => {
     listRules: vi.fn(),
     getRule: vi.fn(),
     getInterfaces: vi.fn(),
+    getCapabilities: vi.fn(),
   };
 });
 
@@ -45,6 +46,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => ({
   listRules: mocks.listRules,
   getRule: mocks.getRule,
   getInterfaces: mocks.getInterfaces,
+  getCapabilities: mocks.getCapabilities,
 }));
 
 import handler from '@/pages/api/forward/[forward]';
@@ -635,5 +637,130 @@ describe('nodes and groups (#98)', () => {
 
     const dash = await call('dashboard', undefined, 'GET');
     expect(dash.body.haSync).toMatchObject({ intervalSecs: 30 });
+  });
+});
+
+// connect_timeout（UI #184）：UI の DB から戻せるか（features.db_connect_timeout、rproxy-api v0.4.21）を置き場所のすべてのノードで確かめる。
+// 1 台でも戻せなければ 400 unsupported、聞けなければ 502 unreachable。作り直し（移動）は元を消す前に断る
+describe('connect_timeout on groups (UI #184)', () => {
+  const ctOptions = JSON.stringify({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, connect_timeout: '3s' });
+  // ノードごとの答え（'ok'：db_connect_timeout あり、'old'：なし、'down'：聞けない）
+  function caps(answers: Record<string, 'ok' | 'old' | 'down'>, asked: string[] = []) {
+    mocks.getCapabilities.mockImplementation(async () => {
+      const node = currentNode()?.name ?? '(none)';
+      asked.push(node);
+      const a = answers[node] ?? 'ok';
+      if (a === 'down') throw new RproxyError('rproxy に接続できません', 'unreachable', 0);
+      return { features: a === 'ok' ? { connect_timeout: true, db_connect_timeout: true } : { connect_timeout: true } };
+    });
+  }
+  function lockCt() {
+    conn.query.mockImplementation(async (q: string, params: unknown[] = []) => {
+      if (q.includes('FOR UPDATE') && q.includes('forward_rules WHERE')) {
+        const target = String(params.find((p) => ['ha', 'a', 'b', 'c'].includes(String(p))) ?? 'ha');
+        return [row(1, target, { options: ctOptions })];
+      }
+      if (q.startsWith('SELECT id FROM forward_rules')) return [{ id: 1 }];
+      return q.startsWith('SELECT') ? [] : { affectedRows: 1, insertId: 7 };
+    });
+  }
+  const inserted = () => conn.query.mock.calls.some((c) => String(c[0]).startsWith('INSERT INTO forward_rules ('));
+  const deletedRows = () => conn.query.mock.calls.some((c) => String(c[0]).startsWith('DELETE FROM forward_rules'));
+
+  it('a group with one node without the flag refuses with 400 unsupported naming that node, and writes nothing', async () => {
+    const asked: string[] = [];
+    caps({ a: 'ok', b: 'old' }, asked);
+    const { status, body } = await call('add', { ...tcpRule, target: 'ha', connectTimeout: '3s' });
+    expect([status, body.code]).toEqual([400, 'unsupported']);
+    expect(body.error).toContain('b');
+    expect(body.error).not.toMatch(/ノード a[ ,]/);
+    expect(asked.sort()).toEqual(['a', 'b']);
+    expect(inserted()).toBe(false);
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('a node that cannot be asked is 502 unreachable, not unsupported', async () => {
+    caps({ a: 'ok', b: 'down' });
+    const { status, body } = await call('add', { ...tcpRule, target: 'ha', connectTimeout: '3s' });
+    expect([status, body.code]).toEqual([502, 'unreachable']);
+    expect(inserted()).toBe(false);
+  });
+
+  it('asks the nodes in parallel (a stalled node costs one timeout, not one per node)', async () => {
+    let releaseA: () => void = () => undefined;
+    mocks.getCapabilities.mockImplementation(async () => {
+      const node = currentNode()?.name;
+      const ok = { features: { connect_timeout: true, db_connect_timeout: true } };
+      if (node === 'a') return new Promise((resolve) => { releaseA = () => resolve(ok); });
+      // a の答えは b に聞いた後にしか来ない：順に聞くと a を待ったまま止まる
+      releaseA();
+      return ok;
+    });
+    mocks.addRule.mockResolvedValue({});
+    const { status } = await call('add', { ...tcpRule, target: 'ha', connectTimeout: '3s' });
+    expect(status).toBe(200);
+    expect(inserted()).toBe(true);
+  });
+
+  it('all nodes with the flag: stored and sent to both', async () => {
+    caps({ a: 'ok', b: 'ok' });
+    const added: string[] = [];
+    mocks.addRule.mockImplementation(onNode(added, () => ({})));
+    const { status } = await call('add', { ...tcpRule, target: 'ha', connectTimeout: '3s' });
+    expect(status).toBe(200);
+    expect(added.sort()).toEqual(['a', 'b']);
+    expect(mocks.addRule.mock.calls[0][0].connect_timeout).toBe('3s');
+  });
+
+  it('copy to a node without the flag is refused and nothing is added', async () => {
+    pool.query.mockImplementation(async (q: string) => {
+      if (q.startsWith('SELECT target FROM forward_rules') && !q.includes('<>')) return [{ target: 'ha' }];
+      if (q.startsWith('SELECT id, auth_id, target')) return [row(1, 'ha', { options: ctOptions })];
+      return [];
+    });
+    lockCt();
+    caps({ a: 'ok', b: 'ok', c: 'old' });
+    const { status, body } = await call('copy', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', to: 'c' });
+    expect([status, body.code]).toEqual([400, 'unsupported']);
+    expect(mocks.addRule).not.toHaveBeenCalled();
+    expect(inserted()).toBe(false);
+  });
+
+  it('a move to an overlapping node without the flag is refused before the original is deleted', async () => {
+    pool.query.mockImplementation(async (q: string) => {
+      if (q.startsWith('SELECT target FROM forward_rules') && !q.includes('<>')) return [{ target: 'ha' }];
+      if (q.startsWith('SELECT id, auth_id, target')) return [row(1, 'ha', { options: ctOptions })];
+      return [];
+    });
+    lockCt();
+    mocks.getRule.mockResolvedValue(status(8001, { origin: 'dynamic' }));
+    caps({ a: 'old', b: 'ok' });
+    const { status: code, body } = await call('copy', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', to: 'a', move: true });
+    expect([code, body.code]).toEqual([400, 'unsupported']);
+    expect(mocks.deleteRule).not.toHaveBeenCalled();
+    expect(deletedRows()).toBe(false);
+  });
+
+  it('when the move fails after the delete, the original (connect_timeout already stored) is put back without asking again', async () => {
+    pool.query.mockImplementation(async (q: string) => {
+      if (q.startsWith('SELECT target FROM forward_rules') && !q.includes('<>')) return [{ target: 'ha' }];
+      if (q.startsWith('SELECT id, auth_id, target')) return [row(1, 'ha', { options: ctOptions })];
+      return [];
+    });
+    lockCt();
+    mocks.getRule.mockResolvedValue(status(8001, { origin: 'dynamic' }));
+    const asked: string[] = [];
+    caps({ a: 'ok', b: 'ok' }, asked);
+    const added: string[] = [];
+    mocks.deleteRule.mockResolvedValue(undefined);
+    // 移動先（a）で作れない → 元（ha = a・b）に戻す
+    mocks.addRule.mockImplementationOnce(async () => { throw new RproxyError('bind failed', 'bind_failed', 409); })
+      .mockImplementation(onNode(added, () => ({})));
+    const { status: code } = await call('copy', { protocol: 'tcp', srcAddr: '0.0.0.0', srcPort: 8001, target: 'ha', to: 'a', move: true });
+    expect(code).toBe(409);
+    expect(added.sort()).toEqual(['a', 'b']);
+    expect(mocks.addRule.mock.calls.at(-1)![0].connect_timeout).toBe('3s');
+    // 聞いたのは移動先の a だけ（消す前と作るとき）。戻すときは聞かない
+    expect(asked).toEqual(['a', 'a']);
   });
 });

@@ -1,7 +1,7 @@
 // RuleForm の「制限・GeoIP」タブの入力（文字列の欄）と、v0.4 の項目（components/v04.ts）の行き来。React に依存しない（tests/v04.test.ts）
 import type { Protocol } from './lib';
 import { TlsError } from './tlserror';
-import { normalizeBandwidth, normalizeGeoip, normalizeL4Outlier, normalizeLabels, normalizeLimits, normalizeProxyProtocol, normalizeRelayTimeout } from './v04';
+import { normalizeBandwidth, normalizeGeoip, normalizeL4Outlier, normalizeLabels, normalizeLimits, normalizeConnectTimeout, normalizeProxyProtocol, normalizeRelayTimeout } from './v04';
 import type { GeoipUnknown, ProxyProtocolSpec, RateSpec, V04Key, V04Settings } from './v04';
 
 export interface LabelRow {
@@ -180,10 +180,11 @@ export function buildV04(form: V04Form, protocol: Protocol, l7: boolean, editabl
     }));
     if (outlier) out.outlierDetection = outlier;
   } else if (!l7 && current.outlierDetection) out.outlierDetection = current.outlierDetection;
-  // PROXY protocol の受け取りと中継の時間切れは「詳細」タブ（buildProxyProtocol・buildRelayTimeouts）。ここでは今の値をそのまま渡す
+  // PROXY protocol の受け取り・中継の時間切れ・宛先への接続の時間は「詳細」タブ（buildProxyProtocol・buildRelayTimeouts・buildConnectTimeout）。ここでは今の値をそのまま渡す
   if (current.proxyProtocol) out.proxyProtocol = current.proxyProtocol;
   if (current.idleTimeout) out.idleTimeout = current.idleTimeout;
   if (current.halfCloseTimeout) out.halfCloseTimeout = current.halfCloseTimeout;
+  if (current.connectTimeout) out.connectTimeout = current.connectTimeout;
   return out;
 }
 
@@ -235,4 +236,16 @@ export function buildRelayTimeouts(form: RelayTimeoutForm, protocol: Protocol, l
   const idle = normalizeRelayTimeout('idle_timeout', form.idle, protocol, l7);
   const halfClose = normalizeRelayTimeout('half_close_timeout', form.halfClose, protocol, l7);
   return { ...(idle ? { idleTimeout: idle } : {}), ...(halfClose ? { halfCloseTimeout: halfClose } : {}) };
+}
+
+// ---- 「詳細」タブの tcp の宛先への接続の時間（connect_timeout、rproxy-api v0.4.3。UI の DB からは v0.4.21） ----
+
+// 欄（空欄は rproxy の既定）から connect_timeout を作る。
+// editable でなければ（rproxy が features.db_connect_timeout を返さない：UI の DB から戻せない）今の値をそのまま残す。
+// 欄を出さない udp・L7 のルールでは付けない（rproxy が invalid で断る）。誤りは TlsError
+export function buildConnectTimeout(form: string, protocol: Protocol, l7: boolean, editable: boolean, current: V04Settings): Pick<V04Settings, 'connectTimeout'> {
+  if (!editable) return current.connectTimeout ? { connectTimeout: current.connectTimeout } : {};
+  if (protocol !== 'tcp' || l7) return {};
+  const connect = normalizeConnectTimeout(form, protocol, l7);
+  return connect ? { connectTimeout: connect } : {};
 }
