@@ -3,7 +3,7 @@
 import type { ForwardRule } from './lib';
 import { hostPort, portsLabel } from './dashboard';
 import { tc, translate } from '@/i18n/core';
-import { v04Fields } from './v04';
+import { relayTimeoutText, v04Fields } from './v04';
 import { targetCapsOf, withoutTargetCaps } from './targets';
 
 // RESEND は 1 つのノードへの送り直し（#98。内容は変えない）、OVERRIDE はノードごとの上書きの変更（内容はそのノードで動かす内容）
@@ -120,6 +120,13 @@ export function ruleChanges(prevRule: ForwardRule | null, nextRule: ForwardRule 
   if (!same(pv.geoip, nv.geoip)) note('GeoIP を変更');
   if (!same(pv.outlier_detection, nv.outlier_detection)) note('受け身のヘルスチェックを変更');
   if (!same(pv.proxy_protocol, nv.proxy_protocol)) note('PROXY protocol の受け取りを変更');
+  // tcp の中継の時間切れ（v0.4.20）。省いたものは既定
+  if (!same(pv.idle_timeout, nv.idle_timeout)) {
+    change('TCP の中継の時間切れ（idle_timeout）', relayTimeoutText('idle_timeout', pv.idle_timeout), relayTimeoutText('idle_timeout', nv.idle_timeout));
+  }
+  if (!same(pv.half_close_timeout, nv.half_close_timeout)) {
+    change('片側が送り終えた後の時間切れ（half_close_timeout）', relayTimeoutText('half_close_timeout', pv.half_close_timeout), relayTimeoutText('half_close_timeout', nv.half_close_timeout));
+  }
   if (!same(targetCapsOf(prevRule), targetCapsOf(nextRule))) note('宛先ごとの上限を変更');
   // 一時停止・再開（#63）
   scalar('状態', ruleState(prev), ruleState(next));

@@ -372,6 +372,22 @@ describe('RuleForm: route ごとの source_ip と proxy_protocol', () => {
   });
 });
 
+// rproxy-api v0.4.20 の idle_timeout・half_close_timeout（#353、UI #181）。features.tcp_idle_timeout のない rproxy では読み取り専用で残して送る
+describe('RuleForm: tcp の中継の時間切れ', () => {
+  it('rproxy が機能を返さないときは、今の値を読み取り専用で出す（欄は出さない）', () => {
+    const html = render({ ...terminateRule, tls: { mode: 'passthrough' }, idleTimeout: '0s' });
+    expect(html).toContain('data-testid="relay-timeouts-preserved"');
+    expect(html).toContain('上限なし（0s）');
+    expect(html).toContain('既定（1m）');
+    expect(html).not.toContain('id="rule-idle-timeout"');
+  });
+
+  it('値がなければ何も出さず、udp のルールにも出さない', () => {
+    expect(render({ ...terminateRule, tls: { mode: 'passthrough' } })).not.toContain('relay-timeouts');
+    expect(render(udpRule)).not.toContain('relay-timeouts');
+  });
+});
+
 // 管理者でない人（#155）：ファイルのパスの欄は読み取り専用、ファイルの証明書は足せず、登録済みの証明書を足せる。案内も出す
 describe('RuleForm for users who are not admins (#155)', () => {
   const withFiles: ForwardRule = { ...terminateRule, tls: { mode: 'terminate', certificates: [{ cert_file: '/etc/rproxy/a.pem', key_file: '/etc/rproxy/a.key' }, { cert: 'tenant-a' }] } };

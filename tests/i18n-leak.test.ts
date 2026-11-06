@@ -12,6 +12,7 @@ import { healthCheckLabel } from '@/components/targets';
 import { listenOptions } from '@/components/listen';
 import { checkMatch } from '@/components/httpspec';
 import { proxyProtocolHint, transparentHint } from '@/components/sourceip';
+import { relayTimeoutText } from '@/components/v04';
 import { explainError } from '@/components/messages';
 import { AcmeCertStatus, acmeProblem, checkAcmeNames } from '@/components/acme';
 
@@ -61,6 +62,10 @@ function samples(): string[] {
     transparentHint({ sourceIp: 'proxy', transparentAvailable: true, listenIsIPv6: true })!.message,
     transparentHint({ sourceIp: 'transparent', transparentAvailable: true, listenIsIPv6: false })!.message,
     explainError('bind_failed', 'Permission denied (os error 13)'),
+    // tcp の中継の時間切れ（v0.4.20）：履歴の前と後・既定・上限なし
+    ...ruleChanges(base, { ...base, idleTimeout: '0s', halfCloseTimeout: '5m' }),
+    relayTimeoutText('idle_timeout', undefined),
+    relayTimeoutText('half_close_timeout', '0s'),
     explainError(undefined, 'certificate expired: x'),
   ];
 }

@@ -94,6 +94,10 @@ export interface HttpRules {
 }
 
 // ミドルウェアの種類（rproxy の MiddlewareSpec と同じ順）と画面の名前
+// mirror の同時に送る写しの上限（max_in_flight、rproxy-api v0.4.20、#356）
+export const MIRROR_MAX_IN_FLIGHT_DEFAULT = 64;
+export const MIRROR_MAX_IN_FLIGHT_MAX = 10000;
+
 export const MIDDLEWARE_KINDS: Record<string, string> = {
   redirect_scheme: 'スキームのリダイレクト（HTTP→HTTPS）',
   redirect_regex: '正規表現のリダイレクト',
@@ -472,6 +476,11 @@ function checkMiddlewareConfig(name: string, kind: string, c: Record<string, unk
     if (c.percent !== undefined && c.fraction !== undefined) errors.push(`${label}は割合（percent）と分数（fraction）のどちらか一方にしてください。`);
     if (c.percent !== undefined && !(Number.isInteger(c.percent) && (c.percent as number) >= 0 && (c.percent as number) <= 100)) {
       errors.push(`${label}の割合は 0〜100 の整数にしてください。`);
+    }
+    // v0.4.20（#356）：同時に送る写しの上限（既定 64）
+    if (c.max_in_flight !== undefined
+      && !(Number.isInteger(c.max_in_flight) && (c.max_in_flight as number) >= 1 && (c.max_in_flight as number) <= MIRROR_MAX_IN_FLIGHT_MAX)) {
+      errors.push(`${label}の同時に送る写しの上限（max_in_flight）は 1〜${MIRROR_MAX_IN_FLIGHT_MAX} の整数にしてください。`);
     }
     if (c.fraction !== undefined) {
       const f = isObject(c.fraction) ? c.fraction : {};

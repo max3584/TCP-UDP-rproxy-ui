@@ -5,6 +5,7 @@
 
 import type { Protocol } from './lib';
 import { TlsError } from './tlserror';
+import { translate } from '@/i18n/core';
 import { MAX_ALLOW_FROM, parseCidr } from './cidr';
 
 export type Labels = Record<string, string>;
@@ -92,22 +93,34 @@ export interface V04Settings {
   outlierDetection?: L4OutlierSpec;
   // v0.4.13
   proxyProtocol?: ProxyProtocolSpec;
+  // v0.4.20（#353、features.tcp_idle_timeout）：L4 の tcp のルールの中継の時間切れ。"0s" は上限なし。
+  // 既定（1h・1m）と同じ値は省く（rproxy は付けたときだけ返すので、省いたものと既定は同じに比べる）
+  idleTimeout?: string;
+  halfCloseTimeout?: string;
 }
 
 // rproxy・DB の options での名前（snake_case）と ForwardRule での名前
-export const V04_KEYS = ['labels', 'limits', 'bandwidth', 'geoip', 'outlier_detection', 'proxy_protocol'] as const;
+export const V04_KEYS = ['labels', 'limits', 'bandwidth', 'geoip', 'outlier_detection', 'proxy_protocol', 'idle_timeout', 'half_close_timeout'] as const;
 export type V04Key = typeof V04_KEYS[number];
 
 // ForwardRule（API の本文）での名前
 export const V04_FIELD: Record<V04Key, keyof V04Settings> = {
   labels: 'labels', limits: 'limits', bandwidth: 'bandwidth', geoip: 'geoip', outlier_detection: 'outlierDetection', proxy_protocol: 'proxyProtocol',
+  idle_timeout: 'idleTimeout', half_close_timeout: 'halfCloseTimeout',
 };
 
-// GET /capabilities の features の名前（proxy_protocol だけ proxy_protocol_in。ほかは同じ名前）
-export type V04Feature = 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol_in';
+// GET /capabilities の features の名前（proxy_protocol は proxy_protocol_in、中継の時間切れの 2 つは tcp_idle_timeout。ほかは同じ名前）
+export type V04Feature = 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol_in' | 'tcp_idle_timeout';
 export const V04_FEATURE: Record<V04Key, V04Feature> = {
   labels: 'labels', limits: 'limits', bandwidth: 'bandwidth', geoip: 'geoip', outlier_detection: 'outlier_detection', proxy_protocol: 'proxy_protocol_in',
+  idle_timeout: 'tcp_idle_timeout', half_close_timeout: 'tcp_idle_timeout',
 };
+
+// 中継の時間切れ（idle_timeout・half_close_timeout）の rproxy の既定。PATCH で外すときはこの値を送る
+// （rproxy の PATCH は省けば今のままで、{} は時間として読めない）
+export const RELAY_TIMEOUT_DEFAULTS = { idle_timeout: '1h', half_close_timeout: '1m' } as const;
+export type RelayTimeoutKey = keyof typeof RELAY_TIMEOUT_DEFAULTS;
+export const RELAY_TIMEOUT_KEYS: RelayTimeoutKey[] = ['idle_timeout', 'half_close_timeout'];
 
 // Gateway API の形の状態（ルールの conditions。features.conditions）
 export interface Condition {
@@ -490,6 +503,42 @@ export function normalizeProxyProtocol(value: unknown, protocol?: Protocol): Pro
   return { from: from, required: value.required !== false };
 }
 
+// ---- tcp の中継の時間切れ（idle_timeout・half_close_timeout、v0.4.20） ----
+
+const RELAY_TIMEOUT_NAMES: Record<RelayTimeoutKey, string> = {
+  idle_timeout: '何も運ばない接続の時間切れ（idle_timeout）',
+  half_close_timeout: '片側が送り終えた後の時間切れ（half_close_timeout）',
+};
+
+// rproxy の core/rule.rs の validate_relay_timeout と同じ規則：省略・null・'' はなし（既定）、"0s" は上限なし、ほかは 1s 以上 365 日まで。
+// tcp の L4 のルールだけ（udp は udp_idle_secs、http のルールは global.http.timeouts。どちらも invalid）。
+// 比べられるように大きな単位の書き方（3600s → 1h）にし、既定（1h・1m）と同じなら null（省く）
+export function normalizeRelayTimeout(key: RelayTimeoutKey, value: unknown, protocol?: Protocol, http = false): string | null {
+  if (value === undefined || value === null) return null;
+  const where = RELAY_TIMEOUT_NAMES[key];
+  if (typeof value !== 'string') throw invalid(`${where} は 30s・10m・1h のような文字列で指定してください。`);
+  const s = value.trim();
+  if (s === '') return null;
+  const ms = parseDurationMs(s);
+  if (ms === null) throw invalid(`${where} は 30s・10m・1h のように数と単位（ms・s・m・h）で、365 日までで指定してください（0s は上限なし）。`);
+  if (protocol === 'udp') throw invalid(`${where} は TCP のルールでだけ使えます（UDP はアイドルタイムアウト（udp_idle_secs）です）。`);
+  if (http) throw invalid(`${where} は L7（HTTP）のルールでは使えません（rproxy の設定ファイルの global.http.timeouts で決まります）。`);
+  if (ms !== 0 && ms < 1000) throw invalid(`${where} は 0s（上限なし）か 1s 以上にしてください。`);
+  const out = formatMs(ms);
+  return out === RELAY_TIMEOUT_DEFAULTS[key] ? null : out;
+}
+
+// フォームの「詳細」タブの説明（rproxy-api の docs/API.md「中継の時間切れと keepalive」）
+export const RELAY_TIMEOUT_HELP =
+  '接続がどちらの向きにも何も運ばない時間が idle_timeout（既定 1h）を超えたら、両側をリセットして閉じます。片側が送り終えた（半分閉じた）後は、残りの向きが half_close_timeout（既定 1m）何も運ばなければ閉じます。30s・10m・1h のように書き、0s で上限なし、ほかは 1s 以上です。TCP の keepalive のプローブでは延びないので、長く黙る接続（DB のコネクションプール・SSH・MQTT など）は長めの値か 0s に、送り終えてから返事を長く待つもの（nc -N・バックアップの道具など）は half_close_timeout を 0s か長めの値にしてください。';
+
+// 履歴・詳細画面の表示（省いたものは既定、0s は上限なし）
+export function relayTimeoutText(key: RelayTimeoutKey, value: string | undefined): string {
+  if (value === undefined) return translate(`既定（${RELAY_TIMEOUT_DEFAULTS[key]}）`);
+  if (parseDurationMs(value) === 0) return translate(`上限なし（${value}）`);
+  return value;
+}
+
 // ---- まとめて ----
 
 // API の本文・DB の options・rproxy の応答（snake_case のキー）から v0.4 の項目を読む。
@@ -511,6 +560,10 @@ export function normalizeV04(source: Record<string, unknown>, protocol?: Protoco
   }
   const pp = normalizeProxyProtocol(source.proxy_protocol ?? source.proxyProtocol, protocol);
   if (pp) out.proxyProtocol = pp;
+  const idle = normalizeRelayTimeout('idle_timeout', source.idle_timeout ?? source.idleTimeout, protocol, http);
+  if (idle) out.idleTimeout = idle;
+  const halfClose = normalizeRelayTimeout('half_close_timeout', source.half_close_timeout ?? source.halfCloseTimeout, protocol, http);
+  if (halfClose) out.halfCloseTimeout = halfClose;
   return out;
 }
 
@@ -523,6 +576,8 @@ export function v04Of(rule: V04Settings): V04Settings {
   if (rule.geoip) out.geoip = rule.geoip;
   if (rule.outlierDetection) out.outlierDetection = rule.outlierDetection;
   if (rule.proxyProtocol) out.proxyProtocol = rule.proxyProtocol;
+  if (rule.idleTimeout) out.idleTimeout = rule.idleTimeout;
+  if (rule.halfCloseTimeout) out.halfCloseTimeout = rule.halfCloseTimeout;
   return out;
 }
 
@@ -534,10 +589,12 @@ export interface V04Wire {
   geoip?: GeoipSpec;
   outlier_detection?: L4OutlierSpec;
   proxy_protocol?: ProxyProtocolSpec;
+  idle_timeout?: string;
+  half_close_timeout?: string;
 }
 
-// PATCH の形（{} は外す）
-export type V04Patch = { [K in keyof V04Wire]?: V04Wire[K] | Record<string, never> };
+// PATCH の形（{} は外す。中継の時間切れは既定の値を送って外す）
+export type V04Patch = { [K in Exclude<keyof V04Wire, RelayTimeoutKey>]?: V04Wire[K] | Record<string, never> } & { [K in RelayTimeoutKey]?: string };
 
 // rproxy・DB の options の形（snake_case）。あるものだけ
 export function v04Fields(rule: V04Settings): V04Wire {
@@ -549,23 +606,27 @@ export function v04Fields(rule: V04Settings): V04Wire {
     ...(v.geoip !== undefined ? { geoip: v.geoip } : {}),
     ...(v.outlierDetection !== undefined ? { outlier_detection: v.outlierDetection } : {}),
     ...(v.proxyProtocol !== undefined ? { proxy_protocol: v.proxyProtocol } : {}),
+    ...(v.idleTimeout !== undefined ? { idle_timeout: v.idleTimeout } : {}),
+    ...(v.halfCloseTimeout !== undefined ? { half_close_timeout: v.halfCloseTimeout } : {}),
   };
 }
 
 // PATCH の v0.4 の項目：今あるものは丸ごと置き換え、前にあって今ないものは {} で外す（どちらもないものは送らない。
-// 古い rproxy は知らない項目を断るので）
+// 古い rproxy は知らない項目を断るので）。中継の時間切れは {} ではなく既定の値（1h・1m）で戻す
 export function v04PatchFields(after: V04Settings, before?: V04Settings): V04Patch {
   const out: V04Patch = { ...v04Fields(after) };
   const prev = before ? v04Fields(before) : {};
   for (const key of V04_KEYS) {
-    if (out[key] === undefined && prev[key] !== undefined) out[key] = {};
+    if (out[key] !== undefined || prev[key] === undefined) continue;
+    if (key === 'idle_timeout' || key === 'half_close_timeout') out[key] = RELAY_TIMEOUT_DEFAULTS[key];
+    else out[key] = {};
   }
   return out;
 }
 
 // 使っている v0.4 の項目（features の名前）
 export function usedV04Features(rule: V04Settings): V04Feature[] {
-  return (Object.keys(v04Fields(rule)) as V04Key[]).map((k) => V04_FEATURE[k]);
+  return [...new Set((Object.keys(v04Fields(rule)) as V04Key[]).map((k) => V04_FEATURE[k]))];
 }
 
 // 画面の名前
@@ -576,6 +637,8 @@ export const V04_LABELS: Record<V04Key, string> = {
   geoip: 'GeoIP',
   outlier_detection: '受け身のヘルスチェック',
   proxy_protocol: 'PROXY protocol の受け取り',
+  idle_timeout: 'TCP の中継の時間切れ',
+  half_close_timeout: '片側が送り終えた後の時間切れ',
 };
 
 // ---- 画面の表示 ----

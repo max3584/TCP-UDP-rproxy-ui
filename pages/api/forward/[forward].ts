@@ -1115,8 +1115,8 @@ function mergeEdit(current: ForwardRule, rule: ForwardRule, given: Given): Forwa
     throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
   }
   // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
-  const { labels: _l, limits: _li, bandwidth: _b, geoip: _g, outlierDetection: _o, proxyProtocol: _p, ...base } = rule;
-  void _l; void _li; void _b; void _g; void _o; void _p;
+  const { labels: _l, limits: _li, bandwidth: _b, geoip: _g, outlierDetection: _o, proxyProtocol: _p, idleTimeout: _it, halfCloseTimeout: _hc, ...base } = rule;
+  void _l; void _li; void _b; void _g; void _o; void _p; void _it; void _hc;
   const updated: ForwardRule = {
     ...base,
     ...(current.target !== undefined ? { target: current.target } : {}),
@@ -1135,6 +1135,9 @@ function mergeEdit(current: ForwardRule, rule: ForwardRule, given: Given): Forwa
   };
   if (updated.http !== null && updated.outlierDetection) {
     throw invalid('L7（HTTP）のルールでは、ルールの受け身のヘルスチェックは使えません（L7 タブのサービスごとに設定します）。');
+  }
+  if (updated.http !== null && (updated.idleTimeout || updated.halfCloseTimeout)) {
+    throw invalid('中継の時間切れ（idle_timeout・half_close_timeout）は L7（HTTP）のルールでは使えません（rproxy の設定ファイルの global.http.timeouts で決まります）。');
   }
   if (updated.protocol === 'udp' && updated.proxyProtocol) {
     throw new HttpError(400, 'PROXY protocol の受け取り（proxy_protocol）は TCP のルールでだけ使えます（UDP のヘッダは読みません）。', 'unsupported');

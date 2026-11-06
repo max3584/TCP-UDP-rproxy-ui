@@ -42,6 +42,9 @@ export interface RproxyRule {
   outlier_detection?: L4OutlierSpec;
   // v0.4.13（#296）。tcp だけ
   proxy_protocol?: ProxyProtocolSpec;
+  // v0.4.20（#353、features.tcp_idle_timeout）。L4 の tcp だけ。"0s" は上限なし、省けば 1h・1m。応答では付けたときだけ（3600s のような秒の書き方）
+  idle_timeout?: string;
+  half_close_timeout?: string;
 }
 
 // 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）。
@@ -107,6 +110,9 @@ export interface RproxyRulePatch {
   geoip?: GeoipSpec | Record<string, never>;
   outlier_detection?: L4OutlierSpec | Record<string, never>;
   proxy_protocol?: ProxyProtocolSpec | Record<string, never>;
+  // v0.4.20：付けると置き換える（省けば今のまま。外すときは既定の 1h・1m を送る）
+  idle_timeout?: string;
+  half_close_timeout?: string;
 }
 
 // この版の rproxy で動かせる v0.3 の機能（古い rproxy は features を返さない）
@@ -146,6 +152,10 @@ export interface CapabilityFeatures {
   route_source_ip?: boolean;
   // v0.4.19：宛先ごとの上限（targets[]・tls.routes[].targets[]・L7 の servers[] の max_connections、#341）
   target_max_connections?: boolean;
+  // v0.4.20：L4 の tcp のルールの idle_timeout・half_close_timeout（#353）
+  tcp_idle_timeout?: boolean;
+  // v0.4.20：global.http.timeouts の write_stall・upgraded_idle・http2_max_streams と mirror の max_in_flight（#356）
+  http_stream_limits?: boolean;
   // 設定ファイルの global.performance で効く項目の名前
   performance?: string[];
   // v0.4.19：global の設定の API（GET / PATCH /config/global、#342）

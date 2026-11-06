@@ -55,9 +55,11 @@ function run<T>(p: PlanNode, fn: () => Promise<T>): Promise<T> {
 async function nodeView(p: PlanNode): Promise<GlobalNodeView> {
   const base = { node: p.name, transport: p.transport, readonly: p.readonly };
   let supported = false;
+  let streamLimits = false;
   try {
     const caps = await run(p, () => getCapabilities());
     supported = caps.features?.global_api === true;
+    streamLimits = caps.features?.http_stream_limits === true;
   } catch (err) {
     const f = rproxyFailure(err);
     return { ...base, reachable: false, supported: false, settings: null, error: f.error, code: f.code };
@@ -67,7 +69,10 @@ async function nodeView(p: PlanNode): Promise<GlobalNodeView> {
     const raw = globalSettingsView(await run(p, () => getGlobalSettings()));
     // 再起動が要る項目（acme の contact・directory・eab など）の中身は画面に出さない
     const settings = raw ? redactRestartItems(raw) : null;
-    return { ...base, reachable: true, supported: true, settings: settings, error: settings ? null : 'rproxy の応答を解釈できません。', code: settings ? null : 'bad_response' };
+    return {
+      ...base, reachable: true, supported: true, streamLimits: streamLimits, settings: settings,
+      error: settings ? null : 'rproxy の応答を解釈できません。', code: settings ? null : 'bad_response',
+    };
   } catch (err) {
     const f = globalFailure(err);
     return { ...base, reachable: true, supported: true, settings: null, error: f.error, code: f.code };

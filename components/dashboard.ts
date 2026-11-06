@@ -8,8 +8,8 @@ import { hostsOfMatch } from './httpspec';
 import { effectiveRule } from './overrides';
 import { acmeProblem, acmeStatusField } from './acme';
 import type { AcmeCertStatus } from './acme';
-import { normalizeV04, v04Of } from './v04';
-import type { Condition, V04Settings } from './v04';
+import { normalizeRelayTimeout, normalizeV04, v04Of } from './v04';
+import type { Condition, RelayTimeoutKey, V04Settings } from './v04';
 import { joinList, joinSentences, t, translate } from '@/i18n/core';
 import { targetsAllFull } from './targets';
 
@@ -212,6 +212,19 @@ function v04FromStatus(status: RproxyRuleStatus): V04Settings {
     if (src.geoip && typeof src.geoip === 'object') raw.geoip = src.geoip as V04Settings['geoip'];
     if (src.outlier_detection && typeof src.outlier_detection === 'object') raw.outlierDetection = src.outlier_detection as V04Settings['outlierDetection'];
     if (src.proxy_protocol && typeof src.proxy_protocol === 'object') raw.proxyProtocol = src.proxy_protocol as V04Settings['proxyProtocol'];
+    // 中継の時間切れは項目ごとに揃える（ほかの項目が読めなくても、外した後の 3600s を既定として省き、ずれを残さない）
+    const relay = (key: RelayTimeoutKey, v: unknown): string | undefined => {
+      if (typeof v !== 'string') return undefined;
+      try {
+        return normalizeRelayTimeout(key, v, status.protocol, isHttpSpec(status.http)) ?? undefined;
+      } catch {
+        return v;
+      }
+    };
+    const idle = relay('idle_timeout', src.idle_timeout);
+    if (idle !== undefined) raw.idleTimeout = idle;
+    const halfClose = relay('half_close_timeout', src.half_close_timeout);
+    if (halfClose !== undefined) raw.halfCloseTimeout = halfClose;
     return raw;
   }
 }

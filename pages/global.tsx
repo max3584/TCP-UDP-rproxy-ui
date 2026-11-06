@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { ErrorBanner, errorDetail } from '@/components/ui';
 import { explainError } from '@/components/messages';
 import {
-  GLOBAL_ITEM_LABELS, GlobalPatchError, SOURCE_LABELS, buildGlobalValue, editBlock, formatGlobalValue, sameValue, toGlobalForm,
+  GLOBAL_FIELD_DEFAULTS, GLOBAL_ITEM_LABELS, GlobalPatchError, SOURCE_LABELS, buildGlobalValue, editBlock, formatGlobalValue, sameValue, toGlobalForm,
 } from '@/components/globalsettings';
 import type { GlobalForm, GlobalItem, GlobalNodeResult, GlobalNodeView } from '@/components/globalsettings';
 import { localeTag, t } from '@/i18n/core';
@@ -150,6 +150,8 @@ const FormFields: React.FC<{ name: string; form: GlobalForm; onChange: (f: Globa
               <input
                 id={`${id}-${k}`}
                 className={input}
+                {...(k === 'http2_max_streams' ? { inputMode: 'numeric' as const } : {})}
+                placeholder={GLOBAL_FIELD_DEFAULTS[name]?.[k] ? `既定 ${GLOBAL_FIELD_DEFAULTS[name][k]}` : undefined}
                 value={form.fields[k] ?? ''}
                 onChange={(e) => onChange({ ...form, fields: { ...form.fields, [k]: e.target.value } })}
               />
@@ -278,7 +280,9 @@ const GlobalPage: React.FC = () => {
 
   // ノードごとに API の値が違う項目（グループ）。欄に最初のノードの値を入れると、ほかのノードの値を黙って上書きしてしまうので空にする
   const differs = (name: string) => shown.some((n) => !sameValue(n.settings!.items[name]?.api_value, shown[0].settings!.items[name]?.api_value));
-  const editOf = (name: string): Edit => edits[name] ?? { mode: 'keep', form: toGlobalForm(name, differs(name) ? undefined : shown[0].settings!.items[name]) };
+  // http.timeouts の v0.4.20 の欄（write_stall・upgraded_idle・http2_max_streams）は、見せているノードのすべてが使えるときだけ
+  const streamLimits = shown.length > 0 && shown.every((n) => n.streamLimits === true);
+  const editOf = (name: string): Edit => edits[name] ?? { mode: 'keep', form: toGlobalForm(name, differs(name) ? undefined : shown[0].settings!.items[name], streamLimits) };
   const setEdit = (name: string, e: Edit) => {
     setEdits((prev) => ({ ...prev, [name]: e }));
     setPlan(null);

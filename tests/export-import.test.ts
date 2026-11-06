@@ -48,6 +48,7 @@ import { DEFAULT_BALANCE, DEFAULT_UDP_IDLE_SECS, ForwardRule } from '@/component
 import { optionsJson } from '@/components/tls';
 import { exportDoc, formatDoc, parseDoc, settingsRuleToBody, toRproxyRule, toSettingsRule } from '@/components/settingsdoc';
 import { ruleChanges } from '@/components/history';
+import { v04Of } from '@/components/v04';
 
 const { conn, pool } = mocks;
 
@@ -106,7 +107,7 @@ function row(r: ForwardRule, extra: Record<string, unknown> = {}) {
     source_ip: r.sourceIp,
     udp_idle_secs: r.udpIdleSecs,
     options: optionsJson(r.tls, r.starttls, r.starttlsRequired, r.allowFrom, r.http, r.crowdsec,
-      { targets: r.targets, balance: r.balance, healthCheck: r.healthCheck }, r.extraListenAddrs ?? []),
+      { targets: r.targets, balance: r.balance, healthCheck: r.healthCheck }, r.extraListenAddrs ?? [], r.enabled !== false, v04Of(r)),
     ...extra,
   };
 }
@@ -403,6 +404,21 @@ describe('/api/forward/history and /api/forward/revert', () => {
     for (const q of bad) {
       expect((await call('history', undefined, 'GET', q)).status).toBe(400);
     }
+  });
+
+  // rproxy-api v0.4.20 の中継の時間切れ（UI #181）：値のない古い版に戻すと、rproxy へは既定（1h・1m）を送って外す
+  it('reverting to a version without relay timeouts sends the defaults', async () => {
+    const now = rule({ srcPort: 8000, distAddr: 'two.example', idleTimeout: '0s', halfCloseTimeout: '30s' });
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM forward_rules_log l')) return [logRow(11, v1, 'UPDATE')];
+      if (sql.startsWith('SELECT auth_id FROM forward_rules')) return [{ auth_id: 'user-1' }];
+      if (sql.startsWith('SELECT auth_id, protocol')) return [row(now)];
+      return [];
+    });
+    conn.query.mockImplementation(async (sql: string) => (sql.startsWith('SELECT') ? [row(now)] : { affectedRows: 1 }));
+    const out = await call('revert', { id: 11 });
+    expect(out.body.result).toBe('modified');
+    expect(mocks.modifyRule.mock.calls[0][1]).toMatchObject({ remote_addr: 'one.example', idle_timeout: '1h', half_close_timeout: '1m' });
   });
 
   it('reverts: re-creates a deleted rule, replaces an existing one, refuses what the user cannot see', async () => {

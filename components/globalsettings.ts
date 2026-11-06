@@ -64,6 +64,8 @@ export interface GlobalNodeView {
   reachable: boolean;
   // features.global_api（false なら古い rproxy で、画面に項目を出さない）
   supported: boolean;
+  // features.http_stream_limits（rproxy-api v0.4.20、#356）：http.timeouts の write_stall・upgraded_idle・http2_max_streams
+  streamLimits?: boolean;
   settings: GlobalSettings | null;
   error: string | null;
   code: string | null;
@@ -89,7 +91,7 @@ export const GLOBAL_ITEM_LABELS: Record<string, { label: string; help: string }>
   trusted_proxies: { label: '信頼する前段のプロキシ', help: 'この範囲から来た接続の X-Forwarded-For などを信じます（1 行に 1 つの CIDR か IP）。新しいリクエストから効きます。' },
   access_log: { label: 'アクセスログのファイル', help: 'http のルールのアクセスログ（JSON Lines）を書くファイルの絶対パス。rproxy-api の RPROXY_API_ACCESS_LOG_DIR（rproxy のアクセスログだけのディレクトリ）のすぐ下だけです。空にするとメインのログに出します。次の行から効きます。' },
   crowdsec: { label: 'CrowdSec', help: 'LAPI の URL と API キーのファイル（絶対パス）。新しい接続・リクエストから効きます。' },
-  'http.timeouts': { label: 'HTTP の接続の時間の上限', help: 'http のルールのクライアントの接続の時間の上限（10s・5m などの時間、0s は上限なし。空の欄は既定）。新しい接続から効きます。' },
+  'http.timeouts': { label: 'HTTP の接続の時間の上限', help: 'http のルールのクライアントの接続の時間の上限（10s・5m などの時間、0s は上限なし。空の欄は既定）。http2_max_streams は時間ではなく、HTTP/2 の接続 1 本で同時に開けるストリームの数（1〜10000）です。新しい接続から効きます。' },
   udp_max_sessions: { label: 'UDP のセッションの上限', help: 'UDP のルールごとのセッションの数の上限（既定の値）。新しいセッションから効き、今のセッションは切りません。' },
   acme: { label: 'ACME', help: '証明書の自動取得。設定ファイルで決め、再起動まで効きません。' },
   geoip: { label: 'GeoIP のデータベース', help: '設定ファイルで決め、再起動まで効きません。' },
@@ -113,6 +115,26 @@ export function fixedNote(source: string): string | null {
 }
 
 export const HTTP_TIMEOUT_KEYS = ['tls_handshake', 'first_byte', 'request_headers', 'idle', 'request_body_idle', 'http2_ping_interval', 'http2_ping_timeout'];
+// rproxy-api v0.4.20（#356、features.http_stream_limits）で http.timeouts に増えた項目。http2_max_streams だけ数（1〜10000）
+export const HTTP_STREAM_LIMIT_KEYS = ['write_stall', 'upgraded_idle', 'http2_max_streams'];
+export const HTTP2_MAX_STREAMS_MAX = 10000;
+// 欄の空のときの表示（rproxy の既定。docs/API.md の global.http.timeouts の表）
+export const GLOBAL_FIELD_DEFAULTS: Record<string, Record<string, string>> = {
+  'http.timeouts': {
+    tls_handshake: '10s', first_byte: '10s', request_headers: '30s', idle: '180s', request_body_idle: '60s',
+    http2_ping_interval: '60s', http2_ping_timeout: '20s', write_stall: '60s', upgraded_idle: '1h', http2_max_streams: '128',
+  },
+};
+
+// http.timeouts の欄の名前。v0.4.20 の項目は rproxy が features.http_stream_limits を返すときだけ（古い rproxy は知らない名前を断る）。
+// API の値にある名前は（知らない名前でも）欄に出して、丸ごとの置き換えで落とさない
+export function httpTimeoutKeys(streamLimits: boolean, apiValue?: unknown): string[] {
+  const keys = [...HTTP_TIMEOUT_KEYS, ...(streamLimits ? HTTP_STREAM_LIMIT_KEYS : [])];
+  if (typeof apiValue === 'object' && apiValue !== null && !Array.isArray(apiValue)) {
+    for (const k of Object.keys(apiValue)) if (!keys.includes(k)) keys.push(k);
+  }
+  return keys;
+}
 export const CROWDSEC_KEYS = ['lapi_url', 'api_key_file', 'appsec_url', 'update_interval'];
 
 export const UNIX_ONLY_MESSAGE =
@@ -252,8 +274,9 @@ export type GlobalForm =
   | { kind: 'json'; text: string };
 
 // 欄の初めの値：API の値だけ（今効いている既定の値を入れると、触らずに送ったときに既定が API の値として固まるため）。
-// グループでノードの API の値が違うときは呼ぶ側が undefined を渡して空にする
-export function toGlobalForm(name: string, item: GlobalItem | undefined): GlobalForm {
+// グループでノードの API の値が違うときは呼ぶ側が undefined を渡して空にする。
+// streamLimits：見せているノードのすべてが features.http_stream_limits を返す（http.timeouts の v0.4.20 の欄を出す）
+export function toGlobalForm(name: string, item: GlobalItem | undefined, streamLimits = false): GlobalForm {
   const v = item?.api_value;
   const fields = (keys: string[]): GlobalForm => {
     const o = typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -267,7 +290,7 @@ export function toGlobalForm(name: string, item: GlobalItem | undefined): Global
     case 'udp_max_sessions':
       return { kind: 'number', text: typeof v === 'number' ? String(v) : '' };
     case 'http.timeouts':
-      return fields(HTTP_TIMEOUT_KEYS);
+      return fields(httpTimeoutKeys(streamLimits, v));
     case 'crowdsec':
       return fields(CROWDSEC_KEYS);
     default:
@@ -301,6 +324,14 @@ export function buildGlobalValue(name: string, form: GlobalForm): unknown {
     case 'fields': {
       const o = Object.fromEntries(form.keys.map((k) => [k, form.fields[k]?.trim() ?? '']).filter(([, v]) => v !== ''));
       if (Object.keys(o).length === 0) return null;
+      if (name === 'http.timeouts' && o.http2_max_streams !== undefined) {
+        // 時間ではなく数で送る（rproxy は文字列を断る）
+        const n = Number(o.http2_max_streams);
+        if (!/^\d+$/.test(o.http2_max_streams) || n < 1 || n > HTTP2_MAX_STREAMS_MAX) {
+          throw new GlobalPatchError(`${name}: http2_max_streams は 1〜${HTTP2_MAX_STREAMS_MAX} の整数にしてください: ${o.http2_max_streams}`);
+        }
+        return { ...o, http2_max_streams: n };
+      }
       if (name === 'crowdsec') {
         if (!o.lapi_url || !o.api_key_file) throw new GlobalPatchError(`${name}: lapi_url と api_key_file は両方要ります。`);
         if (!o.api_key_file.startsWith('/')) throw new GlobalPatchError(`${name}: api_key_file は絶対パスにしてください。`);

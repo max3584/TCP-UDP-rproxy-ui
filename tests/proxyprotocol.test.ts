@@ -77,7 +77,7 @@ describe('proxy_protocol の行き来（フォーム・DB・rproxy・エクス�
   });
 
   it('「制限・GeoIP」タブの組み立ては proxy_protocol を落とさない', () => {
-    const editable = { labels: true, limits: true, bandwidth: true, geoip: true, outlier_detection: true, proxy_protocol: true };
+    const editable = { labels: true, limits: true, bandwidth: true, geoip: true, outlier_detection: true, proxy_protocol: true, idle_timeout: true, half_close_timeout: true };
     expect(buildV04(toV04Form({ proxyProtocol: pp }), 'tcp', false, editable, { proxyProtocol: pp }).proxyProtocol).toEqual(pp);
   });
 
