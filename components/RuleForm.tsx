@@ -892,7 +892,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       ...v04,
     };
     // 編集できる v0.4 の項目で空にしたものは null で送る（変更の API は送られていない項目を今のまま保つので、外すことを伝える）
-    const editableNow: Record<V04Key, boolean> = { ...v04Editable, proxy_protocol: ppEditable, idle_timeout: rtFeature, half_close_timeout: rtFeature };
+    const editableNow: Record<V04Key, boolean> = { ...v04Editable, proxy_protocol: ppEditable, idle_timeout: rtFeature && rtShown, half_close_timeout: rtFeature && rtShown };
     const clears = Object.fromEntries(V04_KEYS
       .filter((k) => editableNow[k] && !rule[V04_FIELD[k]])
       .map((k) => [V04_FIELD[k], null]));

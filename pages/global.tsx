@@ -151,7 +151,7 @@ const FormFields: React.FC<{ name: string; form: GlobalForm; onChange: (f: Globa
                 id={`${id}-${k}`}
                 className={input}
                 {...(k === 'http2_max_streams' ? { inputMode: 'numeric' as const } : {})}
-                placeholder={GLOBAL_FIELD_DEFAULTS[name]?.[k] ? t('既定 {v}', { v: GLOBAL_FIELD_DEFAULTS[name][k] }) : undefined}
+                placeholder={GLOBAL_FIELD_DEFAULTS[name]?.[k] ? `既定 ${GLOBAL_FIELD_DEFAULTS[name][k]}` : undefined}
                 value={form.fields[k] ?? ''}
                 onChange={(e) => onChange({ ...form, fields: { ...form.fields, [k]: e.target.value } })}
               />

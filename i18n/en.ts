@@ -1922,8 +1922,7 @@ export const en: Record<string, string> = {
   "{0} は L7（HTTP）のルールでは使えません（rproxy の設定ファイルの global.http.timeouts で決まります）。": "{0} cannot be used with L7 (HTTP) rules (they follow global.http.timeouts in rproxy's settings file).",
   "{0} は 0s（上限なし）か 1s 以上にしてください。": "Set {0} to 0s (no limit) or at least 1s.",
   "接続がどちらの向きにも何も運ばない時間が idle_timeout（既定 1h）を超えたら、両側をリセットして閉じます。片側が送り終えた（半分閉じた）後は、残りの向きが half_close_timeout（既定 1m）何も運ばなければ閉じます。30s・10m・1h のように書き、0s で上限なし、ほかは 1s 以上です。TCP の keepalive のプローブでは延びないので、長く黙る接続（DB のコネクションプール・SSH・MQTT など）は長めの値か 0s に、送り終えてから返事を長く待つもの（nc -N・バックアップの道具など）は half_close_timeout を 0s か長めの値にしてください。": "When a connection carries nothing in either direction for longer than idle_timeout (default 1h), both sides are reset and closed. After one side has finished sending (half-closed), the connection is closed when the other direction carries nothing for half_close_timeout (default 1m). Write durations such as 30s, 10m or 1h; 0s is no limit, otherwise at least 1s. TCP keepalive probes do not extend them, so give connections that stay silent for long (DB connection pools, SSH, MQTT, etc.) a longer value or 0s, and set half_close_timeout to 0s or a longer value for clients that wait long for a reply after they finish sending (nc -N, backup tools, etc.).",
-  "既定（{v}）": "Default ({v})",
-  "上限なし（{v}）": "No limit ({v})",
+  "既定（{0}）": "Default ({0})",
+  "上限なし（{0}）": "No limit ({0})",
   "中継の時間切れ（idle_timeout・half_close_timeout）は L7（HTTP）のルールでは使えません（rproxy の設定ファイルの global.http.timeouts で決まります）。": "Relay timeouts (idle_timeout, half_close_timeout) cannot be used with L7 (HTTP) rules (they follow global.http.timeouts in rproxy's settings file).",
-  "既定 {v}": "Default {v}",
 };

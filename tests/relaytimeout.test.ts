@@ -1,7 +1,11 @@
 // rproxy-api v0.4.20（#353、features.tcp_idle_timeout）のルールの idle_timeout・half_close_timeout（tcp の中継の時間切れ）と、
 // #356（features.http_stream_limits）の global.http.timeouts の write_stall・upgraded_idle・http2_max_streams・mirror の max_in_flight。
 // 形の検証（rproxy の validate_relay_timeout と同じ規則）・DB / rproxy / エクスポート / ずれ / 履歴で落とさないこと（UI #181）
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// resendOne（ずれの直し）が rproxy に送るものを見る。ほかの試験は rproxy を呼ばない
+const rp = vi.hoisted(() => ({ getRule: vi.fn(), modifyRule: vi.fn(), addRule: vi.fn(), deleteRule: vi.fn() }));
+vi.mock('@/components/rproxy', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/components/rproxy')>()), ...rp }));
 import type { ForwardRule } from '@/components/lib';
 import { optionsJson, parseOptions, TlsError } from '@/components/tls';
 import { normalizeRelayTimeout, normalizeV04, relayTimeoutText, usedV04Features, v04PatchFields } from '@/components/v04';
@@ -9,7 +13,7 @@ import { buildRelayTimeouts, buildV04, toRelayTimeoutForm, toV04Form } from '@/c
 import { exportDoc, parseDoc, settingsRuleToBody, toRproxyRule, toSettingsRule } from '@/components/settingsdoc';
 import { ruleDrift } from '@/components/drift';
 import { ruleChanges } from '@/components/history';
-import { fromRow, toRproxyPatch } from '@/components/ruledb';
+import { fromRow, resendOne, toRproxyPatch } from '@/components/ruledb';
 import { ruleFromStatus } from '@/components/dashboard';
 import type { RproxyRuleStatus } from '@/components/rproxy';
 import { buildGlobalValue, GlobalPatchError, httpTimeoutKeys, toGlobalForm } from '@/components/globalsettings';
@@ -139,6 +143,32 @@ describe('idle_timeout・half_close_timeout の行き来（フォーム・DB・r
     expect(ruleDrift(base, live(base, { idle_timeout: '3600s', half_close_timeout: '60s' }))).toEqual([]);
     expect(ruleDrift(base, live(base, { idle_timeout: '0s' }))).toEqual(['idle_timeout']);
     expect(ruleDrift(rule, live(base, { idle_timeout: '0s' }))).toEqual(['half_close_timeout']);
+  });
+
+  it('ずれの直し（resendOne）：rproxy が 30s で DB に値がなければ、既定の 1h を PATCH で送る', async () => {
+    rp.getRule.mockResolvedValue(live(base, { idle_timeout: '30s', origin: 'dynamic' }));
+    rp.modifyRule.mockResolvedValue({});
+    expect(await resendOne(base)).toBe('modified');
+    const patch = rp.modifyRule.mock.calls[0][1];
+    expect(patch.idle_timeout).toBe('1h');
+    expect('half_close_timeout' in patch).toBe(false);
+    expect(rp.addRule).not.toHaveBeenCalled();
+    expect(rp.deleteRule).not.toHaveBeenCalled();
+    // 直った後（rproxy は 3600s を返す）はずれがなく何もしない
+    rp.modifyRule.mockClear();
+    rp.getRule.mockResolvedValue(live(base, { idle_timeout: '3600s', origin: 'dynamic' }));
+    expect(await resendOne(base)).toBe('unchanged');
+    expect(rp.modifyRule).not.toHaveBeenCalled();
+  });
+
+  it('ほかの項目が読めない応答でも、3600s は既定として扱いずれにしない', () => {
+    // labels が読めない（normalizeV04 が投げる）ときの読み方でも、中継の時間切れは項目ごとに揃える
+    const broken = live(base, { idle_timeout: '3600s', half_close_timeout: '0ms', labels: { 'bad key!': 1 } });
+    const actual = ruleFromStatus(broken, 0);
+    expect(actual.idleTimeout).toBeUndefined();
+    // 読めない labels はそのまま（normalizeV04 が投げた道を通ったこと）
+    expect(actual.labels).toEqual({ 'bad key!': 1 });
+    expect(actual.halfCloseTimeout).toBe('0s');
   });
 
   it('履歴の差分に前と後の値を出す', () => {

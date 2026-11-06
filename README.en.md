@@ -381,7 +381,7 @@ Fields of L4 TCP rules in rproxy-api v0.4.20 (#353; "Relay timeouts and keepaliv
 - "After one side has finished sending" (`half_close_timeout`, default `1m`): after one side has finished sending (half-closed), the connection is closed when the other direction carries nothing for longer than this.
 - Write durations such as `30s`, `10m` or `1h`. `0s` is no limit, anything else is at least `1s` (checked with rproxy's rules before saving). Empty is the default; a value equal to the default (`60m` and so on) is left out.
 - TCP keepalive probes do not extend them, so give connections that stay silent for long (DB connection pools, SSH, MQTT, etc.) a longer value or `0s`, and set `half_close_timeout` to `0s` or a longer value for clients that wait long for a reply after they finish sending (`nc -N`, backup tools, etc.). To behave as up to v0.4.19, set both to `0s`.
-- They are also written to the DB `options` column, so a rule restored from the UI's DB after rproxy restarts has the same values (`0s` included; with an rproxy-api that reads these fields of `options`). Emptying a field and saving sends the default (`1h`, `1m`) to rproxy.
+- They are also written to the DB `options` column, so a rule restored from the UI's DB after rproxy restarts has the same values (`0s` included; rproxy-api v0.4.20 or later). Emptying a field and saving sends the default (`1h`, `1m`) to rproxy.
 - They are shown under "Advanced" on the details page (left out means "Default (1h)"), with the before and after values in the change history, and in the drift (several rproxy instances). Export and import keep them.
 
 ## Routing UDP by server name (DTLS, QUIC)

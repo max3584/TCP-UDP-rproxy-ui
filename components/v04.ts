@@ -5,7 +5,7 @@
 
 import type { Protocol } from './lib';
 import { TlsError } from './tlserror';
-import { t } from '@/i18n/core';
+import { translate } from '@/i18n/core';
 import { MAX_ALLOW_FROM, parseCidr } from './cidr';
 
 export type Labels = Record<string, string>;
@@ -534,8 +534,8 @@ export const RELAY_TIMEOUT_HELP =
 
 // 履歴・詳細画面の表示（省いたものは既定、0s は上限なし）
 export function relayTimeoutText(key: RelayTimeoutKey, value: string | undefined): string {
-  if (value === undefined) return t('既定（{v}）', { v: RELAY_TIMEOUT_DEFAULTS[key] });
-  if (parseDurationMs(value) === 0) return t('上限なし（{v}）', { v: value });
+  if (value === undefined) return translate(`既定（${RELAY_TIMEOUT_DEFAULTS[key]}）`);
+  if (parseDurationMs(value) === 0) return translate(`上限なし（${value}）`);
   return value;
 }
 
