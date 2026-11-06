@@ -336,8 +336,10 @@ describe('connect_timeout（/api/forward）', () => {
   });
 
   it('add は DB から戻せない rproxy（v0.4.21 より前）・機能を確かめられない rproxy では 400 unsupported で、DB にも rproxy にも書かない', async () => {
-    for (const caps of [Promise.resolve({ features: { connect_timeout: true } }), Promise.resolve({}), Promise.reject(new Error('unreachable'))]) {
-      mocks.getCapabilities.mockReturnValueOnce(caps);
+    // 拒否は使う時に作る（先に作ると、使う前に処理されない拒否になる）
+    const answers = [async () => ({ features: { connect_timeout: true } }), async () => ({}), async () => { throw new Error('unreachable'); }];
+    for (const answer of answers) {
+      mocks.getCapabilities.mockImplementationOnce(answer);
       const { status, body } = await call('add', { ...tcpRule, connectTimeout: '3s' });
       expect(status).toBe(400);
       expect(body.code).toBe('unsupported');
