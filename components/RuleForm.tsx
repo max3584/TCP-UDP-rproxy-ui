@@ -50,10 +50,10 @@ import { joinList } from '@/i18n/core';
 import { compareVersions, parseVersion } from './version';
 import LimitsEditor from './LimitsEditor';
 import PlanView, { PlanResponse } from './PlanView';
-import { V04_FEATURE, V04_FIELD, V04_KEYS, v04Of } from './v04';
+import { RELAY_TIMEOUT_DEFAULTS, RELAY_TIMEOUT_HELP, V04_FEATURE, V04_FIELD, V04_KEYS, relayTimeoutText, v04Of } from './v04';
 import type { V04Key } from './v04';
-import { buildProxyProtocol, buildV04, toProxyProtocolForm, toV04Form } from './v04form';
-import type { ProxyProtocolForm } from './v04form';
+import { buildProxyProtocol, buildRelayTimeouts, buildV04, toProxyProtocolForm, toRelayTimeoutForm, toV04Form } from './v04form';
+import type { ProxyProtocolForm, RelayTimeoutForm } from './v04form';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
 // 送信は親に任せる（onSubmit が失敗したら親がエラーを表示し、フォームの入力はそのまま残る）
@@ -279,6 +279,8 @@ interface Caps {
     certStore: boolean;
     // 宛先ごとの上限（targets[]・tls.routes[].targets[]・L7 の servers[] の max_connections。features.target_max_connections、rproxy-api v0.4.19）
     targetMaxConnections: boolean;
+    // global.http.timeouts の v0.4.20 の項目と mirror の max_in_flight（features.http_stream_limits、rproxy-api v0.4.20）
+    httpStreamLimits: boolean;
   } | null;
 }
 
@@ -314,6 +316,7 @@ type FieldErrors = {
   http: string;
   v04: string;
   proxyProtocol: string;
+  relayTimeouts: string;
 };
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
@@ -323,7 +326,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
   tls: ['tls'],
   mail: [],
   limits: ['v04'],
-  advanced: ['sourceIp', 'udpIdleSecs', 'allowFrom', 'proxyProtocol'],
+  advanced: ['sourceIp', 'udpIdleSecs', 'relayTimeouts', 'allowFrom', 'proxyProtocol'],
 };
 
 const EMPTY_ERRORS: FieldErrors = {
@@ -342,6 +345,7 @@ const EMPTY_ERRORS: FieldErrors = {
   http: '',
   v04: '',
   proxyProtocol: '',
+  relayTimeouts: '',
 };
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
@@ -368,7 +372,9 @@ export function udpSniSupport(version: string | null): boolean | null {
 export const UDP_SNI_VERSION_NOTE =
   'UDP の sni には rproxy v0.3.8 以降が必要です。この rproxy は版を返さない（v0.3.18 より前）ので確かめられません。v0.3.7 以前の rproxy では保存するときに断られます。';
 
-const NO_V04: Record<V04Key, boolean> = { labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false };
+const NO_V04: Record<V04Key, boolean> = {
+  labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false, idle_timeout: false, half_close_timeout: false,
+};
 
 const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan, restricted = false, cacheCaps }) => {
   const tls: TlsSpec = initialData?.tls ?? { mode: 'passthrough' };
@@ -416,6 +422,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [v04Form, setV04Form] = useState(() => toV04Form(initialV04));
   // PROXY protocol の受け取り（「詳細」タブ。rproxy-api v0.4.13 の proxy_protocol）
   const [ppForm, setPpForm] = useState<ProxyProtocolForm>(() => toProxyProtocolForm(initialV04.proxyProtocol));
+  // tcp の中継の時間切れ（「詳細」タブ。rproxy-api v0.4.20 の idle_timeout・half_close_timeout）
+  const [rtForm, setRtForm] = useState<RelayTimeoutForm>(() => toRelayTimeoutForm(initialV04));
   // 変更前の差分（dry_run）の結果
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [planError, setPlanError] = useState('');
@@ -471,6 +479,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             dryRun: data.features.dry_run === true,
             certStore: data.features.cert_store === true,
             targetMaxConnections: data.features.target_max_connections === true,
+            httpStreamLimits: data.features.http_stream_limits === true,
           } : null,
         });
       } catch (err) {
@@ -644,6 +653,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const routeSourceIpChoices = routeSourceIpChoicesFor(protocol);
   // PROXY protocol の受け取りは tcp で、rproxy が features.proxy_protocol_in を返すときだけ編集できる（使っていれば読み取り専用で残して送る）
   const ppEditable = protocol === 'tcp' && caps.features?.v04.proxy_protocol === true;
+  // 中継の時間切れは rproxy が features.tcp_idle_timeout を返すときだけ編集できる（L4 の tcp のルールだけに欄を出す。
+  // 返さない rproxy では今の値を読み取り専用で残して送る）
+  const rtFeature = caps.features?.v04.idle_timeout === true;
+  const rtShown = protocol === 'tcp' && !l7;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
   const showUnmatched = ((protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate')) || (protocol === 'udp' && tlsMode === 'sni'))
@@ -775,6 +788,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       http: '',
       v04: '',
       proxyProtocol: '',
+      relayTimeouts: '',
     };
 
     if (l7) {
@@ -838,6 +852,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     } catch (err) {
       newErrors.proxyProtocol = err instanceof Error ? err.message : String(err);
     }
+    // 中継の時間切れ（「詳細」タブ）：編集できなければ編集を始めたときの値を残す
+    try {
+      const { idleTimeout: _i, halfCloseTimeout: _h, ...rest } = v04;
+      void _i; void _h;
+      v04 = { ...rest, ...buildRelayTimeouts(rtForm, protocol, l7, rtFeature, initialV04) };
+    } catch (err) {
+      newErrors.relayTimeouts = err instanceof Error ? err.message : String(err);
+    }
 
     if (Object.values(newErrors).some((e) => e !== '')) {
       setErrors(newErrors);
@@ -870,7 +892,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       ...v04,
     };
     // 編集できる v0.4 の項目で空にしたものは null で送る（変更の API は送られていない項目を今のまま保つので、外すことを伝える）
-    const editableNow: Record<V04Key, boolean> = { ...v04Editable, proxy_protocol: ppEditable };
+    const editableNow: Record<V04Key, boolean> = { ...v04Editable, proxy_protocol: ppEditable, idle_timeout: rtFeature, half_close_timeout: rtFeature };
     const clears = Object.fromEntries(V04_KEYS
       .filter((k) => editableNow[k] && !rule[V04_FIELD[k]])
       .map((k) => [V04_FIELD[k], null]));
@@ -1290,6 +1312,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               serviceOptions={caps.features?.services ?? null}
               http3={caps.features?.http3 === true || httpRules.http3 === true}
               targetCaps={targetCapsEditable}
+              streamLimits={caps.features?.httpStreamLimits === true}
               filesLocked={restricted}
               cacheCaps={cacheCaps}
             />
@@ -1745,6 +1768,49 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             {errors.udpIdleSecs && <p className={errorClass}>{errors.udpIdleSecs}</p>}
           </div>
         )}
+        {rtShown && (rtFeature ? (
+          <fieldset className="mb-4" data-testid="relay-timeouts">
+            <legend className={labelClass}>TCP の中継の時間切れ:</legend>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor="rule-idle-timeout" className="block text-xs font-medium text-gray-800">何も運ばない接続（idle_timeout）</label>
+                <input
+                  id="rule-idle-timeout"
+                  type="text"
+                  value={rtForm.idle}
+                  onChange={(e) => setRtForm({ ...rtForm, idle: e.target.value })}
+                  className={`${inputClass} font-mono`}
+                  placeholder={`空欄で既定（${RELAY_TIMEOUT_DEFAULTS.idle_timeout}）`}
+                  aria-describedby="rule-relay-timeouts-help"
+                  aria-invalid={errors.relayTimeouts !== '' || undefined}
+                  spellCheck={false}
+                />
+              </div>
+              <div>
+                <label htmlFor="rule-half-close-timeout" className="block text-xs font-medium text-gray-800">片側が送り終えた後（half_close_timeout）</label>
+                <input
+                  id="rule-half-close-timeout"
+                  type="text"
+                  value={rtForm.halfClose}
+                  onChange={(e) => setRtForm({ ...rtForm, halfClose: e.target.value })}
+                  className={`${inputClass} font-mono`}
+                  placeholder={`空欄で既定（${RELAY_TIMEOUT_DEFAULTS.half_close_timeout}）`}
+                  aria-describedby="rule-relay-timeouts-help"
+                  aria-invalid={errors.relayTimeouts !== '' || undefined}
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+            <p id="rule-relay-timeouts-help" className={helpClass}>{RELAY_TIMEOUT_HELP}</p>
+            {errors.relayTimeouts && <p className={errorClass}>{errors.relayTimeouts}</p>}
+          </fieldset>
+        ) : (initialV04.idleTimeout || initialV04.halfCloseTimeout) && (
+          <p className="mb-4 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 break-all" data-testid="relay-timeouts-preserved">
+            {`TCP の中継の時間切れ: idle_timeout ${relayTimeoutText('idle_timeout', initialV04.idleTimeout)}、half_close_timeout ${relayTimeoutText('half_close_timeout', initialV04.halfCloseTimeout)}`}
+            <br />
+            この rproxy では使えないので編集できません。そのまま残して送ります。
+          </p>
+        ))}
         <div className="mb-4">
           <label htmlFor="rule-allow-from" className={labelClass}>接続を許可する送信元（allow_from）:</label>
           <textarea

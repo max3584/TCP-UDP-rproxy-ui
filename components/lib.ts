@@ -382,7 +382,7 @@ export interface NodeLiveState {
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
 export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled'
-  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'target_max_connections';
+  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'idle_timeout' | 'half_close_timeout' | 'target_max_connections';
 
 export type NodeRole = 'active' | 'standby';
 

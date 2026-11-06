@@ -288,6 +288,7 @@ rproxy-api の Gateway API 向けの項目（rproxy-api #237。`GET /capabilitie
 |---|---|---|
 | ルートの時間の上限（リクエスト全体・転送先への 1 回） | L7 タブのルート | `http_options` の `route_timeouts` |
 | Host の書き換え・CORS・ミラー（百分率か分数） | ミドルウェアの種類（`replace_host`・`cors`・`mirror`） | `middlewares` |
+| ミラーが同時に送る写しの上限（`mirror` の `max_in_flight`、1〜10000、既定 64。rproxy-api v0.4.20） | `mirror` の「同時に送る写しの上限」（使えない rproxy では読み取り専用で残して送る） | `http_stream_limits` |
 | ヘッダを足す（`headers` の `request` / `response` の `add`） | `headers` の JSON | `http_options` の `headers_add` |
 | リダイレクトの状態コード（301・302・303・307・308） | `redirect_scheme`・`redirect_regex` | `http_options` の `redirect_status` |
 | 状態コードでの送り直し（`500`・`502-504`） | `retry` | `http_options` の `retry_status` |
@@ -372,6 +373,17 @@ rproxy-api v0.4.13 の 2 つの項目（`../rproxy-api/docs/SOURCE-IP.md`）。r
   - 例：`:443` の L7 のルールはそのまま L7 で扱い、Kubernetes へそのまま流す `**.tenant.example.com` だけ `proxy_v2` を付ける。
   - ルールの送信元 IP の扱いと違い、作成後も変えられます（接続を切らずに次の接続から）。詳細画面のサーバ名ごとの転送先に「送信元 IP」のバッジで出ます。
 
+## TCP の中継の時間切れ（idle_timeout・half_close_timeout）
+
+rproxy-api v0.4.20（#353）の L4 の TCP のルールの項目（rproxy-api の docs/API.md「中継の時間切れと keepalive」）。「詳細」タブの「TCP の中継の時間切れ」で、rproxy が `GET /capabilities` の `features.tcp_idle_timeout` を返すときだけ編集できます。使えない rproxy では、値があれば読み取り専用で残してそのまま送ります（保存しても消えません）。UDP（アイドルタイムアウトの `udp_idle_secs`）と L7 のルール（rproxy の設定ファイルの `global.http.timeouts`）には出しません。
+
+- 「何も運ばない接続」（`idle_timeout`、既定 `1h`）：どちらの向きにも何も運ばない時間がこれを超えたら、rproxy が両側をリセットして閉じます。
+- 「片側が送り終えた後」（`half_close_timeout`、既定 `1m`）：片側が送り終えた（半分閉じた）後、残りの向きが何も運ばない時間がこれを超えたら閉じます。
+- `30s`・`10m`・`1h` のように書きます。`0s` は上限なし、ほかは `1s` 以上です（rproxy と同じ規則で保存の前に確かめます）。空欄は既定で、既定と同じ値（`60m` など）は書かずに省きます。
+- TCP の keepalive のプローブでは延びないので、長く黙る接続（DB のコネクションプール・SSH・MQTT など）は長めの値か `0s` に、送り終えてから返事を長く待つもの（`nc -N`・バックアップの道具など）は `half_close_timeout` を `0s` か長めの値にします。v0.4.19 までと同じにするには両方を `0s` にします。
+- DB の `options` 列にも書くので、rproxy を再起動して UI の DB から戻したルールも同じ値（`0s` を含む）になります（rproxy-api が `options` のこの項目を読む版であること）。空欄に戻して保存すると、rproxy へは既定（`1h`・`1m`）を送ります。
+- 詳細画面の「詳細」に出し（省いたものは「既定（1h）」）、変更の履歴に前と後の値、ずれ（複数の rproxy）にも出します。エクスポート・インポートでも残ります。
+
 ## UDP をサーバ名で振り分ける（DTLS・QUIC）
 
 UDP のルールでも、TLS タブのモードを「sni」にすると、最初のパケットのサーバ名で転送先を選べます（rproxy v0.3.8 から）。v0.3.18 以降の rproxy は版を返すので、v0.3.8 より古ければ「sni」を選べません（版を返さない古い rproxy では選べますが、v0.3.7 以前なら保存のときに断られるので、その旨を出します）。終端しないので証明書は要りません（転送先が持ちます）。プロファイル「HTTP/3（QUIC）をサーバ名で振り分ける（UDP 443）」「TURN の DTLS をサーバ名で振り分ける（UDP 5349）」から始められます。
@@ -411,7 +423,7 @@ rproxy-api v0.4 の項目（`../rproxy-api/docs/API.md` の「v0.4 の設定」�
 - rproxy が `features.dry_run` を返すときは、追加・変更の画面に「差分を見る」が出ます。保存する前に、ノードごとに rproxy で何が変わるか（作成・変更、接続を切らずに変わるか・待ち受けを作り直すか、項目ごとの前と後）を rproxy の `?dry_run=true` で確かめます（DB も rproxy も変えません）。
 - 詳細画面に、設定した項目、制限で断った数、数え始めの時刻（`counters_since`）、宛先ごとの外している状態と回数、rproxy の `conditions`（Gateway API の形の状態）を出します（rproxy が返すとき）。
 - 「rproxy の機能と設定」（`/system`）に、ノードごとの rproxy-api の版、v0.4 の機能の印、設定ファイルの `global.performance` で効く項目、設定ファイルの状態を読み取り専用で出します。performance・GeoIP のデータベース・制御 API の守りは rproxy の設定ファイルと引数で変えます（画面からは変えません）。設定ファイルのパスと誤りの中身・バイナリの SHA-256・問い合わせの失敗の理由は管理者だけに出し（利用者には誤り・失敗があることだけ）、`RPROXY_UI_USER_NODES` の利用者には触れるノードだけを出します（ダッシュボードの設定ファイルの注意も同じ）。
-- 「global の設定」（`/global`。管理者だけ。`/system` から開く）に、rproxy-api v0.4.19 の `GET /config/global` で、プロセス全体の設定の項目ごとに今の値・出どころ（設定ファイル / 環境変数 / API / 既定）・変え方（すぐ効く / 再起動が要る）を出します。設定ファイル・環境変数に書いた項目は読み取り専用（「設定ファイルで固定」。API の値があっても効かないときはその旨）、起動のときだけ読む項目は表示だけです。書いていない、すぐ効く項目（`udp_max_sessions`・`http.timeouts` など。どれを変えられるかは rproxy が返す `settable`・`unix_only` と、ノードへの道（Unix ソケットか TCP か）で決めます）は、「差分を確かめる」（`?dry_run=true`）で変わる値を見てから「適用する」で `PATCH /config/global` を送ります（「API の値を消す」で既定に戻せます）。複数の rproxy ではノードごとに出し、グループを選ぶと全ノードに送ります（1 台でも断るか答えが時間切れで分からなければ、適用したノードを前の値に戻し、ノードごとの結果（戻したか・戻せなかったか）を出します）。再起動が要る項目（`acme` など）の中身は出しません。rproxy は値を DB の `rproxy_global`（migration 013）に保存し、再起動しても残します。守りに関わる項目（`trusted_proxies`・`access_log`・`crowdsec`。rproxy の `unix_only`）は rproxy の Unix ソケットからだけ受け付けるので、TCP で聞いているノードでは変えられません（変えるときは、UI のそのノードの url を rproxy-api の `RPROXY_API_SOCKET` のソケット（`unix:/…`）にします）。API で入れるアクセスログは、そのノードの rproxy-api の `RPROXY_API_ACCESS_LOG_DIR` のすぐ下のファイルだけです（既定はなく、設定しなければ API では入れられません。rproxy のアクセスログだけのディレクトリにします）。rproxy が起動のときに保存した値を 読めていない間（`loaded: false`。DB に届かない・行が読めない形）は警告を出し、適用できません。UI のトークンに rproxy の `admin` のスコープが要ります。`features.global_api` のない rproxy では項目を出しません。
+- 「global の設定」（`/global`。管理者だけ。`/system` から開く）に、rproxy-api v0.4.19 の `GET /config/global` で、プロセス全体の設定の項目ごとに今の値・出どころ（設定ファイル / 環境変数 / API / 既定）・変え方（すぐ効く / 再起動が要る）を出します。設定ファイル・環境変数に書いた項目は読み取り専用（「設定ファイルで固定」。API の値があっても効かないときはその旨）、起動のときだけ読む項目は表示だけです。書いていない、すぐ効く項目（`udp_max_sessions`・`http.timeouts` など。どれを変えられるかは rproxy が返す `settable`・`unix_only` と、ノードへの道（Unix ソケットか TCP か）で決めます）は、「差分を確かめる」（`?dry_run=true`）で変わる値を見てから「適用する」で `PATCH /config/global` を送ります（「API の値を消す」で既定に戻せます）。複数の rproxy ではノードごとに出し、グループを選ぶと全ノードに送ります（1 台でも断るか答えが時間切れで分からなければ、適用したノードを前の値に戻し、ノードごとの結果（戻したか・戻せなかったか）を出します）。`http.timeouts` の `write_stall`・`upgraded_idle`・`http2_max_streams`（rproxy-api v0.4.20。`http2_max_streams` は時間ではなく 1〜10000 の数で送ります）の欄は、選んだノードのすべてが `features.http_stream_limits` を返すときだけ出します（API の値にあれば、使えない rproxy でも欄に出して丸ごとの置き換えで落としません）。再起動が要る項目（`acme` など）の中身は出しません。rproxy は値を DB の `rproxy_global`（migration 013）に保存し、再起動しても残します。守りに関わる項目（`trusted_proxies`・`access_log`・`crowdsec`。rproxy の `unix_only`）は rproxy の Unix ソケットからだけ受け付けるので、TCP で聞いているノードでは変えられません（変えるときは、UI のそのノードの url を rproxy-api の `RPROXY_API_SOCKET` のソケット（`unix:/…`）にします）。API で入れるアクセスログは、そのノードの rproxy-api の `RPROXY_API_ACCESS_LOG_DIR` のすぐ下のファイルだけです（既定はなく、設定しなければ API では入れられません。rproxy のアクセスログだけのディレクトリにします）。rproxy が起動のときに保存した値を 読めていない間（`loaded: false`。DB に届かない・行が読めない形）は警告を出し、適用できません。UI のトークンに rproxy の `admin` のスコープが要ります。`features.global_api` のない rproxy では項目を出しません。
 - 制御 API をクライアント証明書（mTLS）で守るときは、`RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`（と、rproxy の証明書を確かめる `RPROXY_API_TLS_CA`）、複数の rproxy では `nodes.yaml` の `tls_cert`・`tls_key`・`tls_ca` を書きます（`https://` の URL だけ。トークンファイルのエントリが `client_cert` だけならトークンは要りません）。`RPROXY_API_TLS_*` を `http://`・`unix:` の `RPROXY_API_URL` と一緒に書くと、トークンが平文で流れるので UI は起動しません（問い合わせもしません）。
 - UI の認証が続けて失敗して rproxy が UI を一時的に止めた（`429 locked_out`）ときは、トークン・証明書を確かめるように画面とログに出します（止める時間が過ぎると自動で解けます）。
 
@@ -444,7 +456,7 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 | TLS / DTLS | passthrough / sni / 終端（UDP では DTLS）、サーバ名ごとの転送先（TLS を終端しない名前は送信元 IP の渡し方、rproxy が終端する名前は転送先への TLS も）と、どのサーバ名にも一致しない接続の扱い（基本の転送先へ送る / 切断する）、証明書、TLS のオプション（最小バージョンと暗号スイート。TCP の終端）、クライアント証明書の検証（mTLS）、ALPN、転送先への再暗号化 |
 | メール (STARTTLS) | SMTP / IMAP / POP3 の STARTTLS（TCP で「終端」のときだけ） |
 | 制限・GeoIP | ラベル、L4 の制限、帯域の上限、GeoIP、受け身のヘルスチェック（rproxy-api v0.4。上の「v0.4 のルールの項目」） |
-| 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、接続を許可する送信元（allow_from）、PROXY protocol の受け取り（proxy_protocol。TCP） |
+| 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、TCP の中継の時間切れ（idle_timeout・half_close_timeout。L4 の TCP）、接続を許可する送信元（allow_from）、PROXY protocol の受け取り（proxy_protocol。TCP） |
 
 - プロファイルは `../rproxy-api/docs/PROFILES.md` の推奨設定をフォームに入れるだけです。アドレスと証明書のパスは環境に合わせて入力してください。
 - 証明書・秘密鍵・CA のパスは rproxy-api のサーバ上のパスです。読めないと `tls_config` のエラーになります。

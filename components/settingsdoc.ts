@@ -122,6 +122,9 @@ const FIELD_MAP: Record<string, string> = {
   outlier_detection: 'outlierDetection',
   // v0.4.13（PROXY protocol の受け取り）
   proxy_protocol: 'proxyProtocol',
+  // v0.4.20（tcp の中継の時間切れ）
+  idle_timeout: 'idleTimeout',
+  half_close_timeout: 'halfCloseTimeout',
   // UI での一時停止（エクスポートした停止中のルール）。rproxy の設定ファイルにはない項目
   enabled: 'enabled',
   // ノードごとの上書き（UI のエクスポートだけ）

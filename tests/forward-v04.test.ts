@@ -258,6 +258,65 @@ describe('proxy_protocol と route ごとの source_ip（/api/forward）', () =>
   });
 });
 
+// rproxy-api v0.4.20：ルールの idle_timeout・half_close_timeout（#353、UI #181）。DB の options・POST・PATCH で落とさないこと
+describe('idle_timeout・half_close_timeout（/api/forward）', () => {
+  const row = (options: unknown) => [{ dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify(options) }];
+
+  it('add は 0s（上限なし）を rproxy と DB に渡し、既定と同じ値は書かない', async () => {
+    mocks.addRule.mockResolvedValue({});
+    const { status } = await call('add', { ...tcpRule, idleTimeout: '0s', halfCloseTimeout: '60s' });
+    expect(status).toBe(200);
+    const sent = mocks.addRule.mock.calls[0][0];
+    expect(sent.idle_timeout).toBe('0s');
+    expect('half_close_timeout' in sent).toBe(false);
+    const options = JSON.parse(String(sqlCalls()[0][1][9]));
+    expect(options.idle_timeout).toBe('0s');
+    expect('half_close_timeout' in options).toBe(false);
+  });
+
+  it('add は rproxy と同じ規則で断る（1s 未満・読めない値・udp・L7）', async () => {
+    const cases: unknown[] = [
+      { ...tcpRule, idleTimeout: '500ms' },
+      { ...tcpRule, halfCloseTimeout: '1d' },
+      { ...tcpRule, protocol: 'udp', idleTimeout: '30s' },
+      { ...tcpRule, http: { routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's' }], services: { s: { servers: [{ url: 'http://10.0.0.1' }] } } }, idleTimeout: '30s' },
+    ];
+    for (const body of cases) {
+      const { status, body: res } = await call('add', body);
+      expect(status, JSON.stringify(body)).toBe(400);
+      expect(res.code, JSON.stringify(body)).toBe('invalid');
+      expect(res.error, JSON.stringify(body)).toMatch(/timeout/);
+    }
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('modify は本文にない値を DB の値のまま保ち、PATCH で送り直す', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, idle_timeout: '0s', half_close_timeout: '0s' }));
+    mocks.modifyRule.mockResolvedValue({});
+    const { status } = await call('modify', { ...tcpRule, distAddr: 'example.org' });
+    expect(status).toBe(200);
+    const patch = mocks.modifyRule.mock.calls[0][1];
+    expect(patch.idle_timeout).toBe('0s');
+    expect(patch.half_close_timeout).toBe('0s');
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    const options = JSON.parse(String(update?.[1][3]));
+    expect(options.idle_timeout).toBe('0s');
+    expect(options.half_close_timeout).toBe('0s');
+  });
+
+  it('modify の null は外す（rproxy へは既定の 1h・1m、DB からは消す）', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, idle_timeout: '0s', half_close_timeout: '5m' }));
+    mocks.modifyRule.mockResolvedValue({});
+    const { status } = await call('modify', { ...tcpRule, idleTimeout: null, halfCloseTimeout: null });
+    expect(status).toBe(200);
+    const patch = mocks.modifyRule.mock.calls[0][1];
+    expect(patch.idle_timeout).toBe('1h');
+    expect(patch.half_close_timeout).toBe('1m');
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(update?.[1][3]).toBeNull();
+  });
+});
+
 // rproxy-api v0.4.7 の tls.routes[].upstream（BackendTLSPolicy、features.tls_route_upstream）。
 // 以前は normalizeTls が知らない項目として断り、API のルールの表示が生の値に落ち、変更で消えるおそれがあった
 describe('route ごとの upstream（/api/forward）', () => {

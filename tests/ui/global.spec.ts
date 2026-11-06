@@ -8,6 +8,7 @@ import { SAME_ORIGIN, USER_STATE } from './global-setup';
 interface NodeView {
   node: string;
   supported: boolean;
+  streamLimits?: boolean;
   transport: string;
   settings: { storage: string; items: Record<string, { source: string; apply: string; settable: boolean; unix_only: boolean }> } | null;
 }
@@ -27,6 +28,7 @@ test.describe('global settings', () => {
   test.afterEach(async ({ page }) => {
     const n = await firstNode(page);
     if (n.supported && n.settings?.items.udp_max_sessions?.source === 'api') await clear(page, 'udp_max_sessions');
+    if (n.supported && n.settings?.items['http.timeouts']?.source === 'api') await clear(page, 'http.timeouts');
   });
 
   test('shows each item with its source and how it changes; changes a live item after a dry run', async ({ page }) => {
@@ -75,6 +77,32 @@ test.describe('global settings', () => {
     await expect(page.getByTestId('global-plan')).toBeVisible();
     await page.getByTestId('global-apply').click();
     await expect(row.getByTestId('global-source')).toHaveText('既定');
+  });
+
+  // rproxy-api v0.4.20（#356、features.http_stream_limits）：http.timeouts の write_stall・upgraded_idle・http2_max_streams（数）
+  test('http.timeouts takes write_stall, upgraded_idle and http2_max_streams as a number', async ({ page }) => {
+    const n = await firstNode(page);
+    test.skip(!n.supported || n.streamLimits !== true, 'rproxy-api without http_stream_limits');
+    const item = n.settings!.items['http.timeouts'];
+    test.skip(!item || item.source === 'file' || item.source === 'env', 'http.timeouts is fixed by the settings file');
+    await page.goto('/global');
+    const edit = page.getByTestId('global-edit-http.timeouts');
+    await edit.getByLabel('値を入れる').check();
+    await edit.locator('#global-input-http-timeouts-write_stall').fill('45s');
+    await edit.locator('#global-input-http-timeouts-upgraded_idle').fill('0s');
+    // 範囲の外は送る前に断る
+    await edit.locator('#global-input-http-timeouts-http2_max_streams').fill('10001');
+    await expect(page.getByTestId('global-edit').getByRole('alert')).toContainText('http2_max_streams');
+    await expect(page.getByTestId('global-dry-run')).toBeDisabled();
+    await edit.locator('#global-input-http-timeouts-http2_max_streams').fill('256');
+    await page.getByTestId('global-dry-run').click();
+    await expect(page.getByTestId('global-plan').getByTestId('global-change-http.timeouts')).toContainText('256');
+    await page.getByTestId('global-apply').click();
+    await expect(page.getByTestId('global-result')).toContainText('適用しました');
+    const after = (await firstNode(page)).settings!.items['http.timeouts'] as unknown as { source: string; api_value: Record<string, unknown> };
+    expect(after.source).toBe('api');
+    // http2_max_streams は文字列ではなく数で入る
+    expect(after.api_value).toMatchObject({ write_stall: '45s', http2_max_streams: 256 });
   });
 
   test('a form error and a refusal by rproxy are shown', async ({ page }) => {

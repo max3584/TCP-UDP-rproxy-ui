@@ -29,6 +29,8 @@ import {
   checkMatch,
   defaultPriority,
   middlewareKind,
+  MIRROR_MAX_IN_FLIGHT_DEFAULT,
+  MIRROR_MAX_IN_FLIGHT_MAX,
 } from './httpspec';
 
 export interface HttpEditorProps {
@@ -43,6 +45,9 @@ export interface HttpEditorProps {
   // 転送先ごとの同時に処理する上限（servers[].max_connections。features.target_max_connections）を編集できる。
   // できなければ値は読み取り専用で残して送る
   targetCaps?: boolean;
+  // mirror の同時に送る写しの上限（max_in_flight。features.http_stream_limits、rproxy-api v0.4.20）を編集できる。
+  // できなければ値は読み取り専用で残して送る
+  streamLimits?: boolean;
   // 管理者でない人（#155）：ファイルのパスの欄（*_file）を読み取り専用にする（前からある値はそのまま送る。確かめるのは API）
   filesLocked?: boolean;
   // 利用者の cache の上限（filesLocked のとき、新しい cache の欄に max_memory・max_entries として入れる。#175）
@@ -372,7 +377,9 @@ const CacheConfig: React.FC<{ id: string; value: Record<string, unknown>; onChan
 
 // ---- ミラー（#232）：送り先のサービスと、写す割合（percent か fraction） ----
 
-const MirrorConfig: React.FC<{ id: string; value: Record<string, unknown>; services: string[]; onChange: (v: Record<string, unknown>) => void }> = ({ id, value, services, onChange }) => {
+const MirrorConfig: React.FC<{
+  id: string; value: Record<string, unknown>; services: string[]; streamLimits: boolean; onChange: (v: Record<string, unknown>) => void;
+}> = ({ id, value, services, streamLimits, onChange }) => {
   const service = typeof value.service === 'string' ? value.service : '';
   const fraction = (value.fraction ?? null) as { numerator?: number; denominator?: number } | null;
   const mode = fraction !== null ? 'fraction' : value.percent !== undefined ? 'percent' : 'all';
@@ -428,6 +435,19 @@ const MirrorConfig: React.FC<{ id: string; value: Record<string, unknown>; servi
           </div>
         </div>
       )}
+      {streamLimits ? (
+        <div>
+          <label htmlFor={`${id}-max-in-flight`} className={labelClass}>同時に送る写しの上限（max_in_flight）</label>
+          <input id={`${id}-max-in-flight`} type="number" min="1" max={MIRROR_MAX_IN_FLIGHT_MAX} className={inputClass} placeholder={`既定 ${MIRROR_MAX_IN_FLIGHT_DEFAULT}`}
+            value={value.max_in_flight === undefined ? '' : String(value.max_in_flight)}
+            onChange={(e) => {
+              const next = { ...value, max_in_flight: num(e.target.value) };
+              if (next.max_in_flight === undefined) delete next.max_in_flight;
+              onChange(next);
+            }} />
+          <p className="text-xs text-gray-600 mt-1">{`1〜${MIRROR_MAX_IN_FLIGHT_MAX}。いっぱいのときは写さず、ミラーで落とした数（mirror_dropped）に数えます。`}</p>
+        </div>
+      ) : value.max_in_flight !== undefined && <Preserved label="同時に送る写しの上限" value={String(value.max_in_flight)} />}
       <p className="sm:col-span-2 text-xs text-gray-600">写しの応答は読み捨て、ミラーの失敗や遅れはクライアントへの応答に影響しません。ルートのミドルウェアでこれより前のものを通った形のリクエストを写します。</p>
     </div>
   );
@@ -598,7 +618,7 @@ export function newMiddlewareConfig(kind: string, filesLocked: boolean, cacheCap
   };
 }
 
-const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, targetCaps = false, filesLocked = false, cacheCaps }) => {
+const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, targetCaps = false, streamLimits = false, filesLocked = false, cacheCaps }) => {
   const template = (kind: string) => newMiddlewareConfig(kind, filesLocked, cacheCaps);
   const services = value.services ?? {};
   const mws = value.middlewares ?? {};
@@ -997,7 +1017,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                   ? <Preserved label="キャッシュの設定" value={config} note="（この rproxy では cache を使えないので編集できません。値は消さずに残しますが、このミドルウェアがある間は保存できません。保存するには、このミドルウェアを削除してください）" />
                   : <CacheConfig id={id} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
                 : kind === 'mirror'
-                ? <MirrorConfig id={id} value={config} services={serviceNames} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
+                ? <MirrorConfig id={id} value={config} services={serviceNames} streamLimits={streamLimits} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
                 : FIELDS[kind]
                   ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} httpOptions={httpOptions} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
                   : <JsonConfig key={`${name}-${kind}`} id={`${id}-json`} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />}

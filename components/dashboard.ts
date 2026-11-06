@@ -212,6 +212,8 @@ function v04FromStatus(status: RproxyRuleStatus): V04Settings {
     if (src.geoip && typeof src.geoip === 'object') raw.geoip = src.geoip as V04Settings['geoip'];
     if (src.outlier_detection && typeof src.outlier_detection === 'object') raw.outlierDetection = src.outlier_detection as V04Settings['outlierDetection'];
     if (src.proxy_protocol && typeof src.proxy_protocol === 'object') raw.proxyProtocol = src.proxy_protocol as V04Settings['proxyProtocol'];
+    if (typeof src.idle_timeout === 'string') raw.idleTimeout = src.idle_timeout;
+    if (typeof src.half_close_timeout === 'string') raw.halfCloseTimeout = src.half_close_timeout;
     return raw;
   }
 }

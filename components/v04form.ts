@@ -1,7 +1,7 @@
 // RuleForm の「制限・GeoIP」タブの入力（文字列の欄）と、v0.4 の項目（components/v04.ts）の行き来。React に依存しない（tests/v04.test.ts）
 import type { Protocol } from './lib';
 import { TlsError } from './tlserror';
-import { normalizeBandwidth, normalizeGeoip, normalizeL4Outlier, normalizeLabels, normalizeLimits, normalizeProxyProtocol } from './v04';
+import { normalizeBandwidth, normalizeGeoip, normalizeL4Outlier, normalizeLabels, normalizeLimits, normalizeProxyProtocol, normalizeRelayTimeout } from './v04';
 import type { GeoipUnknown, ProxyProtocolSpec, RateSpec, V04Key, V04Settings } from './v04';
 
 export interface LabelRow {
@@ -180,8 +180,10 @@ export function buildV04(form: V04Form, protocol: Protocol, l7: boolean, editabl
     }));
     if (outlier) out.outlierDetection = outlier;
   } else if (!l7 && current.outlierDetection) out.outlierDetection = current.outlierDetection;
-  // PROXY protocol の受け取りは「詳細」タブ（buildProxyProtocol）。ここでは今の値をそのまま渡す
+  // PROXY protocol の受け取りと中継の時間切れは「詳細」タブ（buildProxyProtocol・buildRelayTimeouts）。ここでは今の値をそのまま渡す
   if (current.proxyProtocol) out.proxyProtocol = current.proxyProtocol;
+  if (current.idleTimeout) out.idleTimeout = current.idleTimeout;
+  if (current.halfCloseTimeout) out.halfCloseTimeout = current.halfCloseTimeout;
   return out;
 }
 
@@ -205,4 +207,32 @@ export function buildProxyProtocol(form: ProxyProtocolForm, protocol: Protocol, 
   if (!form.enabled) return undefined;
   const from = form.fromText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
   return normalizeProxyProtocol({ from: from, required: form.required }, protocol) ?? undefined;
+}
+
+// ---- 「詳細」タブの tcp の中継の時間切れ（idle_timeout・half_close_timeout、rproxy-api v0.4.20） ----
+
+// 空欄は既定（1h・1m）
+export interface RelayTimeoutForm {
+  idle: string;
+  halfClose: string;
+}
+
+export function toRelayTimeoutForm(v: V04Settings): RelayTimeoutForm {
+  return { idle: v.idleTimeout ?? '', halfClose: v.halfCloseTimeout ?? '' };
+}
+
+// 欄から idle_timeout・half_close_timeout を作る（既定と同じ値は省く）。
+// editable でなければ（rproxy が features.tcp_idle_timeout を返さない）今の値をそのまま残す。
+// 欄を出さない udp・L7 のルールでは付けない（rproxy が invalid で断る）。誤りは TlsError（どちらの欄か分かる文）
+export function buildRelayTimeouts(form: RelayTimeoutForm, protocol: Protocol, l7: boolean, editable: boolean, current: V04Settings): Pick<V04Settings, 'idleTimeout' | 'halfCloseTimeout'> {
+  if (!editable) {
+    return {
+      ...(current.idleTimeout ? { idleTimeout: current.idleTimeout } : {}),
+      ...(current.halfCloseTimeout ? { halfCloseTimeout: current.halfCloseTimeout } : {}),
+    };
+  }
+  if (protocol !== 'tcp' || l7) return {};
+  const idle = normalizeRelayTimeout('idle_timeout', form.idle, protocol, l7);
+  const halfClose = normalizeRelayTimeout('half_close_timeout', form.halfClose, protocol, l7);
+  return { ...(idle ? { idleTimeout: idle } : {}), ...(halfClose ? { halfCloseTimeout: halfClose } : {}) };
 }
