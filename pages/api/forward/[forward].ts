@@ -49,6 +49,7 @@ import {
   RproxyRuleStatus,
   addRule,
   deleteRule,
+  getCapabilities,
   getInterfaces,
   getRule,
   listRules,
@@ -607,6 +608,26 @@ async function ensureNotShadowedOnNodes(place: Place, rule: ForwardRule, overrid
   }
 }
 
+// connect_timeout を UI の DB（forward_rules.options）に書く前に、置き場所のすべてのノードの rproxy が DB から戻せるか
+// （features.db_connect_timeout、rproxy-api v0.4.21）確かめる。それより前の rproxy は options に知らないキーのある行を丸ごと戻さない
+// （再起動でルールが消える）ので 400 unsupported。前と同じ値（もう DB にある）なら確かめない。
+// フォームは戻せない rproxy では欄を読み取り専用にするが、インポート・コピー・巻き戻し・API の本文はここで止める
+async function ensureConnectTimeoutRestorable(place: Place, rule: ForwardRule, before?: ForwardRule | null): Promise<void> {
+  if (!rule.connectTimeout || rule.connectTimeout === before?.connectTimeout) return;
+  for (const node of place.nodes) {
+    let ok: boolean;
+    try {
+      const caps = await withNode(node, () => getCapabilities());
+      ok = caps.features?.db_connect_timeout === true;
+    } catch {
+      throw new HttpError(400, `ノード ${node.name} の rproxy の機能を確かめられないので、宛先への接続の時間（connect_timeout）は保存できません。`, 'unsupported');
+    }
+    if (!ok) {
+      throw new HttpError(400, `ノード ${node.name} の rproxy（rproxy-api v0.4.21 より前）は UI の DB から宛先への接続の時間（connect_timeout）を戻せないので、保存できません（再起動のときにルールが戻らなくなります）。rproxy-api を v0.4.21 以降にするか、connect_timeout を空にしてください。`, 'unsupported');
+    }
+  }
+}
+
 // 自分のルール（admin ならだれのルールでも）を行ロックして取得する。なければ 404（rproxy の固定ルールなら 409 static）
 async function lockOwnRule(conn: PoolConnection, actor: Actor, place: Place, key: ForwardRule, logger: AppLogger): Promise<ForwardRule> {
   const owner = ownerClause(actor);
@@ -1042,6 +1063,7 @@ async function addForwardingRule(actor: Actor, place: Place, rule: ForwardRule, 
   checkPorts(actor, rule);
   checkNodes(actor, place);
   await checkUserRule(actor, place, rule, overrides, before, logger);
+  await ensureConnectTimeoutRestorable(place, rule, before?.rule);
   await checkOverlap(actor, place, rule);
   const authId = actor.id;
   return withTransaction(logger, async (conn) => {
@@ -1115,8 +1137,8 @@ function mergeEdit(current: ForwardRule, rule: ForwardRule, given: Given): Forwa
     throw invalid('Destination Address には IP アドレスかホスト名を指定してください。');
   }
   // source_ip は変更できないので DB の値を使う。allow_from は指定があるときだけ置き換える
-  const { labels: _l, limits: _li, bandwidth: _b, geoip: _g, outlierDetection: _o, proxyProtocol: _p, idleTimeout: _it, halfCloseTimeout: _hc, ...base } = rule;
-  void _l; void _li; void _b; void _g; void _o; void _p; void _it; void _hc;
+  const { labels: _l, limits: _li, bandwidth: _b, geoip: _g, outlierDetection: _o, proxyProtocol: _p, idleTimeout: _it, halfCloseTimeout: _hc, connectTimeout: _ct, ...base } = rule;
+  void _l; void _li; void _b; void _g; void _o; void _p; void _it; void _hc; void _ct;
   const updated: ForwardRule = {
     ...base,
     ...(current.target !== undefined ? { target: current.target } : {}),
@@ -1138,6 +1160,9 @@ function mergeEdit(current: ForwardRule, rule: ForwardRule, given: Given): Forwa
   }
   if (updated.http !== null && (updated.idleTimeout || updated.halfCloseTimeout)) {
     throw invalid('中継の時間切れ（idle_timeout・half_close_timeout）は L7（HTTP）のルールでは使えません（rproxy の設定ファイルの global.http.timeouts で決まります）。');
+  }
+  if (updated.http !== null && updated.connectTimeout) {
+    throw invalid('宛先への接続の時間（connect_timeout）は L7（HTTP）のルールでは使えません（L7 タブのサービスの接続の時間（timeouts.connect）で決めます）。');
   }
   if (updated.protocol === 'udp' && updated.proxyProtocol) {
     throw new HttpError(400, 'PROXY protocol の受け取り（proxy_protocol）は TCP のルールでだけ使えます（UDP のヘッダは読みません）。', 'unsupported');
@@ -1166,6 +1191,7 @@ async function editForwardingRule(actor: Actor, place: Place, rule: ForwardRule,
     const updated = mergeEdit(current, rule, given);
     // 転送先の名前解決と GET /interfaces は行ロックを持ったまま行う（利用者の 1 件のルールだけ。ロックの外でやり直す形は見送った）
     await checkUserRule(actor, place, updated, ovs, { rule: current, overrides: ovs }, logger);
+    await ensureConnectTimeoutRestorable(place, updated, current);
     const where = keyWhere(place, updated);
     await conn.query(
       `UPDATE forward_rules SET dist_addr = ?, dist_port = ?, udp_idle_secs = ?, options = ? WHERE ${owner.sql}${where.sql}`,

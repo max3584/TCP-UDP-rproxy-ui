@@ -384,6 +384,16 @@ Fields of L4 TCP rules in rproxy-api v0.4.20 (#353; "Relay timeouts and keepaliv
 - They are also written to the DB `options` column, so a rule restored from the UI's DB after rproxy restarts has the same values (`0s` included; rproxy-api v0.4.20 or later). Emptying a field and saving sends the default (`1h`, `1m`) to rproxy.
 - They are shown under "Advanced" on the details page (left out means "Default (1h)"), with the before and after values in the change history, and in the drift (several rproxy instances). Export and import keep them.
 
+## Time to connect to a target (connect_timeout)
+
+`connect_timeout` of L4 TCP rules in rproxy-api (v0.4.3; "Time to connect to a target" in rproxy-api's docs/en/API.md). It can be edited under "Time to connect to a target" on the "Advanced" tab only when rproxy reports `features.db_connect_timeout` in `GET /capabilities` (rproxy-api v0.4.21 or later). It is not shown for UDP or for L7 rules (the services' `timeouts.connect` on the L7 tab).
+
+- How long a TCP connection to a target may take. Past it the attempt counts as a failure and, if there are other targets, the next one is tried. Empty means rproxy's default (`5s` with other targets, otherwise `30s`).
+- Write it like `1500ms` or `3s`, from `100ms` to `10m` (checked with rproxy's rules before saving). Within one cluster, `1s`-`3s` is a reasonable value.
+- It is also written to the DB `options` column, so a rule restored from the UI's DB after rproxy restarts has the same value. Up to v0.4.20, rproxy-api does not read `connect_timeout` from the UI's DB and does not restore a row with this key at all (the rule disappears at a restart), so with an rproxy that reports only `features.connect_timeout` the value is kept read-only and sent as is, and setting or changing it through the API (import, revert and copy included) is refused with 400 `unsupported` (for a group, every node's rproxy is checked).
+- Emptying the field and saving sends `0s` (remove) to rproxy.
+- It is shown under "Advanced" on the details page (left out means "Default (5s with other targets, otherwise 30s)"), with the before and after values in the change history, and in the drift (several rproxy instances). Export and import keep it.
+
 ## Routing UDP by server name (DTLS, QUIC)
 
 UDP rules can also choose the target by the server name in the first packet when the TLS tab's mode is set to "sni" (from rproxy v0.3.8). rproxy v0.3.18 or later reports its version, so "sni" is not offered when it is older than v0.3.8 (an older rproxy that does not report its version still gets the choice, with a note that v0.3.7 or earlier refuses it when you save). Nothing is terminated, so no certificate is needed (the target has it). You can start from the profiles "Route HTTP/3 (QUIC) by server name (UDP 443)" and "Route TURN DTLS by server name (UDP 5349)".
@@ -456,7 +466,7 @@ The form is divided into tabs.
 | TLS / DTLS | passthrough / sni / terminate (DTLS for UDP), backends per server name (with the client IP handling for names whose TLS is not terminated, and the TLS to the backend for names rproxy terminates) and "Connections matching no server name" (Send to the default backend / Disconnect), certificates, TLS options (minimum version and cipher suites; TCP terminate), client certificate verification (mTLS), ALPN, re-encryption to the backend |
 | Mail (STARTTLS) | STARTTLS for SMTP / IMAP / POP3 (only for TCP with "terminate") |
 | Limits & GeoIP | Labels, L4 limits, bandwidth limits, GeoIP, passive health checks (rproxy-api v0.4; see "v0.4 rule settings" above) |
-| Advanced | Source IP handling (source_ip), UDP idle timeout, TCP relay timeouts (idle_timeout, half_close_timeout; L4 TCP), allowed sources (allow_from), accept PROXY protocol (proxy_protocol; TCP) |
+| Advanced | Source IP handling (source_ip), UDP idle timeout, TCP relay timeouts (idle_timeout, half_close_timeout; L4 TCP), time to connect to a target (connect_timeout; L4 TCP), allowed sources (allow_from), accept PROXY protocol (proxy_protocol; TCP) |
 
 - A profile only fills the form with the recommended settings from `../rproxy-api/docs/PROFILES.md`. Enter the addresses and certificate paths for your environment.
 - The certificate, private key and CA paths are paths on the rproxy-api server. If they cannot be read, you get a `tls_config` error.

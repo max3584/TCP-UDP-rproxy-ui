@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
     planAdd: vi.fn(),
     planModify: vi.fn(),
     planDelete: vi.fn(),
+    getCapabilities: vi.fn(),
   };
 });
 
@@ -45,6 +46,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => ({
   planAdd: mocks.planAdd,
   planModify: mocks.planModify,
   planDelete: mocks.planDelete,
+  getCapabilities: mocks.getCapabilities,
 }));
 
 import handler from '@/pages/api/forward/[forward]';
@@ -312,6 +314,91 @@ describe('idle_timeout・half_close_timeout（/api/forward）', () => {
     const patch = mocks.modifyRule.mock.calls[0][1];
     expect(patch.idle_timeout).toBe('1h');
     expect(patch.half_close_timeout).toBe('1m');
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(update?.[1][3]).toBeNull();
+  });
+});
+
+// rproxy-api v0.4.3 の connect_timeout（UI #184）。UI の DB から戻すのは v0.4.21 から（features.db_connect_timeout、rproxy-api #379）。
+// それより前の rproxy は options に知らないキーのある行を丸ごと戻さないので、DB に書く前に確かめる
+describe('connect_timeout（/api/forward）', () => {
+  const row = (options: unknown) => [{ dist_addr: 'example.com', dist_port: 80, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify(options) }];
+  const restorable = () => mocks.getCapabilities.mockResolvedValue({ features: { connect_timeout: true, db_connect_timeout: true } });
+
+  it('add は rproxy が DB から戻せるときだけ rproxy と DB に渡す', async () => {
+    restorable();
+    mocks.addRule.mockResolvedValue({});
+    const { status } = await call('add', { ...tcpRule, connectTimeout: '1500ms' });
+    expect(status).toBe(200);
+    expect(mocks.addRule.mock.calls[0][0].connect_timeout).toBe('1500ms');
+    const options = JSON.parse(String(sqlCalls()[0][1][9]));
+    expect(options.connect_timeout).toBe('1500ms');
+  });
+
+  it('add は DB から戻せない rproxy（v0.4.21 より前）・機能を確かめられない rproxy では 400 unsupported で、DB にも rproxy にも書かない', async () => {
+    for (const caps of [Promise.resolve({ features: { connect_timeout: true } }), Promise.resolve({}), Promise.reject(new Error('unreachable'))]) {
+      mocks.getCapabilities.mockReturnValueOnce(caps);
+      const { status, body } = await call('add', { ...tcpRule, connectTimeout: '3s' });
+      expect(status).toBe(400);
+      expect(body.code).toBe('unsupported');
+      expect(body.error).toMatch(/connect_timeout/);
+    }
+    expect(mocks.addRule).not.toHaveBeenCalled();
+    expect(sqlCalls().some(([sql]) => sql.startsWith('INSERT INTO forward_rules'))).toBe(false);
+  });
+
+  it('使わなければ rproxy の機能を聞かない', async () => {
+    mocks.addRule.mockResolvedValue({});
+    expect((await call('add', tcpRule)).status).toBe(200);
+    expect(mocks.getCapabilities).not.toHaveBeenCalled();
+  });
+
+  it('add は rproxy と同じ規則で断る（範囲の外・読めない値・udp・L7）', async () => {
+    restorable();
+    const cases: unknown[] = [
+      { ...tcpRule, connectTimeout: '50ms' },
+      { ...tcpRule, connectTimeout: '11m' },
+      { ...tcpRule, connectTimeout: '3' },
+      { ...tcpRule, protocol: 'udp', connectTimeout: '3s' },
+      { ...tcpRule, http: { routes: [{ name: 'r', match: 'PathPrefix(`/`)', service: 's' }], services: { s: { servers: [{ url: 'http://10.0.0.1' }] } } }, connectTimeout: '3s' },
+    ];
+    for (const body of cases) {
+      const { status, body: res } = await call('add', body);
+      expect(status, JSON.stringify(body)).toBe(400);
+      expect(res.code, JSON.stringify(body)).toBe('invalid');
+      expect(res.error, JSON.stringify(body)).toMatch(/connect_timeout/);
+    }
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
+  it('modify は本文にない値を DB の値のまま保ち、もう DB にある値は聞き直さない', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, connect_timeout: '3s' }));
+    mocks.modifyRule.mockResolvedValue({});
+    const { status } = await call('modify', { ...tcpRule, distAddr: 'example.org' });
+    expect(status).toBe(200);
+    expect(mocks.modifyRule.mock.calls[0][1].connect_timeout).toBe('3s');
+    expect(mocks.getCapabilities).not.toHaveBeenCalled();
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(JSON.parse(String(update?.[1][3])).connect_timeout).toBe('3s');
+  });
+
+  it('modify で値を変えるときは確かめ、戻せない rproxy なら断る', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, connect_timeout: '3s' }));
+    mocks.getCapabilities.mockResolvedValueOnce({ features: { connect_timeout: true } });
+    const { status, body } = await call('modify', { ...tcpRule, connectTimeout: '5s' });
+    expect(status).toBe(400);
+    expect(body.code).toBe('unsupported');
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    expect(sqlCalls().some(([sql]) => sql.startsWith('UPDATE forward_rules'))).toBe(false);
+  });
+
+  it('modify の null は外す（rproxy へは 0s、DB からは消す）。外すだけなら機能を聞かない', async () => {
+    conn.query.mockResolvedValueOnce(row({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, connect_timeout: '3s' }));
+    mocks.modifyRule.mockResolvedValue({});
+    const { status } = await call('modify', { ...tcpRule, connectTimeout: null });
+    expect(status).toBe(200);
+    expect(mocks.modifyRule.mock.calls[0][1].connect_timeout).toBe('0s');
+    expect(mocks.getCapabilities).not.toHaveBeenCalled();
     const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
     expect(update?.[1][3]).toBeNull();
   });

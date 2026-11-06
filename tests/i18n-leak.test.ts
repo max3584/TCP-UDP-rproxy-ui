@@ -12,7 +12,7 @@ import { healthCheckLabel } from '@/components/targets';
 import { listenOptions } from '@/components/listen';
 import { checkMatch } from '@/components/httpspec';
 import { proxyProtocolHint, transparentHint } from '@/components/sourceip';
-import { relayTimeoutText } from '@/components/v04';
+import { connectTimeoutText, relayTimeoutText } from '@/components/v04';
 import { explainError } from '@/components/messages';
 import { AcmeCertStatus, acmeProblem, checkAcmeNames } from '@/components/acme';
 
@@ -66,6 +66,9 @@ function samples(): string[] {
     ...ruleChanges(base, { ...base, idleTimeout: '0s', halfCloseTimeout: '5m' }),
     relayTimeoutText('idle_timeout', undefined),
     relayTimeoutText('half_close_timeout', '0s'),
+    // tcp の宛先への接続の時間（v0.4.3、UI #184）：履歴の前と後・既定
+    ...ruleChanges(base, { ...base, connectTimeout: '1500ms' }),
+    connectTimeoutText(undefined),
     explainError(undefined, 'certificate expired: x'),
   ];
 }

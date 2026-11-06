@@ -15,6 +15,8 @@ export const V04_FEATURES: { key: keyof CapabilityFeatures; label: string }[] = 
   { key: 'route_source_ip', label: 'サーバ名ごとの送信元 IP の渡し方' },
   { key: 'target_max_connections', label: '宛先ごとの上限' },
   { key: 'tcp_idle_timeout', label: 'TCP の中継の時間切れ（idle_timeout・half_close_timeout）' },
+  { key: 'connect_timeout', label: '宛先への接続の時間（connect_timeout）' },
+  { key: 'db_connect_timeout', label: 'UI の DB からの connect_timeout の復元' },
   { key: 'http_stream_limits', label: 'HTTP の接続・ストリームの上限（write_stall・upgraded_idle・http2_max_streams・mirror の max_in_flight）' },
   { key: 'dry_run', label: '変更前の差分（dry run）' },
   { key: 'persistence', label: 'API で作ったルールの保存' },

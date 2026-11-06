@@ -45,6 +45,8 @@ export interface RproxyRule {
   // v0.4.20（#353、features.tcp_idle_timeout）。L4 の tcp だけ。"0s" は上限なし、省けば 1h・1m。応答では付けたときだけ（3600s のような秒の書き方）
   idle_timeout?: string;
   half_close_timeout?: string;
+  // v0.4.3（features.connect_timeout）。L4 の tcp だけ（100ms〜10m）。応答では付けたときだけ（2s・1500ms のような書き方）
+  connect_timeout?: string;
 }
 
 // 応答では既定値の項目も含めて返る（tls はすべての項目、listen_port_end と starttls は null もある）。
@@ -113,6 +115,8 @@ export interface RproxyRulePatch {
   // v0.4.20：付けると置き換える（省けば今のまま。外すときは既定の 1h・1m を送る）
   idle_timeout?: string;
   half_close_timeout?: string;
+  // v0.4.3：付けると置き換える（省けば今のまま。"0s" で外す）
+  connect_timeout?: string;
 }
 
 // この版の rproxy で動かせる v0.3 の機能（古い rproxy は features を返さない）
@@ -156,6 +160,10 @@ export interface CapabilityFeatures {
   tcp_idle_timeout?: boolean;
   // v0.4.20：global.http.timeouts の write_stall・upgraded_idle・http2_max_streams と mirror の max_in_flight（#356）
   http_stream_limits?: boolean;
+  // v0.4.3：L4 の tcp のルールの connect_timeout
+  connect_timeout?: boolean;
+  // v0.4.21：UI の DB（forward_rules.options）の connect_timeout を戻す（max3584/rproxy-api#379。それより前はその行を戻さない）
+  db_connect_timeout?: boolean;
   // 設定ファイルの global.performance で効く項目の名前
   performance?: string[];
   // v0.4.19：global の設定の API（GET / PATCH /config/global、#342）

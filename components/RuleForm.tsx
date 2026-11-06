@@ -50,9 +50,9 @@ import { joinList } from '@/i18n/core';
 import { compareVersions, parseVersion } from './version';
 import LimitsEditor from './LimitsEditor';
 import PlanView, { PlanResponse } from './PlanView';
-import { RELAY_TIMEOUT_DEFAULTS, RELAY_TIMEOUT_HELP, V04_FEATURE, V04_FIELD, V04_KEYS, relayTimeoutText, v04Of } from './v04';
+import { CONNECT_TIMEOUT_HELP, RELAY_TIMEOUT_DEFAULTS, RELAY_TIMEOUT_HELP, V04_FEATURE, V04_FIELD, V04_KEYS, connectTimeoutText, relayTimeoutText, v04Of } from './v04';
 import type { V04Key } from './v04';
-import { buildProxyProtocol, buildRelayTimeouts, buildV04, toProxyProtocolForm, toRelayTimeoutForm, toV04Form } from './v04form';
+import { buildConnectTimeout, buildProxyProtocol, buildRelayTimeouts, buildV04, toProxyProtocolForm, toRelayTimeoutForm, toV04Form } from './v04form';
 import type { ProxyProtocolForm, RelayTimeoutForm } from './v04form';
 
 // ルールの入力フォーム（追加 /rules/new と変更 /rules/.../edit の画面で使う）。
@@ -281,6 +281,8 @@ interface Caps {
     targetMaxConnections: boolean;
     // global.http.timeouts の v0.4.20 の項目と mirror の max_in_flight（features.http_stream_limits、rproxy-api v0.4.20）
     httpStreamLimits: boolean;
+    // ルールの connect_timeout（features.connect_timeout、rproxy-api v0.4.3）。UI の DB から戻せるかは v04.connect_timeout（features.db_connect_timeout）
+    connectTimeout: boolean;
   } | null;
 }
 
@@ -317,6 +319,7 @@ type FieldErrors = {
   v04: string;
   proxyProtocol: string;
   relayTimeouts: string;
+  connectTimeout: string;
 };
 
 // どのタブにどの入力欄があるか（エラーの印とエラーのあるタブへの移動に使う）
@@ -326,7 +329,7 @@ const TAB_FIELDS: Record<TabId, (keyof FieldErrors)[]> = {
   tls: ['tls'],
   mail: [],
   limits: ['v04'],
-  advanced: ['sourceIp', 'udpIdleSecs', 'relayTimeouts', 'allowFrom', 'proxyProtocol'],
+  advanced: ['sourceIp', 'udpIdleSecs', 'relayTimeouts', 'connectTimeout', 'allowFrom', 'proxyProtocol'],
 };
 
 const EMPTY_ERRORS: FieldErrors = {
@@ -346,6 +349,7 @@ const EMPTY_ERRORS: FieldErrors = {
   v04: '',
   proxyProtocol: '',
   relayTimeouts: '',
+  connectTimeout: '',
 };
 
 const errorCount = (errors: FieldErrors, tab: TabId): number => TAB_FIELDS[tab].filter((f) => errors[f] !== '').length;
@@ -373,7 +377,7 @@ export const UDP_SNI_VERSION_NOTE =
   'UDP の sni には rproxy v0.3.8 以降が必要です。この rproxy は版を返さない（v0.3.18 より前）ので確かめられません。v0.3.7 以前の rproxy では保存するときに断られます。';
 
 const NO_V04: Record<V04Key, boolean> = {
-  labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false, idle_timeout: false, half_close_timeout: false,
+  labels: false, limits: false, bandwidth: false, geoip: false, outlier_detection: false, proxy_protocol: false, idle_timeout: false, half_close_timeout: false, connect_timeout: false,
 };
 
 const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, submitting = false, onPlan, restricted = false, cacheCaps }) => {
@@ -424,6 +428,8 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const [ppForm, setPpForm] = useState<ProxyProtocolForm>(() => toProxyProtocolForm(initialV04.proxyProtocol));
   // tcp の中継の時間切れ（「詳細」タブ。rproxy-api v0.4.20 の idle_timeout・half_close_timeout）
   const [rtForm, setRtForm] = useState<RelayTimeoutForm>(() => toRelayTimeoutForm(initialV04));
+  // tcp の宛先への接続の時間（「詳細」タブ。rproxy-api v0.4.3 の connect_timeout。空欄は rproxy の既定）
+  const [ctForm, setCtForm] = useState<string>(() => initialV04.connectTimeout ?? '');
   // 変更前の差分（dry_run）の結果
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [planError, setPlanError] = useState('');
@@ -480,6 +486,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             certStore: data.features.cert_store === true,
             targetMaxConnections: data.features.target_max_connections === true,
             httpStreamLimits: data.features.http_stream_limits === true,
+            connectTimeout: data.features.connect_timeout === true,
           } : null,
         });
       } catch (err) {
@@ -657,6 +664,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   // 返さない rproxy では今の値を読み取り専用で残して送る）
   const rtFeature = caps.features?.v04.idle_timeout === true;
   const rtShown = protocol === 'tcp' && !l7;
+  // 宛先への接続の時間（connect_timeout）は rproxy が UI の DB から戻せる（features.db_connect_timeout、v0.4.21）ときだけ編集できる。
+  // それより前の rproxy は options に知らないキーのある行を丸ごと戻さないので、今の値を読み取り専用で残して送る（欄は L4 の tcp だけ）
+  const ctEditable = caps.features?.v04.connect_timeout === true;
+  const ctApiOnly = !ctEditable && caps.features?.connectTimeout === true;
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
   const showUnmatched = ((protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate')) || (protocol === 'udp' && tlsMode === 'sni'))
@@ -789,6 +800,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       v04: '',
       proxyProtocol: '',
       relayTimeouts: '',
+      connectTimeout: '',
     };
 
     if (l7) {
@@ -860,6 +872,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
     } catch (err) {
       newErrors.relayTimeouts = err instanceof Error ? err.message : String(err);
     }
+    // 宛先への接続の時間（「詳細」タブ）：編集できなければ編集を始めたときの値を残す
+    try {
+      const { connectTimeout: _c, ...rest } = v04;
+      void _c;
+      v04 = { ...rest, ...buildConnectTimeout(ctForm, protocol, l7, ctEditable, initialV04) };
+    } catch (err) {
+      newErrors.connectTimeout = err instanceof Error ? err.message : String(err);
+    }
 
     if (Object.values(newErrors).some((e) => e !== '')) {
       setErrors(newErrors);
@@ -892,7 +912,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       ...v04,
     };
     // 編集できる v0.4 の項目で空にしたものは null で送る（変更の API は送られていない項目を今のまま保つので、外すことを伝える）
-    const editableNow: Record<V04Key, boolean> = { ...v04Editable, proxy_protocol: ppEditable, idle_timeout: rtFeature && rtShown, half_close_timeout: rtFeature && rtShown };
+    const editableNow: Record<V04Key, boolean> = { ...v04Editable, proxy_protocol: ppEditable, idle_timeout: rtFeature && rtShown, half_close_timeout: rtFeature && rtShown,
+      connect_timeout: ctEditable && rtShown,
+    };
     const clears = Object.fromEntries(V04_KEYS
       .filter((k) => editableNow[k] && !rule[V04_FIELD[k]])
       .map((k) => [V04_FIELD[k], null]));
@@ -1809,6 +1831,32 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             {`TCP の中継の時間切れ: idle_timeout ${relayTimeoutText('idle_timeout', initialV04.idleTimeout)}、half_close_timeout ${relayTimeoutText('half_close_timeout', initialV04.halfCloseTimeout)}`}
             <br />
             この rproxy では使えないので編集できません。そのまま残して送ります。
+          </p>
+        ))}
+        {rtShown && (ctEditable ? (
+          <div className="mb-4" data-testid="connect-timeout">
+            <label htmlFor="rule-connect-timeout" className={labelClass}>宛先への接続の時間（connect_timeout）:</label>
+            <input
+              id="rule-connect-timeout"
+              type="text"
+              value={ctForm}
+              onChange={(e) => setCtForm(e.target.value)}
+              className={`${inputClass} font-mono`}
+              placeholder="空欄で既定（ほかに宛先があれば 5s、なければ 30s）"
+              aria-describedby="rule-connect-timeout-help"
+              aria-invalid={errors.connectTimeout !== '' || undefined}
+              spellCheck={false}
+            />
+            <p id="rule-connect-timeout-help" className={helpClass}>{CONNECT_TIMEOUT_HELP}</p>
+            {errors.connectTimeout && <p className={errorClass}>{errors.connectTimeout}</p>}
+          </div>
+        ) : (initialV04.connectTimeout || ctApiOnly) && (
+          <p className="mb-4 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 break-all" data-testid="connect-timeout-preserved">
+            {`宛先への接続の時間（connect_timeout）: ${connectTimeoutText(initialV04.connectTimeout)}`}
+            <br />
+            {ctApiOnly
+              ? 'この rproxy（rproxy-api v0.4.21 より前）は UI の DB から connect_timeout を戻せないので、ここでは編集できません（保存すると再起動のときにルールが戻らなくなるため）。今の値はそのまま残して送ります。'
+              : 'この rproxy では使えないので編集できません。そのまま残して送ります。'}
           </p>
         ))}
         <div className="mb-4">
