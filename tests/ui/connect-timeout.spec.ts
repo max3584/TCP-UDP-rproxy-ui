@@ -39,7 +39,10 @@ async function rproxyHas(page: Page, value: string): Promise<boolean> {
 test.describe('TCP connect timeout', () => {
   test('connect_timeout from the form reaches rproxy, an edit keeps it, and clearing removes it', async ({ page }) => {
     const f = await features(page);
-    test.skip(f.db_connect_timeout !== true || f.dry_run !== true, 'rproxy-api does not restore connect_timeout from the UI database yet');
+    const skip = f.db_connect_timeout !== true || f.dry_run !== true;
+    // 飛ばしたことをログに出す（CI の結果で見えるように）
+    if (skip) console.log('connect-timeout.spec.ts: skipped: rproxy-api does not report features.db_connect_timeout (v0.4.21) and dry_run');
+    test.skip(skip, 'rproxy-api does not restore connect_timeout from the UI database yet');
     await deleteRule(page);
     try {
       await page.goto('/rules/new');

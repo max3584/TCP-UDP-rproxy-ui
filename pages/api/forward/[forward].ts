@@ -49,7 +49,6 @@ import {
   RproxyRuleStatus,
   addRule,
   deleteRule,
-  getCapabilities,
   getInterfaces,
   getRule,
   listRules,
@@ -80,6 +79,7 @@ import { HISTORY_ACTIONS, HistoryAction, HistoryEntry, HistoryPage, isDate, rule
 import { haOverview, haSyncStatus, syncNode } from '@/components/hasync';
 import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, isShadowing, liveRule, loadOverrides, resendOne, toKey, toRproxyPatch } from '@/components/ruledb';
 import { V04_FIELD, V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
+import { connectTimeoutRestore } from '@/components/restorable';
 import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
 import { addedRefs, certAllowed, certNames, destKey, fileKey, fileRefs, locatedDests, oidcConfigs, redactFiles, userCacheProblem } from '@/components/userlimits';
 import type { DestRef } from '@/components/userlimits';
@@ -610,21 +610,18 @@ async function ensureNotShadowedOnNodes(place: Place, rule: ForwardRule, overrid
 
 // connect_timeout を UI の DB（forward_rules.options）に書く前に、置き場所のすべてのノードの rproxy が DB から戻せるか
 // （features.db_connect_timeout、rproxy-api v0.4.21）確かめる。それより前の rproxy は options に知らないキーのある行を丸ごと戻さない
-// （再起動でルールが消える）ので 400 unsupported。前と同じ値（もう DB にある）なら確かめない。
-// フォームは戻せない rproxy では欄を読み取り専用にするが、インポート・コピー・巻き戻し・API の本文はここで止める
+// （再起動でルールが消える）ので 400 unsupported、聞けないノードがあれば 502 unreachable（そのノードが戻るまで付けられない）。
+// 前と同じ値（もう DB にある）なら確かめない。ノードは並べて聞く（止まったノードがあっても待つのは 1 回の時間切れ）。
+// フォームは戻せない rproxy では欄を読み取り専用にするが、インポート・コピー・巻き戻し・API の本文はここで止める。
+// 作り直し（置き換え・移動）は消す前に呼ぶ
 async function ensureConnectTimeoutRestorable(place: Place, rule: ForwardRule, before?: ForwardRule | null): Promise<void> {
   if (!rule.connectTimeout || rule.connectTimeout === before?.connectTimeout) return;
-  for (const node of place.nodes) {
-    let ok: boolean;
-    try {
-      const caps = await withNode(node, () => getCapabilities());
-      ok = caps.features?.db_connect_timeout === true;
-    } catch {
-      throw new HttpError(400, `ノード ${node.name} の rproxy の機能を確かめられないので、宛先への接続の時間（connect_timeout）は保存できません。`, 'unsupported');
-    }
-    if (!ok) {
-      throw new HttpError(400, `ノード ${node.name} の rproxy（rproxy-api v0.4.21 より前）は UI の DB から宛先への接続の時間（connect_timeout）を戻せないので、保存できません（再起動のときにルールが戻らなくなります）。rproxy-api を v0.4.21 以降にするか、connect_timeout を空にしてください。`, 'unsupported');
-    }
+  const check = await connectTimeoutRestore(place.nodes, place.nodes.map((n) => n.name));
+  if (check.lacking.length > 0) {
+    throw new HttpError(400, `ノード ${check.lacking.join(', ')} の rproxy（rproxy-api v0.4.21 より前）は UI の DB から宛先への接続の時間（connect_timeout）を戻せないので、保存できません（再起動のときにルールが戻らなくなります）。rproxy-api を v0.4.21 以降にするか、connect_timeout を空にしてください。`, 'unsupported');
+  }
+  if (check.unreachable.length > 0) {
+    throw new HttpError(502, `ノード ${check.unreachable.join(', ')} の rproxy に問い合わせできないので、宛先への接続の時間（connect_timeout）は保存できません（UI の DB から戻せるか確かめられません）。ノードが戻ってからもう一度保存してください。`, 'unreachable');
   }
 }
 
@@ -1515,6 +1512,8 @@ async function replaceForwardingRule(actor: Actor, place: Place, rule: ForwardRu
   rule = { ...rule, enabled: current.enabled !== false };
   // 同じキーを API のルール・ルールの組が使っていれば、DB の行を消してから作れずに失う前に断る
   if (!isPaused(current)) await ensureNotShadowedOnNodes(place, current, currentOverrides);
+  // connect_timeout を戻せないノードがあれば、消す前に断る（消してから作れずに元へ戻すことにしない）
+  await ensureConnectTimeoutRestorable(place, rule, current);
   await deleteForwardingRule(actor, place, rule, logger);
   try {
     await addForwardingRule(actor, place, rule, logger, ownerId, nextOverrides, { rule: current, overrides: currentOverrides });
@@ -2063,6 +2062,8 @@ async function copyRule(actor: Actor, body: any, logger: AppLogger): Promise<{ r
   }
   if (targetsOverlap(actor.cfg, from.target!, toName)) {
     if (!isPaused(rule)) await ensureNotShadowedOnNodes(from, rule, allOvs);
+    // 移動先のノードが connect_timeout を戻せなければ、元を消す前に断る
+    await ensureConnectTimeoutRestorable(to, placed);
     await deleteForwardingRule(actor, from, rule, logger);
     try {
       await addForwardingRule(actor, to, placed, logger, ownerId, keep);

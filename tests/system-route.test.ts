@@ -5,7 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const mocks = vi.hoisted(() => ({ getServerSession: vi.fn(), getCapabilities: vi.fn(), getConfigStatus: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getServerSession: vi.fn(), getCapabilities: vi.fn(), getConfigStatus: vi.fn(), query: vi.fn() }));
+vi.mock('mariadb', () => ({ default: { createPool: () => ({ query: mocks.query }) } }));
 vi.mock('next-auth', () => ({ getServerSession: mocks.getServerSession }));
 vi.mock('@/pages/api/auth/[...nextauth]', () => ({ authOptions: {} }));
 vi.mock('@/components/lib', async (importOriginal) => ({
@@ -35,7 +36,10 @@ function call() {
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'rproxy-ui-system-'));
-  writeFileSync(join(dir, 'nodes.yaml'), ['nodes:', '  - {name: a, url: "http://a:8081"}', '  - {name: b, url: "http://b:8081"}'].join('\n'));
+  writeFileSync(join(dir, 'nodes.yaml'), [
+    'nodes:', '  - {name: a, url: "http://a:8081"}', '  - {name: b, url: "http://b:8081"}', '  - {name: c, url: "http://c:8081"}',
+    'groups:', '  - {name: ab, nodes: [a, b]}',
+  ].join('\n'));
   process.env.RPROXY_UI_NODES = join(dir, 'nodes.yaml');
   resetNodesCache();
 });
@@ -54,6 +58,7 @@ beforeEach(() => {
     if (currentNode()?.name === 'b') throw new RproxyError('rproxy に接続できません: connect ECONNREFUSED 10.0.0.5:8443', 'unreachable', 0);
     return { version: '0.4.0', source_ip: ['proxy'], build: { version: '0.4.0', sha256: 'deadbeef' }, features: { http: true, http3: true, acme: true, tls_options: true, middlewares: [], limits: true } };
   });
+  mocks.query.mockResolvedValue([]);
   mocks.getConfigStatus.mockResolvedValue({ configured: true, path: '/etc/rproxy/secret-path.yaml', rules: 2, error: 'line 3: token: s3cret', restart_needed: [] });
 });
 
@@ -84,5 +89,30 @@ describe('/api/forward/system', () => {
     const { body } = await call();
     expect(body.nodes.map((n: { node: string }) => n.node)).toEqual(['a']);
     expect(mocks.getCapabilities).toHaveBeenCalledTimes(1);
+  });
+
+  // UI #184：UI の DB から connect_timeout を戻せないノードに、connect_timeout のある UI のルールが置かれていれば数を出す（管理者だけ）
+  it('connect_timeout のルールを置いた、戻せないノードに数を付ける', async () => {
+    as(['rproxy-admin']);
+    mocks.getCapabilities.mockImplementation(async () => ({
+      version: '0.4.20', features: { labels: true, connect_timeout: true, db_connect_timeout: currentNode()?.name === 'c' },
+    }));
+    const ct = JSON.stringify({ tls: { mode: 'passthrough' }, starttls: null, starttls_required: true, connect_timeout: '3s' });
+    mocks.query.mockResolvedValue([
+      { target: 'ab', options: ct },
+      { target: 'a', options: ct },
+      { target: 'c', options: ct },
+      { target: 'b', options: JSON.stringify({ allow_from: ['10.0.0.0/8'], note: 'connect_timeout' }) },
+    ]);
+    const { body } = await call();
+    const byNode = Object.fromEntries(body.nodes.map((n: any) => [n.node, n.connectTimeoutAtRisk]));
+    expect(byNode).toEqual({ a: 2, b: 1, c: undefined });
+    expect(String(mocks.query.mock.calls[0][0])).toContain('connect\\_timeout');
+    // 利用者には数えない
+    mocks.query.mockClear();
+    as(['rproxy-user']);
+    const user = await call();
+    expect(user.body.nodes.every((n: any) => n.connectTimeoutAtRisk === undefined)).toBe(true);
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 });

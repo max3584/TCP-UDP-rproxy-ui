@@ -54,6 +54,10 @@ export interface NodeSystemView {
     error: string | null;
     restartNeeded: string[];
   };
+  // このノードが UI の DB から connect_timeout を戻せない（features.db_connect_timeout がない）のに、このノード（を含むグループ）に置いた
+  // UI のルールで connect_timeout のあるものの数（UI #184。あとから足した・版を下げたノード。再起動するとそのルールが戻らない）。
+  // 管理者だけ・数えられなければ null
+  connectTimeoutAtRisk?: number | null;
 }
 
 export function nodeSystemView(node: string, caps: Capabilities | null, config: RproxyConfigStatus | null, error: string | null): NodeSystemView {

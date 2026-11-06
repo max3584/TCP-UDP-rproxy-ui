@@ -335,14 +335,17 @@ describe('connect_timeout（/api/forward）', () => {
     expect(options.connect_timeout).toBe('1500ms');
   });
 
-  it('add は DB から戻せない rproxy（v0.4.21 より前）・機能を確かめられない rproxy では 400 unsupported で、DB にも rproxy にも書かない', async () => {
+  it('add は DB から戻せない rproxy（v0.4.21 より前）では 400 unsupported、機能を確かめられない rproxy では 502 unreachable で、DB にも rproxy にも書かない', async () => {
     // 拒否は使う時に作る（先に作ると、使う前に処理されない拒否になる）
-    const answers = [async () => ({ features: { connect_timeout: true } }), async () => ({}), async () => { throw new Error('unreachable'); }];
-    for (const answer of answers) {
+    const answers: [() => Promise<unknown>, number, string][] = [
+      [async () => ({ features: { connect_timeout: true } }), 400, 'unsupported'],
+      [async () => ({}), 400, 'unsupported'],
+      [async () => { throw new Error('unreachable'); }, 502, 'unreachable'],
+    ];
+    for (const [answer, code, name] of answers) {
       mocks.getCapabilities.mockImplementationOnce(answer);
       const { status, body } = await call('add', { ...tcpRule, connectTimeout: '3s' });
-      expect(status).toBe(400);
-      expect(body.code).toBe('unsupported');
+      expect([status, body.code]).toEqual([code, name]);
       expect(body.error).toMatch(/connect_timeout/);
     }
     expect(mocks.addRule).not.toHaveBeenCalled();

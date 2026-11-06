@@ -458,7 +458,11 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     const { loadNodes, targetNodes, toRproxyNode } = await import('@/components/nodes');
     const { getCapabilities, getRule, withNode } = await import('@/components/rproxy');
     const n2 = toRproxyNode(targetNodes(loadNodes(), 'n2')![0]);
-    if ((await withNode(n2, () => getCapabilities())).features?.db_connect_timeout !== true) return;
+    if ((await withNode(n2, () => getCapabilities())).features?.db_connect_timeout !== true) {
+      // 飛ばしたことをログに出す（CI の結果で見えるように）
+      console.log('e2e-nodes: skipped the connect_timeout restore check: n2 does not report features.db_connect_timeout (rproxy-api v0.4.21)');
+      return;
+    }
     const PORT = 19409;
     const key = { protocol: 'tcp' as const, listen_addr: '127.0.0.1', listen_port: PORT };
     try {

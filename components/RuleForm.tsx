@@ -283,6 +283,8 @@ interface Caps {
     httpStreamLimits: boolean;
     // ルールの connect_timeout（features.connect_timeout、rproxy-api v0.4.3）。UI の DB から戻せるかは v04.connect_timeout（features.db_connect_timeout）
     connectTimeout: boolean;
+    // グループのときの置き場所のすべてのノードの db_connect_timeout（/api/forward/capabilities の placement。1 台なら null）
+    placementRestore: { ok: boolean; lacking: string[]; unreachable: string[] } | null;
   } | null;
 }
 
@@ -487,6 +489,11 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
             targetMaxConnections: data.features.target_max_connections === true,
             httpStreamLimits: data.features.http_stream_limits === true,
             connectTimeout: data.features.connect_timeout === true,
+            placementRestore: typeof data.placement === 'object' && data.placement !== null ? {
+              ok: data.placement.db_connect_timeout === true,
+              lacking: Array.isArray(data.placement.lacking) ? data.placement.lacking : [],
+              unreachable: Array.isArray(data.placement.unreachable) ? data.placement.unreachable : [],
+            } : null,
           } : null,
         });
       } catch (err) {
@@ -666,8 +673,13 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
   const rtShown = protocol === 'tcp' && !l7;
   // 宛先への接続の時間（connect_timeout）は rproxy が UI の DB から戻せる（features.db_connect_timeout、v0.4.21）ときだけ編集できる。
   // それより前の rproxy は options に知らないキーのある行を丸ごと戻さないので、今の値を読み取り専用で残して送る（欄は L4 の tcp だけ）
-  const ctEditable = caps.features?.v04.connect_timeout === true;
+  // グループなら置き場所のすべてのノードが返すときだけ（/api/forward/capabilities の placement。1 台でも戻せない・聞けなければ読み取り専用）
+  const ctPlacement = caps.features?.placementRestore ?? null;
+  const ctNodeOk = caps.features?.v04.connect_timeout === true;
+  const ctEditable = ctNodeOk && (ctPlacement === null || ctPlacement.ok);
+  // rproxy は connect_timeout を使えるが、UI の DB からは戻せない（v0.4.21 より前、またはグループのほかのノード）
   const ctApiOnly = !ctEditable && caps.features?.connectTimeout === true;
+  const ctBlockingNodes = ctNodeOk && ctPlacement ? [...ctPlacement.lacking, ...ctPlacement.unreachable] : [];
   // unmatched は tcp の sni / terminate で、サーバ名ごとの転送先があるときだけ選べる
   // L7 のルールでは使えない（一致しない名前は L7 の「一致しないとき」で扱う）
   const showUnmatched = ((protocol === 'tcp' && (tlsMode === 'sni' || tlsMode === 'terminate')) || (protocol === 'udp' && tlsMode === 'sni'))
@@ -1854,9 +1866,14 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
           <p className="mb-4 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1 break-all" data-testid="connect-timeout-preserved">
             {`宛先への接続の時間（connect_timeout）: ${connectTimeoutText(initialV04.connectTimeout)}`}
             <br />
-            {ctApiOnly
-              ? 'この rproxy（rproxy-api v0.4.21 より前）は UI の DB から connect_timeout を戻せないので、ここでは編集できません（保存すると再起動のときにルールが戻らなくなるため）。今の値はそのまま残して送ります。'
-              : 'この rproxy では使えないので編集できません。そのまま残して送ります。'}
+            {ctBlockingNodes.length > 0 ? (
+              <span>{`置き場所のノード ${joinList(ctBlockingNodes)} は、UI の DB から connect_timeout を戻せない（rproxy-api v0.4.21 より前）か、問い合わせできないので、ここでは編集できません。`}</span>
+            ) : ctApiOnly ? (
+              <span>この rproxy（rproxy-api v0.4.21 より前）は、UI の DB に書いた connect_timeout を再起動のときに戻せない（そのルールが戻らなくなる）ので、ここでは編集できません。</span>
+            ) : (
+              <span>この rproxy では使えないので編集できません。</span>
+            )}
+            {initialV04.connectTimeout && <span>今の値は変えずにそのまま送ります。</span>}
           </p>
         ))}
         <div className="mb-4">

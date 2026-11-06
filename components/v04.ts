@@ -565,7 +565,7 @@ export function normalizeConnectTimeout(value: unknown, protocol?: Protocol, htt
   const s = value.trim();
   if (s === '') return null;
   const ms = parseDurationMs(s);
-  if (ms === null) throw invalid(`${where} は 1500ms・3s のように数と単位（ms・s・m）で指定してください（100ms〜10m）。`);
+  if (ms === null) throw invalid(`${where} は 1500ms・3s のように数と単位（ms・s・m・h）で指定してください（100ms〜10m）。`);
   if (ms === 0) return null;
   if (protocol === 'udp') throw invalid(`${where} は TCP のルールでだけ使えます（UDP は接続しません）。`);
   if (http) throw invalid(`${where} は L7（HTTP）のルールでは使えません（L7 タブのサービスの接続の時間（timeouts.connect）で決めます）。`);

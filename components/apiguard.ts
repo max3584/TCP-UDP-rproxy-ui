@@ -5,7 +5,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/pages/api/auth/[...nextauth]';
 import type { sessionUser } from './lib';
 import { NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from './messages';
-import { NodesConfigError, loadNodes, probeNode, targetNodes, visibleNodes } from './nodes';
+import { NodesConfigError, loadNodes, probeNode, targetNodes, toRproxyNode, visibleNodes } from './nodes';
 import { accessOf, nodesAllowed, roleConfig } from './roles';
 import type { RoleConfig } from './roles';
 import { RproxyError } from './rproxy';
@@ -80,7 +80,8 @@ export async function requireRole(req: NextApiRequest, res: NextApiResponse): Pr
 // target を書かなければ既定（default_target・最初のノード）、利用者が触れなければ触れる最初のノード。
 // ノードを設定していなければ node は null（RPROXY_API_URL の 1 台）
 export type ViewerProbe =
-  | { ok: true; node: RproxyNode | null; admin: boolean; roles: RoleConfig }
+  // placement：その target（グループなら全員）のノード。1 台に聞く API でも置き場所の全員に聞くとき（connect_timeout の可否、UI #184）に使う
+  | { ok: true; node: RproxyNode | null; admin: boolean; roles: RoleConfig; placement: RproxyNode[] }
   | { ok: false; status: number; body: { error: string; code: string } };
 
 export function viewerProbe(session: sessionUser, rawTarget: unknown): ViewerProbe {
@@ -88,7 +89,7 @@ export function viewerProbe(session: sessionUser, rawTarget: unknown): ViewerPro
   const admin = accessOf(session.user.roles ?? [], roles) === 'admin';
   const cfg = visibleNodes(loadNodes(), admin);
   const target = typeof rawTarget === 'string' && rawTarget !== '' ? rawTarget : undefined;
-  if (!cfg.configured) return { ok: true, node: null, admin: admin, roles: roles };
+  if (!cfg.configured) return { ok: true, node: null, admin: admin, roles: roles, placement: [] };
   const access = admin ? 'admin' : 'user';
   const allowed = (name: string) => nodesAllowed(access, roles, (targetNodes(cfg, name) ?? []).map((n) => n.name));
   const refuse = (name: string): ViewerProbe => ({
@@ -107,7 +108,7 @@ export function viewerProbe(session: sessionUser, rawTarget: unknown): ViewerPro
     name = fallback;
   }
   try {
-    return { ok: true, node: probeNode(cfg, name), admin: admin, roles: roles };
+    return { ok: true, node: probeNode(cfg, name), admin: admin, roles: roles, placement: (targetNodes(cfg, name) ?? []).map(toRproxyNode) };
   } catch (err) {
     if (err instanceof NodesConfigError) return { ok: false, status: 400, body: { error: err.message, code: 'unknown_target' } };
     throw err;
