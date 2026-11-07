@@ -109,6 +109,8 @@ export const READONLY_NODE_MESSAGE =
 // global の設定（rproxy-api v0.4.19 の PATCH /config/global、UI #169。pages/api/forward/global.ts・components/globalapi.ts）
 export const GLOBAL_UNSUPPORTED_MESSAGE = 'この rproxy は global の設定の API に対応していません（rproxy-api v0.4.19 から）。';
 // PATCH の答えを待つ間に時間切れ・接続が切れ、読み直しても効いたか分からないとき
+// グループで戻せない項目（acme）を変える前の dry run で、ほかのノードが断ったので送らなかったノード
+export const GLOBAL_NOT_SENT_MESSAGE = 'ほかのノードが断ったため、このノードには送っていません（何も変えていません）。';
 export const GLOBAL_UNKNOWN_MESSAGE = 'rproxy の答えを待つ間に時間切れになり、効いたかどうか分かりません（rproxy はほかの変更の後に並んでいて、後から効かせることがあります）。少し待ってから画面を読み直し、値を確かめてください。';
 
 const EXPLAIN: Record<string, string> = {
@@ -137,13 +139,15 @@ const EXPLAIN: Record<string, string> = {
   csrf: 'ほかのサイトからの変更の要求は受け付けません。この画面を開き直してから操作してください。',
   global_static: 'この項目は rproxy の設定ファイル（か環境変数）が決めているため、画面からは変えられません。変えるときは設定ファイルを直してください。',
   global_restart_only: 'この項目は rproxy の起動のときだけ読まれるため、画面からは変えられません。設定ファイルで変えて rproxy を再起動してください。',
-  global_in_use: 'この値を使っているルールがあるため外せません。先にルールの側を直してください。',
+  global_in_use: 'この値を使っているルールがあるため外せません（crowdsec・geoip のデータベース・ACME の resolver と取ってよい名前など）。先にルールの側を直してください。ACME の http01_listen がルールか制御 API の待ち受けと重なるときも断ります。',
+  global_limit: 'ACME の http01_listen の待ち受けを足すと、ルールの待ち受けと合わせて rproxy の待ち受けの上限（RPROXY_MAX_LISTENERS）を超えます。',
   global_unix_only: UNIX_ONLY_MESSAGE,
   global_forbidden: 'UI のトークンに rproxy の admin のスコープがありません（global の設定には admin が要ります）。',
   global_unsupported: GLOBAL_UNSUPPORTED_MESSAGE,
   global_unknown: GLOBAL_UNKNOWN_MESSAGE,
+  global_not_sent: GLOBAL_NOT_SENT_MESSAGE,
   protected_file: 'rproxy が守っているパス（証明書のストア・ACME の保存先・秘密のファイルなど）は指定できません。',
-  global_protected_file: 'rproxy が守っているパス（証明書のストア・ACME の保存先・秘密のファイルなど）は指定できません。API で入れるアクセスログは、そのノードの rproxy-api の RPROXY_API_ACCESS_LOG_DIR のすぐ下のファイルだけです（設定していなければ API では入れられません。rproxy のアクセスログだけのディレクトリを RPROXY_API_ACCESS_LOG_DIR に設定してください）。日ごとの切り替えで消してしまうファイル（同じ名前で始まる日付の形でないもの）や rproxy 自身のログと名前が重なるときも断ります。別の名前にしてください。',
+  global_protected_file: 'rproxy が守っているパス（証明書のストア・ACME の保存先・秘密のファイルなど）は指定できません。API で入れるアクセスログは、そのノードの rproxy-api の RPROXY_API_ACCESS_LOG_DIR のすぐ下のファイルだけです（設定していなければ API では入れられません。rproxy のアクセスログだけのディレクトリを RPROXY_API_ACCESS_LOG_DIR に設定してください）。日ごとの切り替えで消してしまうファイル（同じ名前で始まる日付の形でないもの）や rproxy 自身のログと名前が重なるときも断ります。別の名前にしてください。API で入れる GeoIP のデータベースは RPROXY_API_GEOIP_DIR のすぐ下の通常のファイルだけ、acme の指すファイルは RPROXY_API_ACME_DIR のすぐ下だけ（storage はその下のディレクトリか既定）です（設定していなければ API では指せません）。',
   crowdsec_unavailable: '新しい CrowdSec の LAPI が答えませんでした（10 秒）。今の設定のまま何も変えていません。LAPI の URL・キーと、rproxy から届くかを確かめてください。',
   not_loaded: 'rproxy が起動のときに保存した global の値を読めていない（DB に届かないか、行が読めない形）ため、今は変えられません（書くと保存した値を消してしまうため）。rproxy が定期に読み直します（読めない形の行は直すまで）。',
   upgrading: 'rproxy が引き継ぎ（更新）の途中です。少し待ってからやり直してください。',

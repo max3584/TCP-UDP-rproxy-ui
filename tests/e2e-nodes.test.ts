@@ -452,6 +452,91 @@ describe.runIf(run)('e2e: two rproxy nodes, a group and per-node views', () => {
     expect(after.n2.items.trusted_proxies.source).toBe('default');
   });
 
+  // geoip・acme（rproxy-api v0.4.22、#345、UI #189）：Unix ソケットのノードでその場で変えられる。CI は n2 にだけ
+  // RPROXY_API_GEOIP_DIR（/run/rproxy/geoip。mmdb でないファイルを置く）と RPROXY_API_ACME_DIR（/run/rproxy/acme。eab.key を置く）を設定する。
+  // グループで n1 だけが断れば（ディレクトリの外の 403 protected_file）、効いた n2 を戻す。ルールが使う resolver を外すのは 409 in_use
+  it('geoip and acme change live over the Unix socket, a refusal on one node rolls the other back, and in_use is reported', async () => {
+    const { default: globalHandler } = await import('@/pages/api/forward/global');
+    const { loadNodes, targetNodes, toRproxyNode } = await import('@/components/nodes');
+    const { addRule, deleteRule, getCapabilities, withNode } = await import('@/components/rproxy');
+    const g = async (method: string, body?: unknown, query: Record<string, string> = {}) => {
+      let status = 0;
+      let json: any;
+      const res = { status(x: number) { status = x; return res; }, json(j: unknown) { json = j; return res; } } as unknown as NextApiResponse;
+      await globalHandler({ method, query, body, headers: { 'sec-fetch-site': 'same-origin' } } as unknown as NextApiRequest, res);
+      return { status, json };
+    };
+    const n1 = toRproxyNode(targetNodes(loadNodes(), 'n1')![0]);
+    const features = (await withNode(n1, () => getCapabilities())).features as Record<string, unknown> | undefined;
+    if (features?.global_api_acme !== true || features?.global_api_geoip !== true) {
+      console.log('e2e-nodes: skipped the geoip/acme check: n1 does not report features.global_api_acme / global_api_geoip (rproxy-api v0.4.22)');
+      return;
+    }
+    const items = async () => {
+      const { json } = await g('GET', undefined, { target: 'ha' });
+      return Object.fromEntries(json.nodes.map((n: any) => [n.node, n.settings.items]));
+    };
+    const before = await items();
+    for (const n of ['n1', 'n2']) {
+      expect(before[n].geoip).toMatchObject({ apply: 'live', settable: true, unix_only: true });
+      expect(before[n].acme).toMatchObject({ apply: 'live', settable: true, unix_only: true });
+    }
+
+    // geoip：n1 は RPROXY_API_GEOIP_DIR がないので 403 protected_file、n2 は mmdb でないファイルを開いて 400 invalid
+    const geoip = { geoip: { country_db: '/run/rproxy/geoip/country.mmdb' } };
+    const geoPlan = await g('POST', { target: 'ha', values: geoip, dryRun: true });
+    expect(geoPlan.json.nodes.find((n: any) => n.node === 'n1')).toMatchObject({ ok: false, code: 'global_protected_file' });
+    const geoN2 = await g('POST', { target: 'n2', values: geoip });
+    expect(geoN2.status, JSON.stringify(geoN2.json)).toBe(400);
+    expect(geoN2.json.code).toBe('invalid');
+
+    const acme = (extra: Record<string, unknown> = {}) => ({
+      acme: {
+        accounts: { le: { directory: 'https://127.0.0.1:1/dir', allowed_names: ['**.e2e.test'], ...extra } },
+        resolvers: { 'le-http': { account: 'le', challenge: 'http-01' } },
+      },
+    });
+    const RULE_PORT = 19410;
+    const key = { protocol: 'tcp' as const, listen_addr: '127.0.0.1', listen_port: RULE_PORT };
+    try {
+      // acme：グループの両方に効く（ファイルを指さないので RPROXY_API_ACME_DIR がなくてよい）
+      const plan = await g('POST', { target: 'ha', values: acme(), dryRun: true });
+      expect(plan.json.nodes.map((n: any) => n.ok), JSON.stringify(plan.json)).toEqual([true, true]);
+      const applied = await g('POST', { target: 'ha', values: acme() });
+      expect(applied.status, JSON.stringify(applied.json)).toBe(200);
+      const now = await items();
+      for (const n of ['n1', 'n2']) expect(now[n].acme).toMatchObject({ source: 'api', api_value: { resolvers: { 'le-http': { challenge: 'http-01' } } } });
+
+      // ルールが使う resolver の acme は外せない（409 in_use）
+      await withNode(n1, () => addRule({
+        ...key, remote_addr: '127.0.0.1', remote_port: 9,
+        tls: { mode: 'terminate', certificates: [{ acme: 'le-http', domains: ['a.e2e.test'] }] },
+      } as any));
+      const inUse = await g('POST', { target: 'n1', values: { acme: null } });
+      expect(inUse.status, JSON.stringify(inUse.json)).toBe(409);
+      expect(inUse.json.code).toBe('global_in_use');
+      await withNode(n1, () => deleteRule(key));
+
+      // EAB の鍵のファイル：n2 は RPROXY_API_ACME_DIR のすぐ下で受け付け、n1 は断る → n2 を前の acme に戻す
+      const eab = acme({ eab: { kid: 'e2e-kid', hmac_key_file: '/run/rproxy/acme/eab.key' } });
+      const refused = await g('POST', { target: 'ha', values: eab });
+      expect(refused.status, JSON.stringify(refused.json)).toBe(403);
+      expect(refused.json.code).toBe('global_protected_file');
+      expect(refused.json.nodes.find((n: any) => n.node === 'n1')).toMatchObject({ outcome: 'refused', code: 'global_protected_file' });
+      expect(refused.json.nodes.find((n: any) => n.node === 'n2')).toMatchObject({ outcome: 'applied', undone: true });
+      // the EAB kid is not passed on to the screen
+      expect(JSON.stringify(refused.json)).not.toContain('e2e-kid');
+      const back = await items();
+      expect(back.n2.acme.api_value.accounts.le.eab).toBeUndefined();
+    } finally {
+      await withNode(n1, () => deleteRule(key)).catch(() => undefined);
+      expect((await g('POST', { target: 'ha', values: { acme: null } })).status).toBe(200);
+    }
+    const after = await items();
+    expect(after.n1.acme.source).toBe('default');
+    expect(after.n2.acme.source).toBe('default');
+  });
+
   // connect_timeout（UI #184）：UI の DB の options に書いた行が、再起動した rproxy にそのまま戻る（rproxy-api #379。
   // それより前の rproxy は知らないキーとして行を丸ごと断る）。features.db_connect_timeout のない rproxy-api では UI が書かないので飛ばす
   it('a rule with connect_timeout survives a restart through the node\'s view', async () => {

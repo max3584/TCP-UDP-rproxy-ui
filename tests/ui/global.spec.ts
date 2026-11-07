@@ -105,6 +105,33 @@ test.describe('global settings', () => {
     expect(after.api_value).toMatchObject({ write_stall: '45s', http2_max_streams: 256 });
   });
 
+  // rproxy-api v0.4.22（#345、UI #189）：geoip・acme は features の印のある rproxy ではその場で変えられる（Unix ソケットだけ）。
+  // CI の rproxy は TCP で聞くので変えられないことと、設定ファイルの acme（Pebble）の中身を出さないことを確かめる
+  test('geoip and acme follow rproxy: live but Unix-socket only over TCP, and the file\'s acme is not shown', async ({ page }) => {
+    const n = await firstNode(page);
+    test.skip(!n.supported, 'rproxy-api without the global settings API');
+    await page.goto('/global');
+    const card = page.getByTestId('global-node').first();
+    for (const name of ['geoip', 'acme']) {
+      const item = n.settings!.items[name];
+      if (!item) continue;
+      const row = card.getByTestId(`global-item-${name}`);
+      if (item.source === 'file') {
+        await expect(row.getByTestId('global-block')).toHaveText('設定ファイルで固定');
+      } else if (item.apply === 'live' && n.transport === 'tcp') {
+        await expect(row.getByTestId('global-block')).toHaveText('Unix ソケットからだけ変えられます');
+        const res = await page.request.post('/api/forward/global', { headers: SAME_ORIGIN, data: { values: { [name]: null }, dryRun: true } });
+        expect((await res.json() as { nodes: { code?: string }[] }).nodes[0].code).toBe('global_unix_only');
+      } else if (item.apply !== 'live') {
+        await expect(row).toContainText('再起動が要る');
+      }
+      await expect(page.getByTestId(`global-edit-${name}`)).toHaveCount(n.transport === 'tcp' || item.source === 'file' ? 0 : 1);
+    }
+    // the settings file's acme (Pebble in CI) is shown by its shape only
+    const shown = await card.getByTestId('global-item-acme').count() > 0 ? await card.getByTestId('global-item-acme').innerText() : '';
+    for (const secret of ['pdns.key', 'mailto:', '127.0.0.1:14000', 'wfe-ca.pem']) expect(shown).not.toContain(secret);
+  });
+
   test('a form error and a refusal by rproxy are shown', async ({ page }) => {
     const n = await firstNode(page);
     test.skip(!n.supported, 'rproxy-api without the global settings API');
