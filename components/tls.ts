@@ -443,6 +443,10 @@ export function checkTls(protocol: Protocol, tls: TlsSpec, starttls: StartTls | 
       }
     }
   }
+  // rproxy の check_http_tls と同じ：L7 は転送先の URL（https://）で TLS を決めるので tls.upstream.tls は使わない（#187。検証・クライアント証明書の項目は使う）
+  if (http && tls.upstream?.tls) {
+    throw new TlsError('L7（HTTP）のルールでは「転送先へ TLS で再暗号化する」（tls.upstream.tls）を使えません。https:// の転送先へは URL で TLS を使うので、検証とクライアント証明書の項目だけを指定してください。', 'tls_config');
+  }
   if (http && tls.unmatched === 'reject') {
     throw new TlsError('L7（HTTP）のルールでは「一致しない接続を切断する（unmatched: reject）」を使えません（一致しない名前は L7 の「一致しないとき」で扱います）。', 'tls_config');
   }

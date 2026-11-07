@@ -466,7 +466,7 @@ rx はクライアントから転送先へ、tx は転送先からクライア�
 |---|---|
 | 基本 | プロファイル（用途別のひな形）、プロトコル、待ち受けアドレス、ポート（範囲の終わりは任意）、転送先 |
 | L7 (HTTP) | ルート・サービス・ミドルウェア・どのルートにも一致しないとき（L7 のルール。TCP で、rproxy が L7 に対応しているとき） |
-| TLS / DTLS | passthrough / sni / 終端（UDP では DTLS）、サーバ名ごとの転送先（TLS を終端しない名前は送信元 IP の渡し方、rproxy が終端する名前は転送先への TLS も）と、どのサーバ名にも一致しない接続の扱い（基本の転送先へ送る / 切断する）、証明書、TLS のオプション（最小バージョンと暗号スイート。TCP の終端）、クライアント証明書の検証（mTLS）、ALPN、転送先への再暗号化 |
+| TLS / DTLS | passthrough / sni / 終端（UDP では DTLS）、サーバ名ごとの転送先（TLS を終端しない名前は送信元 IP の渡し方、rproxy が終端する名前は転送先への TLS も）と、どのサーバ名にも一致しない接続の扱い（基本の転送先へ送る / 切断する）、証明書、TLS のオプション（最小バージョンと暗号スイート。TCP の終端）、クライアント証明書の検証（mTLS）、ALPN、転送先への再暗号化（L7 のルールでは「https:// の転送先への TLS」：再暗号化の選択はなく、転送先の URL が https:// のときに使う検証するサーバ名・CA・クライアント証明書。サービスに転送先への TLS があれば、そのサービスではそちらを使う） |
 | メール (STARTTLS) | SMTP / IMAP / POP3 の STARTTLS（TCP で「終端」のときだけ） |
 | 制限・GeoIP | ラベル、L4 の制限、帯域の上限、GeoIP、受け身のヘルスチェック（rproxy-api v0.4。上の「v0.4 のルールの項目」） |
 | 詳細 | 送信元 IP の扱い（source_ip）、UDP のアイドルタイムアウト、TCP の中継の時間切れ（idle_timeout・half_close_timeout。L4 の TCP）、宛先への接続の時間（connect_timeout。L4 の TCP）、接続を許可する送信元（allow_from）、PROXY protocol の受け取り（proxy_protocol。TCP） |

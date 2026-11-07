@@ -1,5 +1,6 @@
 import React from 'react';
 import type { TlsUpstream } from './lib';
+import type { HttpRules } from './httpspec';
 
 // 転送先への TLS の欄（検証するサーバ名・CA・検証しない・クライアント証明書とその中間 CA・秘密鍵）。
 // ルールの tls.upstream と、サーバ名ごとの tls.routes[].upstream（rproxy-api v0.4.7、BackendTLSPolicy）で同じ部品を使う
@@ -10,6 +11,11 @@ export const CHAIN_HELP = '中間 CA（サーバ証明書を発行した CA か�
 // サーバ名ごとの転送先への TLS（tls.routes[].upstream、rproxy-api v0.4.7。rproxy-gateway が BackendTLSPolicy から作る）の説明
 export const ROUTE_UPSTREAM_HELP =
   '「転送先への TLS」は、その名前の転送先へ rproxy から TLS でつなぐかと、そのときの検証です（ルールと同じなら「ルールと同じ」のまま）。指定した名前では、下の「転送先へ TLS で再暗号化する」の代わりにその設定を使います（項目ごとには混ぜません）。rproxy が終端する名前（「終端しない」にしていない名前）にだけ指定できます。ファイルはルールを保存したときに rproxy が読みます。';
+
+// L7（http）のルールの tls.upstream（#187）。rproxy は https:// の転送先にこの検証とクライアント証明書を使い、TLS でつなぐかは URL で決める。
+// tls.upstream.tls は使わない（指定すると tls_config）。サービスに tls（#236）があれば、そのサービスではこの代わりにそれを使う
+export const HTTP_UPSTREAM_HELP =
+  'L7 のルールでは、https:// の転送先の証明書の検証と、転送先へ出すクライアント証明書です。TLS でつなぐかは転送先の URL（https://）で決まります（「再暗号化する」の選択はありません）。すべて空欄なら送りません（Mozilla のルート証明書で検証し、クライアント証明書は出しません）。転送先への TLS を設定したサービスでは、そのサービスの設定をこの代わりに使います（項目ごとには混ぜません）。';
 
 // 欄の値（空欄は省いて送る。tls は欄の外で選ぶ）
 export interface UpstreamForm {
@@ -44,6 +50,24 @@ export function upstreamFormUsed(f: UpstreamForm): boolean {
 // 送る形（normalizeTls の前。空欄は normalizeTls が省く）
 export function upstreamSpec(tls: boolean, f: UpstreamForm): Record<string, unknown> {
   return { tls: tls, ...f };
+}
+
+// tls の外の項目（検証するサーバ名・CA・検証しない・クライアント証明書・中間 CA・秘密鍵）が 1 つでもあるか
+export function upstreamHasSettings(u: TlsUpstream | undefined): boolean {
+  return u !== undefined && upstreamFormUsed(toUpstreamForm(u));
+}
+
+// ルールの tls.upstream として送る値（undefined は送らない）。
+// L7 のルールは tls を付けず（rproxy は tls.upstream.tls を tls_config で断る）、欄に値があるときだけ送る（#187。以前はチェックが外れて保存で消えた）。
+// L4 は「再暗号化する」を選んだときだけ tls: true で送る
+export function ruleUpstreamSpec(l7: boolean, reencrypt: boolean, f: UpstreamForm): Record<string, unknown> | undefined {
+  if (l7) return upstreamFormUsed(f) ? { ...f } : undefined;
+  return reencrypt ? upstreamSpec(true, f) : undefined;
+}
+
+// L7 のルールで、ルールの tls.upstream の代わりに自分の tls（#236）を使うサービスの名前
+export function servicesWithOwnTls(rules: HttpRules): string[] {
+  return Object.entries(rules.services ?? {}).filter(([, s]) => s.tls !== undefined && s.tls !== null).map(([name]) => name);
 }
 
 // 読み取り専用の注記に出す短い説明

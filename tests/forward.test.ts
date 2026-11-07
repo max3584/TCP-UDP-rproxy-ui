@@ -1069,6 +1069,35 @@ describe('/api/forward/[forward]: L7 (http) rules and v0.3 TLS', () => {
     expect(Object.keys(JSON.parse(update?.[1][3] as string))).toEqual(['tls', 'starttls', 'starttls_required', 'allow_from', 'http']);
   });
 
+  // #187：L7 のルールの tls.upstream（https:// の転送先への mTLS。tls: true なし）は、変更の保存で DB にも PATCH にもそのまま残り、tls: true は断る
+  it('modify keeps tls.upstream of an http rule (mTLS to https:// backends) unchanged, and refuses tls.upstream.tls', async () => {
+    mocks.getServerSession.mockResolvedValue(adminSession);
+    const upstream = { server_name: 'backend.internal', ca_file: '/etc/rproxy/backend-ca.pem', cert_file: '/etc/rproxy/backend-client.pem', key_file: '/etc/rproxy/backend-client.key' };
+    const mtls = { mode: 'terminate', certificates: [{ cert_file: '/etc/rproxy/site.pem', key_file: '/etc/rproxy/site.key' }], upstream: upstream };
+    const httpsBackend = { ...http, services: { app: { servers: [{ url: 'https://backend.internal' }] } } };
+    const row = httpRow({ options: JSON.stringify({ ...stored, tls: mtls, http: httpsBackend }) });
+    conn.query.mockResolvedValueOnce([row]);
+    mocks.modifyRule.mockResolvedValue({});
+
+    // フォームがそのまま保存する形（L7 の upstream は tls なし）
+    const { status } = await call('modify', { ...key, sourceIp: 'proxy', udpIdleSecs: 30, distAddr: '', distPort: 0, tls: mtls });
+    expect(status).toBe(200);
+    expect(mocks.modifyRule.mock.calls[0][1].tls).toEqual(mtls);
+    const update = sqlCalls().find(([sql]) => sql.startsWith('UPDATE forward_rules'));
+    expect(JSON.parse(update?.[1][3] as string).tls).toEqual(mtls);
+
+    // tls: true は rproxy と同じく tls_config（rproxy に送らない）
+    vi.clearAllMocks();
+    pool.getConnection.mockResolvedValue(conn);
+    conn.query.mockResolvedValueOnce([row]);
+    const res = await call('modify', { ...key, sourceIp: 'proxy', udpIdleSecs: 30, distAddr: '', distPort: 0, tls: { ...mtls, upstream: { tls: true, ...upstream } } });
+    expect([res.status, res.body.code]).toEqual([400, 'tls_config']);
+    expect(mocks.modifyRule).not.toHaveBeenCalled();
+    const add = await call('add', { ...tcpRule, srcPort: 8443, distAddr: '', distPort: 0, http: httpsBackend, tls: { ...mtls, upstream: { tls: true, ...upstream } } });
+    expect([add.status, add.body.code]).toEqual([400, 'tls_config']);
+    expect(mocks.addRule).not.toHaveBeenCalled();
+  });
+
   it('modify replaces http when the form sends it (a target sent with it is ignored)', async () => {
     conn.query.mockResolvedValueOnce([httpRow()]);
     mocks.modifyRule.mockResolvedValue({});

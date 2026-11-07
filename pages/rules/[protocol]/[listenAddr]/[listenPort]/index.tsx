@@ -44,6 +44,8 @@ import { OWNED_RULE_MESSAGE, READONLY_NODE_MESSAGE, STATIC_RULE_NOTE, ruleErrorT
 import AcmeStatus from '@/components/AcmeStatus';
 import { acmeStatusFor } from '@/components/acme';
 import HttpSummary from '@/components/HttpSummary';
+import { servicesWithOwnTls, upstreamHasSettings } from '@/components/UpstreamFields';
+import { toHttpRules } from '@/components/httpspec';
 import HistoryList from '@/components/HistoryList';
 import UsagePanel from '@/components/UsageChart';
 import { joinList, translate } from '@/i18n/core';
@@ -232,7 +234,8 @@ const HttpStatsSection: React.FC<{ http: HttpStats }> = ({ http }) => {
   );
 };
 
-const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
+// tests/httpupstream.test.ts も描画して確かめる
+export const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
   const tls = rule.tls;
   const count = rule.srcPortEnd === null ? 1 : rule.srcPortEnd - rule.srcPort + 1;
   return (
@@ -372,6 +375,30 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
               ['暗号スイート', tls.options.cipher_suites?.join(', ')],
             ]} />
           )}
+          {rule.http !== null ? (
+            // L7 のルール（#187）：tls.upstream.tls は使わず、https:// の転送先にこの検証とクライアント証明書を使う
+            <div data-testid="http-upstream">
+              <h3 className="text-sm font-semibold text-gray-800 mb-1">https:// の転送先への TLS</h3>
+              {upstreamHasSettings(tls.upstream) ? (
+                <Fields items={[
+                  ['検証するサーバ名', tls.upstream?.server_name ?? '（転送先のホスト名）'],
+                  ['CA', tls.upstream?.ca_file ? path(tls.upstream.ca_file) : '（Mozilla のルート証明書）'],
+                  ['証明書の検証', tls.upstream?.insecure_skip_verify ? <span className="text-red-700 font-semibold">しない（テスト用）</span> : 'する'],
+                  ['クライアント証明書', path(tls.upstream?.cert_file)],
+                  ['その中間 CA', path(tls.upstream?.chain_file)],
+                  ['その秘密鍵', path(tls.upstream?.key_file)],
+                ]} />
+              ) : (
+                <p className="text-sm text-gray-700">指定なし（Mozilla のルート証明書で検証し、クライアント証明書は出さない）</p>
+              )}
+              <p className="mt-1 text-xs text-gray-600">TLS でつなぐかは転送先の URL（https://）で決まります。</p>
+              {servicesWithOwnTls(toHttpRules(rule.http)).length > 0 && (
+                <p className="mt-1 text-xs text-amber-900" data-testid="http-upstream-overridden">
+                  {`転送先への TLS を設定したサービス（${servicesWithOwnTls(toHttpRules(rule.http)).join(', ')}）では、この設定の代わりにサービスの設定を使います。`}
+                </p>
+              )}
+            </div>
+          ) : (
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">転送先への{rule.protocol === 'udp' ? ' DTLS' : ' TLS'}</h3>
             {tls.upstream?.tls ? (
@@ -388,6 +415,7 @@ const TlsSection: React.FC<{ rule: ForwardRules }> = ({ rule }) => {
               <p className="text-sm text-gray-700">再暗号化しない（転送先へは平文）</p>
             )}
           </div>
+          )}
         </div>
       )}
     </Section>
