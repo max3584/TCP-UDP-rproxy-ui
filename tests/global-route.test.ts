@@ -446,6 +446,46 @@ describe('/api/forward/global: geoip and acme', () => {
     expect(mocks.patchGlobalSettings.mock.calls.every((c) => !JSON.stringify(c[0]).includes('***'))).toBe(true);
     expect(api.a.acme).toEqual(next);
   });
+
+  it('refuses an acme value that still holds hidden (***) values with 400, on the server too', async () => {
+    flags(true);
+    const { status, body } = await call('POST', { body: { target: 'a', values: { acme: { accounts: { le: { allowed_names: ['example.com'], ca_file: '***' } } } } } });
+    expect(status).toBe(400);
+    expect(body.code).toBe('invalid');
+    expect(mocks.patchGlobalSettings).not.toHaveBeenCalled();
+  });
+
+  it('when the previous acme cannot be put back, a group is dry-run first and nothing changes if a node refuses', async () => {
+    flags(true);
+    // rproxy shows the API value of acme hidden: it could not be sent back
+    const hidden = { accounts: { le: { allowed_names: ['example.com'], eab: { kid: '***', hmac_key_file: '***' } } } };
+    mocks.getGlobalSettings.mockImplementation(async () => {
+      const v = liveView(node()) as { items: Record<string, Record<string, unknown>> };
+      v.items.acme = { ...v.items.acme, source: 'api', value: hidden, api_value: hidden };
+      return v;
+    });
+    mocks.patchGlobalSettings.mockImplementation(async (body: Record<string, unknown>, dryRun: boolean) => {
+      if (node() === 'b') throw new RproxyError('global.acme.accounts.le2.ca_file: /x is not right in /y (RPROXY_API_ACME_DIR)', 'protected_file', 403);
+      return fakePatch(body, dryRun);
+    });
+    const next = { accounts: { le2: { allowed_names: ['example.com'] } } };
+    const { status, body } = await call('POST', { body: { target: 'g', values: { acme: next } } });
+    expect(status).toBe(403);
+    expect(body.code).toBe('global_protected_file');
+    // only dry runs were sent
+    expect(patches(false)).toEqual([]);
+    expect(patches(true)).toHaveLength(2);
+    expect(body.nodes.find((n: { node: string }) => n.node === 'a')).toMatchObject({ ok: false, outcome: 'refused', code: 'global_not_sent' });
+    expect(body.nodes.find((n: { node: string }) => n.node === 'b')).toMatchObject({ ok: false, outcome: 'refused', code: 'global_protected_file' });
+    expect(api.a).toBeUndefined();
+
+    // every node accepts the dry run: the change is applied
+    mocks.patchGlobalSettings.mockImplementation(async (b: Record<string, unknown>, dryRun: boolean) => fakePatch(b, dryRun));
+    const ok = await call('POST', { body: { target: 'g', values: { acme: next } } });
+    expect(ok.status).toBe(200);
+    expect(api.a.acme).toEqual(next);
+    expect(api.b.acme).toEqual(next);
+  });
 });
 
 describe('globalFailure', () => {

@@ -6,7 +6,9 @@ import { NodesConfigError, loadNodes, targetNodes, toRproxyNode } from '@/compon
 import type { NodesConfig } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
-import { GlobalPatchError, gateLiveItems, globalPatchBody, globalSettingsView, maskChanges, normalizeGlobalValues, redactRestartItems } from '@/components/globalsettings';
+import {
+  GlobalPatchError, SECRET_SHAPED_ITEMS, gateLiveItems, globalPatchBody, globalSettingsView, hasMasked, maskChanges, normalizeGlobalValues, redactRestartItems,
+} from '@/components/globalsettings';
 import { GlobalRouteError, applyGlobal, changeSummary, globalFailure } from '@/components/globalapi';
 import type { GlobalChange, GlobalNodeResult, GlobalNodeView, GlobalSettings } from '@/components/globalsettings';
 import { READONLY_NODE_MESSAGE } from '@/components/messages';
@@ -141,6 +143,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (err instanceof GlobalPatchError) return res.status(400).json({ error: err.message, code: 'invalid' });
     throw err;
   }
+  // rproxy が伏せて返した値（***）は送らない（伏せた印が API の値になってしまう。フォームでも断るが、サーバでも）
+  const masked = Object.keys(values).find((i) => SECRET_SHAPED_ITEMS.includes(i) && hasMasked(values[i]));
+  if (masked) {
+    return res.status(400).json({ error: `${masked}: 伏せた値（***）が残っています。入れ直してください（rproxy は秘密に関わる値を画面に返しません）。`, code: 'invalid' });
+  }
   const patch = globalPatchBody(values);
   const dryRun = body.dryRun === true;
 
@@ -159,10 +166,10 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
   const who = session.user.name || session.user.email || session.user.id;
   const result = await applyGlobal(nodes.map((p) => ({ name: p.name, run: <T,>(fn: () => Promise<T>) => run(p, fn) })), values, logger);
-  for (const n of result.nodes) {
-    if (n.ok) logger.info(`global の設定を変えました（${who}、ノード ${n.node}）: ${changeSummary(n.changes ?? [])}`);
-  }
   const shown = result.nodes.map((n) => ({ ...n, changes: maskChanges(n.changes ?? []) }));
+  for (const n of shown) {
+    if (n.ok) logger.info(`global の設定を変えました（${who}、ノード ${n.node}）: ${changeSummary(n.changes)}`);
+  }
   if (result.ok) return res.status(200).json({ nodes: shown });
   logger.warn(`global の設定を変えられませんでした（${who}、ノード ${result.node}）: ${result.failure.code} ${result.failure.error}`);
   const error = nodes.length > 1 ? `ノード ${result.node}: ${result.failure.error}` : result.failure.error;

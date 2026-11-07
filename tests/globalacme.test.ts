@@ -41,8 +41,12 @@ describe('geoip form', () => {
     refuses(() => buildGeoip({ ...f, country_db: 'GeoLite2-Country.mmdb' }), '絶対パス');
     refuses(() => buildGeoip({ ...f, country_db: '/var/lib/GeoIP/' }), 'ファイルの名前で終わる');
     refuses(() => buildGeoip({ ...f, country_db: '/var/lib/GeoIP/.hidden' }), 'ファイルの名前で終わる');
-    refuses(() => buildGeoip({ ...f, country_db: '/var/lib/../etc/passwd' }), '..');
+    refuses(() => buildGeoip({ ...f, country_db: '/var/lib/GeoIP/..' }), 'ファイルの名前で終わる');
+    refuses(() => buildGeoip({ ...f, country_db: '/var/lib/GeoIP/a\nb.mmdb' }), '制御文字');
     refuses(() => buildGeoip({ ...f, country_db: '/a/c.mmdb', asn_db: '/b/a.mmdb' }), '同じディレクトリ');
+    // spaces are allowed, and the directories are compared after //, . and .. are resolved (rproxy compares the real paths)
+    expect(buildGeoip({ ...f, country_db: '/srv/geo ip/c.mmdb', asn_db: '/srv/./geo ip//a.mmdb' })).toEqual({ country_db: '/srv/geo ip/c.mmdb', asn_db: '/srv/./geo ip//a.mmdb' });
+    expect(buildGeoip({ ...f, country_db: '/srv/x/../geo/c.mmdb', asn_db: '/srv/geo/a.mmdb' })).toMatchObject({ asn_db: '/srv/geo/a.mmdb' });
     refuses(() => buildGeoip({ ...f, country_db: '/a/c.mmdb', check_interval: '1 minute' }), 'check_interval');
     expect(buildGeoip({ ...f, country_db: '/a/c.mmdb', check_interval: '0s' })).toEqual({ country_db: '/a/c.mmdb', check_interval: '0s' });
   });
@@ -50,6 +54,7 @@ describe('geoip form', () => {
   it('apiDirFile returns the directory', () => {
     expect(apiDirFile('x', '/var/lib/GeoIP/C.mmdb')).toBe('/var/lib/GeoIP');
     expect(apiDirFile('x', '/C.mmdb')).toBe('/');
+    expect(apiDirFile('x', '/var//lib/./GeoIP/C.mmdb')).toBe('/var/lib/GeoIP');
   });
 });
 
@@ -59,15 +64,19 @@ describe('acme form', () => {
       storage: `${DIR}/storage`,
       http01_listen: '0.0.0.0:80\n[::]:80',
       rate_orders: '5', rate_period: '1h', renew_before: '30d',
-      accounts: [{ ...emptyAccount(), name: 'zerossl', allowed_names: 'example.com', eab_kid: 'kid', eab_hmac_key_file: `${DIR}/eab.key`, ca_file: `${DIR}/ca.pem` }],
+      accounts: [{ ...emptyAccount(), name: 'zerossl', allowed_names: 'example.com', eab_kid: 'kid', eab_hmac_key_file: `${DIR}/eab.key`, ca_file: `${DIR}/ca.pem`, contact: 'mailto:a@example.com' }],
       providers: [
         { ...emptyProvider(), name: 'pdns', type: 'powerdns', api_url: 'http://127.0.0.1:8081', api_key_file: `${DIR}/pdns.key`, zones: 'acme.example.net', allowed_names: '*.example.com' },
         {
           ...emptyProvider(), name: 'relay', type: 'http', secret_file: `${DIR}/relay.token`, allowed_names: 'example.com',
-          add: { method: 'POST', url: 'https://relay.example/present?token={secret}', headers: 'Authorization: Bearer {secret}\nContent-Type: application/json', body: '{"fqdn":"{fqdn}"}' },
+          add: { method: 'POST', url: 'https://relay.example:8443/present?zone={zone}', headers: 'Authorization: Bearer {secret}\nContent-Type: application/json', body: '{"fqdn":"{fqdn}"}' },
+          remove: { method: 'DELETE', url: 'https://relay.example:8443/cleanup/{fqdn}', headers: 'Authorization: Bearer {secret}', body: '' },
+          // zones of an http provider are kept; ttl is not used with http and is not sent
+          ttl: '60',
         },
         { ...emptyProvider(), name: 'bind', type: 'rfc2136', server: '10.0.0.53', tsig_key_name: 'k', tsig_algorithm: 'hmac-sha512', tsig_secret_file: `${DIR}/tsig.key`, allowed_names: 'example.org' },
-        { ...emptyProvider(), name: 'adns', type: 'acme_dns', api_url: 'https://auth.example', credentials_file: `${DIR}/acme-dns.json`, allowed_names: 'vpn.example.com' },
+        // zones and ttl are not used with acme_dns: not sent even when left in the form
+        { ...emptyProvider(), name: 'adns', type: 'acme_dns', api_url: 'https://auth.example', credentials_file: `${DIR}/acme-dns.json`, allowed_names: 'vpn.example.com', zones: 'x.example', ttl: '5' },
       ],
       resolvers: [
         { name: 'z-http', account: 'zerossl', challenge: 'http-01', dns_provider: '' },
@@ -76,12 +85,13 @@ describe('acme form', () => {
     }));
     expect(v).toEqual({
       storage: `${DIR}/storage`,
-      accounts: { zerossl: { allowed_names: ['example.com'], eab: { kid: 'kid', hmac_key_file: `${DIR}/eab.key` }, ca_file: `${DIR}/ca.pem` } },
+      accounts: { zerossl: { contact: ['mailto:a@example.com'], allowed_names: ['example.com'], eab: { kid: 'kid', hmac_key_file: `${DIR}/eab.key` }, ca_file: `${DIR}/ca.pem` } },
       dns_providers: {
         pdns: { type: 'powerdns', api_url: 'http://127.0.0.1:8081', api_key_file: `${DIR}/pdns.key`, zones: ['acme.example.net'], allowed_names: ['*.example.com'] },
         relay: {
           type: 'http', secret_file: `${DIR}/relay.token`, allowed_names: ['example.com'],
-          add: { method: 'POST', url: 'https://relay.example/present?token={secret}', headers: { Authorization: 'Bearer {secret}', 'Content-Type': 'application/json' }, body: '{"fqdn":"{fqdn}"}' },
+          add: { method: 'POST', url: 'https://relay.example:8443/present?zone={zone}', headers: { Authorization: 'Bearer {secret}', 'Content-Type': 'application/json' }, body: '{"fqdn":"{fqdn}"}' },
+          remove: { method: 'DELETE', url: 'https://relay.example:8443/cleanup/{fqdn}', headers: { Authorization: 'Bearer {secret}' } },
         },
         bind: { type: 'rfc2136', server: '10.0.0.53', tsig_key_name: 'k', tsig_algorithm: 'hmac-sha512', tsig_secret_file: `${DIR}/tsig.key`, allowed_names: ['example.org'] },
         adns: { type: 'acme_dns', api_url: 'https://auth.example', credentials_file: `${DIR}/acme-dns.json`, allowed_names: ['vpn.example.com'] },
@@ -95,26 +105,55 @@ describe('acme form', () => {
     expect(buildAcme(toAcmeForm(v))).toEqual(v);
   });
 
-  it('only accepts {secret} or "<Scheme> {secret}" for credentials of an http provider, as rproxy enforces', () => {
-    const relay = (add: Partial<AcmeForm['providers'][number]['add']>) => acmeForm({
-      providers: [{ ...emptyProvider(), name: 'r', type: 'http', secret_file: `${DIR}/t`, allowed_names: 'example.com', add: { method: '', url: 'https://relay.example/p', headers: '', body: '', ...add } }],
+  it('only accepts {secret} or "<Scheme> {secret}" in headers or the body, never in the URL, as rproxy enforces', () => {
+    const call = { method: '', url: 'https://relay.example/p', headers: 'Authorization: Bearer {secret}', body: '' };
+    const relay = (add: Partial<typeof call>, remove: Partial<typeof call> = {}) => acmeForm({
+      providers: [{ ...emptyProvider(), name: 'r', type: 'http', secret_file: `${DIR}/t`, allowed_names: 'example.com', add: { ...call, ...add }, remove: { ...call, ...remove } }],
     });
+    // rproxy's AcmeGlobal::check: no {secret} anywhere in the URL (URLs end up in logs), the query included
+    refuses(() => buildAcme(relay({ url: 'https://relay.example/p?token={secret}' })), 'URL に置けません');
+    refuses(() => buildAcme(relay({ url: 'https://relay.example/p?x={secret}' })), 'URL に置けません');
+    refuses(() => buildAcme(relay({ url: 'https://relay.example/{secret}/p' })), 'URL に置けません');
+    // a query parameter named like a credential, whatever its value
+    refuses(() => buildAcme(relay({ url: 'https://relay.example/p?api_key=abc' })), 'api_key');
+    refuses(() => buildAcme(relay({}, { url: 'https://relay.example/p?a=1&token' })), 'token');
+    // split once: '=' in the value is not a second pair
+    expect(() => buildAcme(relay({ url: 'https://relay.example/p?q=a=b' }))).not.toThrow();
+    refuses(() => buildAcme(relay({ url: 'https://user:pw@relay.example/p' })), '利用者');
+    refuses(() => buildAcme(relay({ url: 'https://relay.example:70000/p' })), '1〜65535');
+    refuses(() => buildAcme(relay({ method: 'GET X' })), 'method');
     refuses(() => buildAcme(relay({ headers: 'Authorization: Bearer abc123' })), 'Authorization');
     refuses(() => buildAcme(relay({ headers: 'X-API-Key: abc' })), 'X-API-Key');
     refuses(() => buildAcme(relay({ headers: 'X-Custom: x{secret}' })), 'X-Custom');
-    refuses(() => buildAcme(relay({ url: 'https://relay.example/p?api_key=abc' })), 'api_key');
-    refuses(() => buildAcme(relay({ url: 'https://relay.example/{secret}/p' })), 'パス');
-    refuses(() => buildAcme(relay({ url: 'https://user:pw@relay.example/p' })), '利用者');
     refuses(() => buildAcme(relay({ body: '{"token":"abc"}' })), '本文');
-    expect(() => buildAcme(relay({ headers: 'X-Auth-Token: {secret}', body: '{"token":"{secret}"}' }))).not.toThrow();
+    expect(() => buildAcme(relay({ headers: 'X-Auth-Token: {secret}', body: '{"token":"{secret}","fqdn":"{fqdn}"}' }))).not.toThrow();
+    // type http needs both add and remove
+    refuses(() => buildAcme(relay({}, { url: '', headers: '', method: '', body: '' })), 'add と remove');
     // {secret} needs secret_file
-    const noFile = relay({ headers: 'Authorization: Bearer {secret}' });
+    const noFile = relay({});
     noFile.providers[0].secret_file = '';
     refuses(() => buildAcme(noFile), 'secret_file');
     expect(secretHeaderValue('Bearer {secret}')).toBe(true);
     expect(secretHeaderValue('{secret}')).toBe(true);
     expect(secretHeaderValue('Bearer  {secret}')).toBe(false);
     expect(secretHeaderValue('Bearer x{secret}')).toBe(false);
+  });
+
+  it('account names follow rproxy\'s safe_name; provider and resolver names are not restricted', () => {
+    refuses(() => buildAcme(acmeForm({ accounts: [{ ...emptyAccount(), name: 'le.prod', allowed_names: 'example.com' }], resolvers: [] })), '64 文字');
+    refuses(() => buildAcme(acmeForm({ accounts: [{ ...emptyAccount(), name: 'a'.repeat(65), allowed_names: 'example.com' }], resolvers: [] })), '64 文字');
+    expect(() => buildAcme(acmeForm({ accounts: [{ ...emptyAccount(), name: '-le_1', allowed_names: 'example.com' }], resolvers: [] }))).not.toThrow();
+    const v = buildAcme(acmeForm({
+      providers: [{ ...emptyProvider(), name: 'pdns.main', type: 'rfc2136', server: '10.0.0.53', tsig_key_name: 'k', tsig_secret_file: `${DIR}/k`, allowed_names: 'example.com', ttl: '4294967295' }],
+      resolvers: [{ name: 'le.dns', account: 'le', challenge: 'dns-01', dns_provider: 'pdns.main' }],
+    }));
+    expect(v.resolvers).toEqual({ 'le.dns': { account: 'le', challenge: 'dns-01', dns_provider: 'pdns.main' } });
+    expect((v.dns_providers as Record<string, { ttl: number }>)['pdns.main'].ttl).toBe(4294967295);
+    refuses(() => buildAcme(acmeForm({
+      providers: [{ ...emptyProvider(), name: 'p', type: 'powerdns', api_url: 'http://127.0.0.1:8081', api_key_file: `${DIR}/k`, allowed_names: 'example.com', ttl: '4294967296' }],
+    })), 'ttl');
+    refuses(() => buildAcme(acmeForm({ accounts: [{ ...emptyAccount(), name: 'le', allowed_names: 'example.com', contact: 'admin@example.com' }] })), 'mailto:');
+    refuses(() => buildAcme(acmeForm({ http01_listen: '0.0.0.0:99999' })), 'http01_listen');
   });
 
   it('refuses files outside one directory, a storage outside it, and hidden (***) values', () => {

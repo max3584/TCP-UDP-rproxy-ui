@@ -412,7 +412,7 @@ const GlobalPage: React.FC = () => {
                     {item.unix_only && <p className="text-xs text-gray-700">守りに関わる項目です。rproxy は Unix ソケットからだけ受け付けます。</p>}
                     {name === 'acme' && shown.length > 1 && hasApi && (
                       <p className="text-xs text-amber-900" data-testid="global-acme-undo-note">
-                        グループの適用で一部のノードが断ったとき、rproxy は前の acme の秘密に関わる値を伏せて返すため、効かせたノードを前の値に戻せません（そのノードだけ値が違うままになります）。先に「差分を確かめる」ですべてのノードが受け付けることを確かめてください。
+                        rproxy は前の acme の秘密に関わる値を伏せて返すため、グループの適用で一部のノードが断ると、効かせたノードを前の値に戻せません。そのため前の値を戻せないときは、UI が先にすべてのノードで dry run をし、1 台でも断れば何も変えません（それでも適用の途中で断られたノードがあれば、ほかのノードは「戻せませんでした」と出ます）。
                       </p>
                     )}
                   </>

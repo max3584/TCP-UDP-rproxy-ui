@@ -9,8 +9,8 @@
 // - rproxy の 401・スコープの不足の 403・429・届かない・5xx（503 を除く）は UI のトークン・設定の問題なので 502
 //   （502 crowdsec_unavailable（新しい LAPI が答えない）もコードはそのまま。503 not_loaded・upgrading・shutting_down は 503 のまま）
 import { rproxyFailure } from './apiguard';
-import { GLOBAL_UNKNOWN_MESSAGE, GLOBAL_UNSUPPORTED_MESSAGE } from './messages';
-import { UNIX_ONLY_MESSAGE, formatGlobalValue, globalPatchBody, globalSettingsView, hasMasked, sameValue } from './globalsettings';
+import { GLOBAL_NOT_SENT_MESSAGE, GLOBAL_UNKNOWN_MESSAGE, GLOBAL_UNSUPPORTED_MESSAGE } from './messages';
+import { SECRET_SHAPED_ITEMS, UNIX_ONLY_MESSAGE, formatGlobalValue, globalPatchBody, globalSettingsView, hasMasked, sameValue } from './globalsettings';
 import type { GlobalChange, GlobalNodeResult, GlobalSettings } from './globalsettings';
 import { RproxyError, getGlobalSettings, patchGlobalSettings } from './rproxy';
 
@@ -161,6 +161,44 @@ async function undoOne(n: ApplyNode, s: NodeState, logger: Logger): Promise<bool
   }
 }
 
+// グループで、戻せない項目（rproxy が前の API の値を伏せて返す acme など）を変えるときは、先にすべてのノードで dry run をする。
+// 1 台でも断れば何も変えずに返す（適用してから断られると、効いたノードを戻せない）。そうでなければ null
+async function preflight(nodes: ApplyNode[], values: Record<string, unknown>):
+  Promise<{ ok: false; failure: Failure; node: string; nodes: GlobalNodeResult[] } | null> {
+  const items = Object.keys(values).filter((i) => SECRET_SHAPED_ITEMS.includes(i));
+  if (items.length === 0) return null;
+  const unrecoverable = await Promise.all(nodes.map(async (n) => {
+    try {
+      const s = await readSettings(n);
+      return items.some((i) => hasMasked(apiOf(s, i)));
+    } catch {
+      // 読めなければ適用でも断られる（applyOne が読む）
+      return false;
+    }
+  }));
+  if (!unrecoverable.some((x) => x)) return null;
+  const body = globalPatchBody(values);
+  const results = await Promise.all(nodes.map(async (n): Promise<Failure | null> => {
+    try {
+      await n.run(() => patchGlobalSettings(body, true));
+      return null;
+    } catch (err) {
+      return globalFailure(err);
+    }
+  }));
+  const first = results.findIndex((r) => r !== null);
+  if (first < 0) return null;
+  return {
+    ok: false,
+    failure: results[first]!,
+    node: nodes[first].name,
+    nodes: nodes.map((n, i) => ({
+      node: n.name, ok: false, outcome: 'refused' as const, changes: [], applied: [], persisted: null,
+      ...(results[i] ? { error: results[i]!.error, code: results[i]!.code } : { error: GLOBAL_NOT_SENT_MESSAGE, code: 'global_not_sent' }),
+    })),
+  };
+}
+
 export function changeSummary(changes: GlobalChange[]): string {
   return changes.map((c) => `${c.item}: ${formatGlobalValue(c.api_before)} → ${formatGlobalValue(c.api_after)}`).join('; ') || '-';
 }
@@ -169,6 +207,10 @@ export function changeSummary(changes: GlobalChange[]): string {
 // 答え：ok なら nodes だけ、だめなら最初の断りのステータス・文・コードと nodes（ノードごとの outcome・undone・コード）
 export async function applyGlobal(nodes: ApplyNode[], values: Record<string, unknown>, logger: Logger):
   Promise<{ ok: true; nodes: GlobalNodeResult[] } | { ok: false; failure: Failure; node: string; nodes: GlobalNodeResult[] }> {
+  if (nodes.length > 1) {
+    const refused = await preflight(nodes, values);
+    if (refused) return refused;
+  }
   const states = await Promise.all(nodes.map((n) => applyOne(n, values, logger)));
   const bad = states.find((s) => s.outcome === 'refused') ?? states.find((s) => s.outcome === 'unknown');
   if (bad && nodes.length > 1) {

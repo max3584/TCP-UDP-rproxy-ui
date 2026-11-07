@@ -1,6 +1,6 @@
 // global の geoip・acme の欄（/global の「API で変える」。rproxy-api v0.4.22、#345。UI #189）。
 // 値と送る形の行き来・確かめは components/globalacme.ts。秘密の値の欄は作らない：秘密はファイル（RPROXY_API_ACME_DIR のすぐ下）を指すだけ
-import { ACME_DEFAULT_STORAGE, CHALLENGES, DNS_PROVIDER_TYPES, MASKED, TSIG_ALGORITHMS, emptyAccount, emptyProvider, emptyResolver } from './globalacme';
+import { ACME_DEFAULT_STORAGE, CHALLENGES, DNS_PROVIDER_TYPES, MASKED, TSIG_ALGORITHMS, emptyAccount, emptyProvider, emptyResolver, providerTakes } from './globalacme';
 import type { AcmeAccountForm, AcmeForm, AcmeProviderForm, AcmeResolverForm, GeoipForm, HttpCallForm } from './globalacme';
 
 const INPUT = 'w-full border border-gray-300 rounded-sm px-2 py-1 bg-white text-gray-900 font-mono text-sm';
@@ -70,7 +70,7 @@ const AccountRow: React.FC<{ i: number; a: AcmeAccountForm; onChange: (a: AcmeAc
     <fieldset className="border border-gray-200 rounded-sm p-2 space-y-1" data-testid="global-acme-account">
       <legend className="px-1 text-xs text-gray-800">アカウント</legend>
       <div className={GRID}>
-        <Field id={`${id}-name`} label="名前" value={a.name} placeholder="letsencrypt" onChange={(v) => onChange({ ...a, name: v })} />
+        <Field id={`${id}-name`} label="名前" value={a.name} placeholder="letsencrypt（英数字と - _）" onChange={(v) => onChange({ ...a, name: v })} />
         <Field id={`${id}-directory`} label="directory" value={a.directory} placeholder="https://acme-v02.api.letsencrypt.org/directory" onChange={(v) => onChange({ ...a, directory: v })} />
         <Field id={`${id}-contact`} label="contact" value={a.contact} placeholder="mailto:admin@example.com" onChange={(v) => onChange({ ...a, contact: v })} />
         <Field id={`${id}-allowed_names`} label="allowed_names" rows={2} value={a.allowed_names} placeholder="example.com, *.example.com" onChange={(v) => onChange({ ...a, allowed_names: v })} />
@@ -110,15 +110,15 @@ const ProviderRow: React.FC<{ i: number; p: AcmeProviderForm; onChange: (p: Acme
         )}
         {p.type === 'acme_dns' && <Field id={`${id}-credentials_file`} label="credentials_file" value={p.credentials_file} onChange={set('credentials_file')} />}
         {p.type === 'http' && <Field id={`${id}-secret_file`} label="secret_file" value={p.secret_file} onChange={set('secret_file')} />}
-        <Field id={`${id}-zones`} label="zones" value={p.zones} placeholder="acme.example.net" onChange={set('zones')} />
+        {providerTakes(p.type, 'zones') && <Field id={`${id}-zones`} label="zones" value={p.zones} placeholder="acme.example.net" onChange={set('zones')} />}
         <Field id={`${id}-allowed_names`} label="allowed_names" rows={2} value={p.allowed_names} placeholder="*.example.com" onChange={set('allowed_names')} />
-        <Field id={`${id}-ttl`} label="ttl" value={p.ttl} onChange={set('ttl')} />
+        {providerTakes(p.type, 'ttl') && <Field id={`${id}-ttl`} label="ttl" value={p.ttl} onChange={set('ttl')} />}
         <Field id={`${id}-ca_file`} label="ca_file" value={p.ca_file} onChange={set('ca_file')} />
       </div>
       {p.type === 'http' && (
         <>
           <p className="text-xs text-gray-700">
-            {'資格情報は secret_file の中身を {secret} で差し込みます。資格情報らしい名前のヘッダは {secret} か「Bearer {secret}」の形だけ、クエリは {secret} だけで、URL のパスと利用者には書けません。'}
+            {'資格情報は secret_file の中身を {secret} でヘッダか本文に差し込みます。資格情報らしい名前のヘッダは {secret} か「Bearer {secret}」の形だけです。URL はログに残るので、{secret}・資格情報らしい名前のクエリ・利用者は URL に書けません。'}
           </p>
           <CallFields id={`${id}-add`} label="add" call={p.add} onChange={(c) => onChange({ ...p, add: c })} />
           <CallFields id={`${id}-remove`} label="remove" call={p.remove} onChange={(c) => onChange({ ...p, remove: c })} />
@@ -159,7 +159,7 @@ export const AcmeFields: React.FC<{ form: AcmeForm; onChange: (f: AcmeForm) => v
       <p className="text-xs text-gray-700">{`指すファイルはすべて同じディレクトリに置き、storage は既定（${ACME_DEFAULT_STORAGE}）かそのディレクトリの下にします。`}</p>
       {masked && (
         <p className="text-xs text-amber-900 rounded-sm border border-amber-300 bg-amber-50 p-2" data-testid="global-acme-masked">
-          {`rproxy は秘密に関わる値（ファイルの場所・ヘッダ・本文・URL のパスなど）を ${MASKED} にして返します。${MASKED} の残る欄を入れ直してから送ってください（丸ごと置き換えるため）。`}
+          {`rproxy は秘密に関わる値（ファイルの場所・ヘッダ・本文・URL のパス、名前に key・secret などを含む eab.kid・tsig_key_name など）を ${MASKED} にして返します。${MASKED} の残る欄を入れ直してから送ってください（丸ごと置き換えるため）。`}
         </p>
       )}
       <div className={GRID}>

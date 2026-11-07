@@ -3,7 +3,8 @@
 // - ファイルは rproxy-api の RPROXY_API_GEOIP_DIR・RPROXY_API_ACME_DIR のすぐ下だけ（UI はディレクトリを知らないので、
 //   絶対パスのファイルの名前で、すべて同じディレクトリにあることまでを確かめる。ディレクトリの外は rproxy が 403 protected_file）
 // - acme は秘密を持たない：アカウントの key_file は書けず、http の DNS のプロバイダの資格情報は secret_file の {secret} からだけ
-//   （ヘッダは {secret} か「<方式> {secret}」、クエリは {secret} だけ、URL のパスと利用者には書けない。rproxy の acme_secrets_in_files と同じ）
+//   （ヘッダは {secret} か「<方式> {secret}」。{secret} と資格情報らしい名前のクエリと利用者は URL に書けない。
+//   rproxy の acme_secrets_in_files と AcmeGlobal::check と同じ。DNS のプロバイダの種類ごとに使える項目も check の set_fields と同じ）
 // - rproxy は acme の秘密らしい値（ファイルの場所・ヘッダ・URL のパスなど）を *** で返す。欄にはそのまま入れ、残っていれば送らない
 // React と Node に依存しない（tests/globalacme.test.ts）
 
@@ -117,18 +118,29 @@ const L7_DURATION = /^[0-9]+(ms|s|m|h)$/;
 // ACME の時間（renew_before は 30d・720h も）
 const ACME_DURATION = /^[0-9]+(ms|s|m|h|d)$/;
 
-// API のディレクトリのすぐ下に置くファイルの絶対パス（ディレクトリを返す）。
-// rproxy が断るもの（相対パス・..・. で始まる名前・ディレクトリ）を先に断る
+// 絶対パスを字面で整える（// と . を除き、.. を 1 つ上に）。ディレクトリを比べるときだけに使う
+// （rproxy は本当のパスで比べる。リンクの違いなどは rproxy が断る）
+export function lexicalPath(p: string): string {
+  const out: string[] = [];
+  for (const d of p.split('/')) {
+    if (d === '' || d === '.') continue;
+    if (d === '..') out.pop();
+    else out.push(d);
+  }
+  return `/${out.join('/')}`;
+}
+
+// API のディレクトリのすぐ下に置くファイルの絶対パス（字面で整えたディレクトリを返す）。
+// rproxy が断るもの（相対パス・. で始まる名前・ディレクトリ・制御文字）を先に断る。空白は使える
 export function apiDirFile(what: string, p: string): string {
   if (!p.startsWith('/')) throw new GlobalPatchError(`${what}: 絶対パスにしてください: ${p}`);
-  if (p.includes('\0') || /\s/.test(p)) throw new GlobalPatchError(`${what}: パスに空白や制御文字は使えません: ${p}`);
+  if (/[\x00-\x1f\x7f]/.test(p)) throw new GlobalPatchError(`${what}: パスに制御文字は使えません: ${p}`);
   const parts = p.split('/');
   const name = parts[parts.length - 1];
-  if (name === '' || name.startsWith('.')) throw new GlobalPatchError(`${what}: ファイルの名前で終わるパスにしてください（. で始まる名前は不可）: ${p}`);
-  if (parts.slice(1, -1).some((d) => d === '' || d === '.' || d === '..')) {
-    throw new GlobalPatchError(`${what}: パスに //・.・.. は使えません: ${p}`);
+  if (name === '' || name === '..' || name.startsWith('.')) {
+    throw new GlobalPatchError(`${what}: ファイルの名前で終わるパスにしてください（. で始まる名前は不可）: ${p}`);
   }
-  return parts.slice(0, -1).join('/') || '/';
+  return lexicalPath(parts.slice(0, -1).join('/'));
 }
 
 function noMasked(what: string, v: string): string {
@@ -235,7 +247,23 @@ export function secretHeaderValue(v: string): boolean {
   return /^[A-Za-z][A-Za-z0-9\-._~+/]*$/.test(s);
 }
 
-const SECRET_RULE = '（API の acme の資格情報は secret_file に置き、{secret} で使います）';
+const SECRET_RULE = '（API の acme の資格情報は secret_file に置き、ヘッダか本文で {secret} として使います）';
+
+// HTTP のメソッド（トークン）
+const METHOD = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+// http(s) の URL の形（rproxy の net::url::parse の主なもの）：スキーム・ホスト・ポート（1〜65535）・利用者なし
+function checkHttpUrl(what: string, url: string): void {
+  const m = /^https?:\/\/([^/?#]*)/i.exec(url);
+  if (!m) throw new GlobalPatchError(`${what}: http:// か https:// で始めてください: ${url}`);
+  const authority = m[1];
+  if (authority.includes('@')) throw new GlobalPatchError(`${what}: URL に利用者（…@）は書けません${SECRET_RULE}。`);
+  const hp = /^(\[[^\]]+\]|[^:]*)(?::(.*))?$/.exec(authority)!;
+  if (hp[1] === '') throw new GlobalPatchError(`${what}: ホストがありません: ${url}`);
+  if (hp[2] !== undefined && (!/^[0-9]{1,5}$/.test(hp[2]) || Number(hp[2]) < 1 || Number(hp[2]) > 65535)) {
+    throw new GlobalPatchError(`${what}: ポートは 1〜65535 にしてください: ${url}`);
+  }
+}
 
 function buildCall(where: string, c: HttpCallForm): Record<string, unknown> | undefined {
   const url = noMasked(`${where}.url`, c.url.trim());
@@ -244,18 +272,18 @@ function buildCall(where: string, c: HttpCallForm): Record<string, unknown> | un
   const headerLines = c.headers.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
   if (url === '' && method === '' && body.trim() === '' && headerLines.length === 0) return undefined;
   if (url === '') throw new GlobalPatchError(`${where}: url が要ります。`);
-  if (!/^https?:\/\//i.test(url)) throw new GlobalPatchError(`${where}.url: http:// か https:// で始めてください: ${url}`);
-  const [base, query = ''] = url.split('?', 2);
-  const rest = base.replace(/^https?:\/\//i, '');
-  const slash = rest.indexOf('/');
-  const authority = slash >= 0 ? rest.slice(0, slash) : rest;
-  const path = slash >= 0 ? rest.slice(slash) : '';
-  if (authority.includes('@')) throw new GlobalPatchError(`${where}.url: URL に利用者（…@）は書けません${SECRET_RULE}。`);
-  if (path.includes('{secret}')) throw new GlobalPatchError(`${where}.url: URL のパスに {secret} は置けません（ヘッダかクエリに）。`);
+  if (method !== '' && !METHOD.test(method)) throw new GlobalPatchError(`${where}.method: HTTP のメソッドではありません: ${method}`);
+  // URL はログに残るので {secret} はどこにも置けない（rproxy の AcmeGlobal::check）
+  if (url.includes('{secret}')) throw new GlobalPatchError(`${where}.url: {secret} は URL に置けません（ヘッダか本文に。URL はログに残ります）。`);
+  // 差し込む値は 1 つのラベルとして読む（rproxy と同じ）
+  checkHttpUrl(`${where}.url`, ['{fqdn}', '{value}', '{zone}'].reduce((u, x) => u.split(x).join('x'), url));
+  const q = url.indexOf('?');
+  const query = q >= 0 ? url.slice(q + 1).split('#')[0] : '';
   for (const pair of query.split('&').filter((p) => p !== '')) {
-    const [k, v = ''] = pair.split('=', 2);
-    if ((namesASecret(k) || v.includes('{secret}')) && v !== '{secret}') {
-      throw new GlobalPatchError(`${where}.url: クエリの ${k} は {secret} だけにしてください${SECRET_RULE}。`);
+    const eq = pair.indexOf('=');
+    const k = eq >= 0 ? pair.slice(0, eq) : pair;
+    if (namesASecret(k)) {
+      throw new GlobalPatchError(`${where}.url: クエリの ${k} は資格情報らしい名前です。資格情報はヘッダか本文に {secret} で入れてください${SECRET_RULE}。`);
     }
   }
   const headers: Record<string, string> = {};
@@ -282,15 +310,28 @@ function buildCall(where: string, c: HttpCallForm): Record<string, unknown> | un
 
 const usesSecret = (c: Record<string, unknown> | undefined) => c !== undefined && JSON.stringify(c).includes('{secret}');
 
-function uniqueNames(what: string, names: string[]) {
+// rproxy の safe_name（アカウントの名前。鍵のファイルの名前になる）
+export const SAFE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+// 名前が空でなく重ならないこと。アカウントだけ safe_name（rproxy はプロバイダ・resolver の名前の形を問わない）
+function uniqueNames(what: string, names: string[], safe = false) {
   const seen = new Set<string>();
   for (const n of names) {
     if (n === '') throw new GlobalPatchError(`acme.${what}: 名前が空のものがあります。`);
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(n)) throw new GlobalPatchError(`acme.${what}: 名前は英数字と . _ - にしてください: ${n}`);
+    if (safe && !SAFE_NAME.test(n)) throw new GlobalPatchError(`acme.${what}: 名前は英数字と - _ の 64 文字までにしてください: ${n}`);
     if (seen.has(n)) throw new GlobalPatchError(`acme.${what}: 同じ名前が 2 つあります: ${n}`);
     seen.add(n);
   }
 }
+
+// DNS のプロバイダの種類ごとに書ける項目（rproxy の AcmeGlobal::check。ca_file・allowed_names はどれも）
+export const PROVIDER_FIELDS: Record<string, string[]> = {
+  powerdns: ['api_url', 'server_id', 'api_key_file', 'zones', 'ttl'],
+  http: ['add', 'remove', 'secret_file', 'zones'],
+  rfc2136: ['server', 'tsig_key_name', 'tsig_algorithm', 'tsig_secret_file', 'zones', 'ttl'],
+  acme_dns: ['api_url', 'credentials_file'],
+};
+export const providerTakes = (type: string, field: string): boolean => (PROVIDER_FIELDS[type] ?? []).includes(field);
 
 // 欄から送る acme の値。形の誤り・秘密の書き方の誤り・ディレクトリの誤りは GlobalPatchError
 export function buildAcme(form: AcmeForm): Record<string, unknown> {
@@ -309,7 +350,7 @@ export function buildAcme(form: AcmeForm): Record<string, unknown> {
   };
   const names = (where: string, v: string): string[] => splitList(v).map((x) => noMasked(where, x));
 
-  uniqueNames('accounts', form.accounts.map((a) => a.name.trim()));
+  uniqueNames('accounts', form.accounts.map((a) => a.name.trim()), true);
   uniqueNames('dns_providers', form.providers.map((p) => p.name.trim()));
   uniqueNames('resolvers', form.resolvers.map((r) => r.name.trim()));
 
@@ -319,8 +360,10 @@ export function buildAcme(form: AcmeForm): Record<string, unknown> {
     const allowed = names(`${w}.allowed_names`, a.allowed_names);
     if (allowed.length === 0) throw new GlobalPatchError(`${w}: allowed_names（このアカウントで取ってよい名前）が要ります。`);
     const directory = text(`${w}.directory`, a.directory);
-    if (directory !== undefined && !/^https?:\/\//i.test(directory)) throw new GlobalPatchError(`${w}.directory: http:// か https:// の URL にしてください。`);
+    if (directory !== undefined) checkHttpUrl(`${w}.directory`, directory);
     const contact = names(`${w}.contact`, a.contact);
+    const bad = contact.find((c) => !c.startsWith('mailto:'));
+    if (bad !== undefined) throw new GlobalPatchError(`${w}.contact: mailto: で始めてください: ${bad}`);
     const kid = text(`${w}.eab.kid`, a.eab_kid);
     const hmac = file(`${w}.eab.hmac_key_file`, a.eab_hmac_key_file);
     if ((kid === undefined) !== (hmac === undefined)) throw new GlobalPatchError(`${w}.eab: kid と hmac_key_file は両方書くか、両方空にしてください。`);
@@ -341,9 +384,10 @@ export function buildAcme(form: AcmeForm): Record<string, unknown> {
     if (!(DNS_PROVIDER_TYPES as readonly string[]).includes(type)) throw new GlobalPatchError(`${w}.type: ${DNS_PROVIDER_TYPES.join('・')} のどれかにしてください。`);
     const allowed = names(`${w}.allowed_names`, p.allowed_names);
     if (allowed.length === 0) throw new GlobalPatchError(`${w}: allowed_names（このプロバイダで証明してよい名前）が要ります。`);
-    const zones = names(`${w}.zones`, p.zones);
-    const ttl = p.ttl.trim();
-    if (ttl !== '' && !/^[0-9]+$/.test(ttl)) throw new GlobalPatchError(`${w}.ttl: 0 以上の整数にしてください。`);
+    // 種類が使わない項目は送らない（欄も出さない。種類を変えたときに残った値で断られないように）
+    const zones = providerTakes(type, 'zones') ? names(`${w}.zones`, p.zones) : [];
+    const ttl = providerTakes(type, 'ttl') ? p.ttl.trim() : '';
+    if (ttl !== '' && (!/^[0-9]{1,10}$/.test(ttl) || Number(ttl) > 4294967295)) throw new GlobalPatchError(`${w}.ttl: 0〜4294967295 の整数にしてください。`);
     const out: Record<string, unknown> = { type: type };
     const need = (k: string, v: string | undefined) => {
       if (v === undefined) throw new GlobalPatchError(`${w}: ${type} には ${k} が要ります。`);
@@ -356,10 +400,10 @@ export function buildAcme(form: AcmeForm): Record<string, unknown> {
       need('api_key_file', file(`${w}.api_key_file`, p.api_key_file));
     } else if (type === 'http') {
       const add = buildCall(`${w}.add`, p.add);
-      if (add === undefined) throw new GlobalPatchError(`${w}: http には add（TXT を書く呼び出し）が要ります。`);
       const remove = buildCall(`${w}.remove`, p.remove);
+      if (add === undefined || remove === undefined) throw new GlobalPatchError(`${w}: http には add と remove（TXT を書く・消す呼び出し）の両方が要ります。`);
       out.add = add;
-      if (remove !== undefined) out.remove = remove;
+      out.remove = remove;
       const secret = file(`${w}.secret_file`, p.secret_file);
       if (secret !== undefined) out.secret_file = secret;
       else if (usesSecret(add) || usesSecret(remove)) throw new GlobalPatchError(`${w}: {secret} を使うときは secret_file が要ります。`);
@@ -376,11 +420,7 @@ export function buildAcme(form: AcmeForm): Record<string, unknown> {
       need('api_url', text(`${w}.api_url`, p.api_url));
       need('credentials_file', file(`${w}.credentials_file`, p.credentials_file));
     }
-    if (type === 'powerdns' || type === 'acme_dns') {
-      const u = out.api_url as string;
-      if (!/^https?:\/\//i.test(u)) throw new GlobalPatchError(`${w}.api_url: http:// か https:// の URL にしてください。`);
-      if (/^https?:\/\/[^/]*@/i.test(u)) throw new GlobalPatchError(`${w}.api_url: URL に利用者（…@）は書けません${SECRET_RULE}。`);
-    }
+    if (type === 'powerdns' || type === 'acme_dns') checkHttpUrl(`${w}.api_url`, out.api_url as string);
     const ca = file(`${w}.ca_file`, p.ca_file);
     if (ca !== undefined) out.ca_file = ca;
     if (zones.length > 0) out.zones = zones;
@@ -410,19 +450,19 @@ export function buildAcme(form: AcmeForm): Record<string, unknown> {
   if (dirs.size > 1) {
     throw new GlobalPatchError('acme: 指すファイルはすべて同じディレクトリ（rproxy-api の RPROXY_API_ACME_DIR）のすぐ下に置いてください。');
   }
-  if (storage !== undefined && storage !== ACME_DEFAULT_STORAGE) {
+  if (storage !== undefined && lexicalPath(storage) !== ACME_DEFAULT_STORAGE) {
     if (!storage.startsWith('/')) throw new GlobalPatchError(`acme.storage: 絶対パスにしてください: ${storage}`);
-    if (storage.split('/').slice(1).some((d) => d === '.' || d === '..')) throw new GlobalPatchError(`acme.storage: パスに . や .. は使えません: ${storage}`);
     const [dir] = [...dirs];
-    const s = storage.replace(/\/+$/, '');
-    if (dir !== undefined && !s.startsWith(`${dir}/`)) {
+    const s = lexicalPath(storage);
+    if (dir !== undefined && !s.startsWith(dir === '/' ? '/' : `${dir}/`)) {
       throw new GlobalPatchError(`acme.storage: 既定（${ACME_DEFAULT_STORAGE}）にするか、ファイルと同じ RPROXY_API_ACME_DIR の下のディレクトリにしてください。`);
     }
   }
 
   const listen = splitList(form.http01_listen).map((x) => noMasked('acme.http01_listen', x));
   for (const l of listen) {
-    if (!/^(\[[0-9A-Fa-f:.]+\]|[0-9.]+):[0-9]{1,5}$/.test(l)) throw new GlobalPatchError(`acme.http01_listen: ip:port（IPv6 は [::]:80）にしてください: ${l}`);
+    const port = /:([0-9]{1,5})$/.exec(l);
+    if (!/^(\[[0-9A-Fa-f:.]+\]|[0-9.]+):[0-9]{1,5}$/.test(l) || !port || Number(port[1]) < 1 || Number(port[1]) > 65535) throw new GlobalPatchError(`acme.http01_listen: ip:port（IPv6 は [::]:80）にしてください: ${l}`);
   }
   const dnsServers = splitList(form.dns_servers).map((x) => noMasked('acme.dns_servers', x));
   for (const [k, v] of [['renew_before', form.renew_before], ['dns_propagation_timeout', form.dns_propagation_timeout], ['rate_limit.period', form.rate_period]]) {
