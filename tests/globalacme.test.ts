@@ -46,7 +46,8 @@ describe('geoip form', () => {
     refuses(() => buildGeoip({ ...f, country_db: '/a/c.mmdb', asn_db: '/b/a.mmdb' }), '同じディレクトリ');
     // spaces are allowed, and the directories are compared after //, . and .. are resolved (rproxy compares the real paths)
     expect(buildGeoip({ ...f, country_db: '/srv/geo ip/c.mmdb', asn_db: '/srv/./geo ip//a.mmdb' })).toEqual({ country_db: '/srv/geo ip/c.mmdb', asn_db: '/srv/./geo ip//a.mmdb' });
-    expect(buildGeoip({ ...f, country_db: '/srv/x/../geo/c.mmdb', asn_db: '/srv/geo/a.mmdb' })).toMatchObject({ asn_db: '/srv/geo/a.mmdb' });
+    // .. is not resolved (as rproxy's Path); rproxy compares the real directories
+    refuses(() => buildGeoip({ ...f, country_db: '/srv/x/../geo/c.mmdb', asn_db: '/srv/geo/a.mmdb' }), '同じディレクトリ');
     refuses(() => buildGeoip({ ...f, country_db: '/a/c.mmdb', check_interval: '1 minute' }), 'check_interval');
     expect(buildGeoip({ ...f, country_db: '/a/c.mmdb', check_interval: '0s' })).toEqual({ country_db: '/a/c.mmdb', check_interval: '0s' });
   });
@@ -121,6 +122,7 @@ describe('acme form', () => {
     expect(() => buildAcme(relay({ url: 'https://relay.example/p?q=a=b' }))).not.toThrow();
     refuses(() => buildAcme(relay({ url: 'https://user:pw@relay.example/p' })), '利用者');
     refuses(() => buildAcme(relay({ url: 'https://relay.example:70000/p' })), '1〜65535');
+    for (const bad of ['https://relay.example/p#f', 'https://relay.example/a b', 'https://relay.example\\p']) refuses(() => buildAcme(relay({ url: bad })), '#');
     refuses(() => buildAcme(relay({ method: 'GET X' })), 'method');
     refuses(() => buildAcme(relay({ headers: 'Authorization: Bearer abc123' })), 'Authorization');
     refuses(() => buildAcme(relay({ headers: 'X-API-Key: abc' })), 'X-API-Key');

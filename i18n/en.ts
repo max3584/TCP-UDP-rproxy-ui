@@ -2026,4 +2026,5 @@ export const en: Record<string, string> = {
   "{0}: http には add と remove（TXT を書く・消す呼び出し）の両方が要ります。": "{0}: http needs both add and remove (the calls that write and remove the TXT record).",
   "ほかのノードが断ったため、このノードには送っていません（何も変えていません）。": "Not sent to this node because another node refused (nothing was changed).",
   "rproxy は前の acme の秘密に関わる値を伏せて返すため、グループの適用で一部のノードが断ると、効かせたノードを前の値に戻せません。そのため前の値を戻せないときは、UI が先にすべてのノードで dry run をし、1 台でも断れば何も変えません（それでも適用の途中で断られたノードがあれば、ほかのノードは「戻せませんでした」と出ます）。": "rproxy returns the previous acme's secret-related values hidden, so if some nodes of a group refuse, the nodes that applied it cannot be put back. So when the previous value cannot be put back, the UI first runs a dry run on every node and changes nothing if any of them refuses (if a node still refuses during the apply, the other nodes are reported as \"could not be put back\").",
+  "{0}: URL に空白・#・\\ は使えません: {1}": "{0}: the URL cannot contain whitespace, # or \\: {1}",
 };

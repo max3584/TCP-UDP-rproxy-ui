@@ -118,16 +118,10 @@ const L7_DURATION = /^[0-9]+(ms|s|m|h)$/;
 // ACME の時間（renew_before は 30d・720h も）
 const ACME_DURATION = /^[0-9]+(ms|s|m|h|d)$/;
 
-// 絶対パスを字面で整える（// と . を除き、.. を 1 つ上に）。ディレクトリを比べるときだけに使う
-// （rproxy は本当のパスで比べる。リンクの違いなどは rproxy が断る）
+// 絶対パスを字面で整える（// と . と末尾の / を除く。.. はそのまま：rproxy の Path の比べ方と同じ）。
+// ディレクトリを比べるときだけに使う（rproxy は本当のパスで比べる。.. やリンクの違いは rproxy が断る）
 export function lexicalPath(p: string): string {
-  const out: string[] = [];
-  for (const d of p.split('/')) {
-    if (d === '' || d === '.') continue;
-    if (d === '..') out.pop();
-    else out.push(d);
-  }
-  return `/${out.join('/')}`;
+  return `/${p.split('/').filter((d) => d !== '' && d !== '.').join('/')}`;
 }
 
 // API のディレクトリのすぐ下に置くファイルの絶対パス（字面で整えたディレクトリを返す）。
@@ -254,6 +248,7 @@ const METHOD = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 // http(s) の URL の形（rproxy の net::url::parse の主なもの）：スキーム・ホスト・ポート（1〜65535）・利用者なし
 function checkHttpUrl(what: string, url: string): void {
+  if (/[\s#\\]/.test(url)) throw new GlobalPatchError(`${what}: URL に空白・#・\\ は使えません: ${url}`);
   const m = /^https?:\/\/([^/?#]*)/i.exec(url);
   if (!m) throw new GlobalPatchError(`${what}: http:// か https:// で始めてください: ${url}`);
   const authority = m[1];

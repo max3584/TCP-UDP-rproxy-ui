@@ -488,6 +488,45 @@ describe('/api/forward/global: geoip and acme', () => {
   });
 });
 
+// crowdsec の URL の利用者・クエリも rproxy は *** で返す（#347）。伏せた値を送り返さない（UI #189 のレビュー）
+describe('/api/forward/global: values rproxy returned hidden', () => {
+  const hidden = { lapi_url: 'http://***@lapi.example:8080/?***', api_key_file: '/etc/crowdsec/key' };
+
+  it('refuses any item that still holds *** with 400 (crowdsec too)', async () => {
+    const { status, body } = await call('POST', { body: { target: 'a', values: { crowdsec: hidden } } });
+    expect(status).toBe(400);
+    expect(body.code).toBe('invalid');
+    expect(mocks.patchGlobalSettings).not.toHaveBeenCalled();
+  });
+
+  it('a group whose previous crowdsec was returned hidden is dry-run first, also when a node cannot be read', async () => {
+    api = { a: { crowdsec: hidden } };
+    let reads = 0;
+    mocks.getGlobalSettings.mockImplementation(async () => {
+      // b cannot be read the first time: treated as not undoable
+      if (node() === 'b' && reads++ === 0) throw new RproxyError('down', 'unreachable', 0);
+      return view(node());
+    });
+    mocks.patchGlobalSettings.mockImplementation(async (body: Record<string, unknown>, dryRun: boolean) => {
+      if (node() === 'b') throw new RproxyError('crowdsec: LAPI did not answer', 'crowdsec_unavailable', 502);
+      return fakePatch(body, dryRun);
+    });
+    const next = { lapi_url: 'http://lapi2.example:8080', api_key_file: '/etc/crowdsec/key' };
+    const { status, body } = await call('POST', { body: { target: 'g', values: { crowdsec: next } } });
+    expect(status).toBe(502);
+    expect(body.code).toBe('crowdsec_unavailable');
+    expect(patches(false)).toEqual([]);
+    expect(body.nodes.find((n: { node: string }) => n.node === 'a')).toMatchObject({ outcome: 'refused', code: 'global_not_sent' });
+    expect(api.a.crowdsec).toEqual(hidden);
+  });
+
+  it('without hidden previous values, a group is applied directly (no dry run)', async () => {
+    const { status } = await call('POST', { body: { target: 'g', values: { udp_max_sessions: 2048 } } });
+    expect(status).toBe(200);
+    expect(patches(true)).toEqual([]);
+  });
+});
+
 describe('globalFailure', () => {
   it('renames the codes that clash with the rules, and keeps unknown ones with rproxy\'s text', () => {
     expect(globalFailure(new RproxyError('x', 'restart_only', 409))).toMatchObject({ status: 409, code: 'global_restart_only' });

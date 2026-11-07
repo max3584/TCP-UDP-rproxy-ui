@@ -10,7 +10,7 @@
 //   （502 crowdsec_unavailable（新しい LAPI が答えない）もコードはそのまま。503 not_loaded・upgrading・shutting_down は 503 のまま）
 import { rproxyFailure } from './apiguard';
 import { GLOBAL_NOT_SENT_MESSAGE, GLOBAL_UNKNOWN_MESSAGE, GLOBAL_UNSUPPORTED_MESSAGE } from './messages';
-import { SECRET_SHAPED_ITEMS, UNIX_ONLY_MESSAGE, formatGlobalValue, globalPatchBody, globalSettingsView, hasMasked, sameValue } from './globalsettings';
+import { UNIX_ONLY_MESSAGE, formatGlobalValue, globalPatchBody, globalSettingsView, hasMasked, sameValue } from './globalsettings';
 import type { GlobalChange, GlobalNodeResult, GlobalSettings } from './globalsettings';
 import { RproxyError, getGlobalSettings, patchGlobalSettings } from './rproxy';
 
@@ -161,19 +161,18 @@ async function undoOne(n: ApplyNode, s: NodeState, logger: Logger): Promise<bool
   }
 }
 
-// グループで、戻せない項目（rproxy が前の API の値を伏せて返す acme など）を変えるときは、先にすべてのノードで dry run をする。
+// グループで、戻せない項目（rproxy が前の API の値を伏せて返す acme・crowdsec の URL など）を変えるときは、先にすべてのノードで dry run をする。
 // 1 台でも断れば何も変えずに返す（適用してから断られると、効いたノードを戻せない）。そうでなければ null
 async function preflight(nodes: ApplyNode[], values: Record<string, unknown>):
   Promise<{ ok: false; failure: Failure; node: string; nodes: GlobalNodeResult[] } | null> {
-  const items = Object.keys(values).filter((i) => SECRET_SHAPED_ITEMS.includes(i));
-  if (items.length === 0) return null;
+  const items = Object.keys(values);
   const unrecoverable = await Promise.all(nodes.map(async (n) => {
     try {
       const s = await readSettings(n);
       return items.some((i) => hasMasked(apiOf(s, i)));
     } catch {
-      // 読めなければ適用でも断られる（applyOne が読む）
-      return false;
+      // 読めなければ戻せるか分からないので、戻せないものとして dry run をする
+      return true;
     }
   }));
   if (!unrecoverable.some((x) => x)) return null;

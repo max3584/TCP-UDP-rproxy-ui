@@ -7,7 +7,7 @@ import type { NodesConfig } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
 import {
-  GlobalPatchError, SECRET_SHAPED_ITEMS, gateLiveItems, globalPatchBody, globalSettingsView, hasMasked, maskChanges, normalizeGlobalValues, redactRestartItems,
+  GlobalPatchError, gateLiveItems, globalPatchBody, globalSettingsView, hasMasked, maskChanges, normalizeGlobalValues, redactRestartItems,
 } from '@/components/globalsettings';
 import { GlobalRouteError, applyGlobal, changeSummary, globalFailure } from '@/components/globalapi';
 import type { GlobalChange, GlobalNodeResult, GlobalNodeView, GlobalSettings } from '@/components/globalsettings';
@@ -143,8 +143,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (err instanceof GlobalPatchError) return res.status(400).json({ error: err.message, code: 'invalid' });
     throw err;
   }
-  // rproxy が伏せて返した値（***）は送らない（伏せた印が API の値になってしまう。フォームでも断るが、サーバでも）
-  const masked = Object.keys(values).find((i) => SECRET_SHAPED_ITEMS.includes(i) && hasMasked(values[i]));
+  // rproxy が伏せて返した値（***。acme の秘密らしい値、crowdsec の URL の利用者・クエリなど）は送らない
+  // （伏せた印が API の値になってしまう。フォームでも断るが、サーバでもどの項目も）
+  const masked = Object.keys(values).find((i) => hasMasked(values[i]));
   if (masked) {
     return res.status(400).json({ error: `${masked}: 伏せた値（***）が残っています。入れ直してください（rproxy は秘密に関わる値を画面に返しません）。`, code: 'invalid' });
   }
