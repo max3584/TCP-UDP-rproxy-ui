@@ -6,7 +6,7 @@ import { NodesConfigError, loadNodes, targetNodes, toRproxyNode } from '@/compon
 import type { NodesConfig } from '@/components/nodes';
 import { requireRole, rproxyFailure } from '@/components/apiguard';
 import { accessOf, roleConfig } from '@/components/roles';
-import { GlobalPatchError, globalPatchBody, globalSettingsView, normalizeGlobalValues, redactRestartItems } from '@/components/globalsettings';
+import { GlobalPatchError, gateLiveItems, globalPatchBody, globalSettingsView, maskChanges, normalizeGlobalValues, redactRestartItems } from '@/components/globalsettings';
 import { GlobalRouteError, applyGlobal, changeSummary, globalFailure } from '@/components/globalapi';
 import type { GlobalChange, GlobalNodeResult, GlobalNodeView, GlobalSettings } from '@/components/globalsettings';
 import { READONLY_NODE_MESSAGE } from '@/components/messages';
@@ -56,8 +56,10 @@ async function nodeView(p: PlanNode): Promise<GlobalNodeView> {
   const base = { node: p.name, transport: p.transport, readonly: p.readonly };
   let supported = false;
   let streamLimits = false;
+  let features: Record<string, unknown> | undefined;
   try {
     const caps = await run(p, () => getCapabilities());
+    features = caps.features as Record<string, unknown> | undefined;
     supported = caps.features?.global_api === true;
     streamLimits = caps.features?.http_stream_limits === true;
   } catch (err) {
@@ -67,8 +69,9 @@ async function nodeView(p: PlanNode): Promise<GlobalNodeView> {
   if (!supported) return { ...base, reachable: true, supported: false, settings: null, error: null, code: null };
   try {
     const raw = globalSettingsView(await run(p, () => getGlobalSettings()));
-    // 再起動が要る項目（acme の contact・directory・eab など）の中身は画面に出さない
-    const settings = raw ? redactRestartItems(raw) : null;
+    // 再起動が要る項目（acme の contact・directory・eab など）の中身は画面に出さない。
+    // geoip・acme は features.global_api_geoip・global_api_acme（rproxy-api v0.4.22、#345）を返すノードでだけその場で変えられる
+    const settings = raw ? redactRestartItems(gateLiveItems(raw, features)) : null;
     return {
       ...base, reachable: true, supported: true, streamLimits: streamLimits, settings: settings,
       error: settings ? null : 'rproxy の応答を解釈できません。', code: settings ? null : 'bad_response',
@@ -145,7 +148,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     const results: GlobalNodeResult[] = await Promise.all(nodes.map(async (p): Promise<GlobalNodeResult> => {
       try {
         const r = changesOf(await run(p, () => patchGlobalSettings(patch, true)));
-        return { node: p.name, ok: true, changes: r.changes, applied: r.applied };
+        return { node: p.name, ok: true, changes: maskChanges(r.changes), applied: r.applied };
       } catch (err) {
         const f = globalFailure(err);
         return { node: p.name, ok: false, error: f.error, code: f.code };
@@ -159,10 +162,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   for (const n of result.nodes) {
     if (n.ok) logger.info(`global の設定を変えました（${who}、ノード ${n.node}）: ${changeSummary(n.changes ?? [])}`);
   }
-  if (result.ok) return res.status(200).json({ nodes: result.nodes });
+  const shown = result.nodes.map((n) => ({ ...n, changes: maskChanges(n.changes ?? []) }));
+  if (result.ok) return res.status(200).json({ nodes: shown });
   logger.warn(`global の設定を変えられませんでした（${who}、ノード ${result.node}）: ${result.failure.code} ${result.failure.error}`);
   const error = nodes.length > 1 ? `ノード ${result.node}: ${result.failure.error}` : result.failure.error;
-  return res.status(result.failure.status).json({ error: error, code: result.failure.code, nodes: result.nodes });
+  return res.status(result.failure.status).json({ error: error, code: result.failure.code, nodes: shown });
 }
 
 export default localizedApi(handler);

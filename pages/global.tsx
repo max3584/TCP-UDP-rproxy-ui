@@ -8,8 +8,10 @@ import Link from 'next/link';
 import { ErrorBanner, errorDetail } from '@/components/ui';
 import { explainError } from '@/components/messages';
 import {
-  GLOBAL_FIELD_DEFAULTS, GLOBAL_ITEM_LABELS, GlobalPatchError, SOURCE_LABELS, buildGlobalValue, editBlock, formatGlobalValue, sameValue, toGlobalForm,
+  GLOBAL_FIELD_DEFAULTS, GLOBAL_ITEM_LABELS, GlobalPatchError, SOURCE_LABELS, buildGlobalValue, editBlock, formatGlobalValue, hasMasked, keptNote, sameValue,
+  toGlobalForm,
 } from '@/components/globalsettings';
+import { AcmeFields, GeoipFields } from '@/components/GlobalAcmeEditor';
 import type { GlobalForm, GlobalItem, GlobalNodeResult, GlobalNodeView } from '@/components/globalsettings';
 import { localeTag, t } from '@/i18n/core';
 
@@ -62,7 +64,7 @@ const ItemRow: React.FC<{ name: string; item: GlobalItem; transport: 'unix' | 't
             {`API の値（${formatGlobalValue(item.api_value)}）は効いていません（設定ファイル・環境変数が優先）。`}
           </span>
         )}
-        {item.kept && <span className="block text-amber-900" data-testid="global-kept">設定ファイルから消えたが、使うルールがあるので残しています。</span>}
+        {item.kept && <span className="block text-amber-900" data-testid="global-kept">{keptNote(name)}</span>}
         {item.error && (
           <span className="block text-red-800" data-testid="global-item-error">
             {item.api_value !== undefined
@@ -141,6 +143,10 @@ const FormFields: React.FC<{ name: string; form: GlobalForm; onChange: (f: Globa
       return <input id={id} aria-label={itemLabel(name)} className={input} inputMode="numeric" value={form.text} onChange={(e) => onChange({ ...form, text: e.target.value })} />;
     case 'json':
       return <textarea id={id} aria-label={itemLabel(name)} className={input} rows={5} value={form.text} onChange={(e) => onChange({ ...form, text: e.target.value })} />;
+    case 'geoip':
+      return <GeoipFields form={form} onChange={onChange} />;
+    case 'acme':
+      return <AcmeFields form={form} onChange={onChange} masked={hasMasked(form)} />;
     case 'fields':
       return (
         <div className="grid grid-cols-1 sm:grid-cols-[12rem_1fr] gap-x-3 gap-y-1 items-center">
@@ -397,13 +403,18 @@ const GlobalPage: React.FC = () => {
                 )}
                 {e.mode === 'set' && (
                   <>
-                    {e.form.kind === 'fields' && (
+                    {(e.form.kind === 'fields' || e.form.kind === 'geoip' || e.form.kind === 'acme') && (
                       <p className="text-xs text-gray-700" data-testid="global-whole">
                         {`この項目は丸ごと置き換えます。空の欄は rproxy の既定になり、書いた欄だけが API の値になります（今の値: ${formatGlobalValue(item.value)}）。`}
                       </p>
                     )}
                     <FormFields name={name} form={e.form} onChange={(f) => setEdit(name, { ...e, form: f })} />
                     {item.unix_only && <p className="text-xs text-gray-700">守りに関わる項目です。rproxy は Unix ソケットからだけ受け付けます。</p>}
+                    {name === 'acme' && shown.length > 1 && hasApi && (
+                      <p className="text-xs text-amber-900" data-testid="global-acme-undo-note">
+                        グループの適用で一部のノードが断ったとき、rproxy は前の acme の秘密に関わる値を伏せて返すため、効かせたノードを前の値に戻せません（そのノードだけ値が違うままになります）。先に「差分を確かめる」ですべてのノードが受け付けることを確かめてください。
+                      </p>
+                    )}
                   </>
                 )}
               </fieldset>

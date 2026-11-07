@@ -342,11 +342,118 @@ describe('/api/forward/global without node configuration', () => {
   });
 });
 
+// rproxy-api v0.4.22（#345、UI #189）：geoip・acme はその場で変えられる。印（features.global_api_geoip・global_api_acme）を返すノードでだけ
+describe('/api/forward/global: geoip and acme', () => {
+  const liveView = (n: string) => {
+    const v = view(n) as { items: Record<string, unknown> };
+    const a = api[n] ?? {};
+    v.items.acme = {
+      value: a.acme ?? null, source: 'acme' in a ? 'api' : 'default', apply: 'live', unix_only: true, settable: true, ...('acme' in a ? { api_value: a.acme } : {}),
+    };
+    v.items.geoip = {
+      value: a.geoip ?? null, source: 'geoip' in a ? 'api' : 'file', apply: 'live', unix_only: true, settable: true, kept: !('geoip' in a),
+      ...('geoip' in a ? { api_value: a.geoip } : {}),
+    };
+    return v;
+  };
+  const flags = (on: boolean) => mocks.getCapabilities.mockImplementation(async () => ({
+    source_ip: [], features: { global_api: true, global_api_geoip: on, global_api_acme: on },
+  }));
+
+  beforeEach(() => {
+    mocks.getGlobalSettings.mockImplementation(async () => liveView(node()));
+  });
+
+  it('an rproxy without the flags shows geoip and acme as restart-only, with their contents hidden', async () => {
+    flags(false);
+    api = { a: { acme: { accounts: { le: { contact: ['mailto:a@example.com'], allowed_names: ['example.com'] } } } } };
+    const { body } = await call('GET', { query: { target: 'a' } });
+    const items = body.nodes[0].settings.items;
+    expect(items.acme).toMatchObject({ apply: 'restart', settable: false, redacted: true, value: null });
+    expect(items.geoip).toMatchObject({ apply: 'restart', settable: false });
+    expect(JSON.stringify(body)).not.toContain('mailto');
+  });
+
+  it('with the flags, acme is live and its secret-shaped values are hidden again by the UI', async () => {
+    flags(true);
+    const acme = {
+      accounts: { le: { contact: ['mailto:a@example.com'], allowed_names: ['example.com'], eab: { kid: 'kid-1', hmac_key_file: '/etc/rproxy/acme/eab' } } },
+      dns_providers: { relay: { type: 'http', secret_file: '/etc/rproxy/acme/t', add: { url: 'https://u:p@relay.example/tok/123?k=v', headers: { Authorization: 'Bearer {secret}' } }, allowed_names: ['example.com'] } },
+    };
+    api = { a: { acme: acme } };
+    const { body } = await call('GET', { query: { target: 'a' } });
+    const item = body.nodes[0].settings.items.acme;
+    expect(item).toMatchObject({ apply: 'live', settable: true });
+    const text = JSON.stringify(item);
+    for (const secret of ['kid-1', '/etc/rproxy/acme/eab', '/etc/rproxy/acme/t', 'u:p', 'tok/123', 'k=v', 'Bearer']) expect(text).not.toContain(secret);
+    expect(item.api_value.dns_providers.relay.add.url).toBe('https://***@relay.example/***?***');
+    // a kept geoip of the file is shown as such
+    expect(body.nodes[0].settings.items.geoip).toMatchObject({ kept: true, source: 'file' });
+  });
+
+  it('hides acme in the changes of a dry run and of an apply', async () => {
+    flags(true);
+    const acme = { accounts: { le: { allowed_names: ['example.com'], eab: { kid: 'kid-2', hmac_key_file: '/etc/rproxy/acme/eab' } } } };
+    const plan = await call('POST', { body: { target: 'a', values: { acme: acme }, dryRun: true } });
+    expect(plan.status).toBe(200);
+    expect(JSON.stringify(plan.body)).not.toContain('kid-2');
+    const applied = await call('POST', { body: { target: 'a', values: { acme: acme } } });
+    expect(applied.status).toBe(200);
+    expect(JSON.stringify(applied.body)).not.toContain('kid-2');
+    // rproxy got the value itself
+    expect(api.a.acme).toEqual(acme);
+  });
+
+  it('rolls back geoip on the other nodes of a group when one refuses (403 protected_file)', async () => {
+    flags(true);
+    api = { a: { geoip: { country_db: '/var/lib/GeoIP/old.mmdb' } } };
+    mocks.patchGlobalSettings.mockImplementation(async (body: Record<string, unknown>, dryRun: boolean) => {
+      if (node() === 'b') throw new RproxyError('geoip.country_db: /x/c.mmdb is not in /var/lib/GeoIP (RPROXY_API_GEOIP_DIR)', 'protected_file', 403);
+      return fakePatch(body, dryRun);
+    });
+    const { status, body } = await call('POST', { body: { target: 'g', values: { geoip: { country_db: '/var/lib/GeoIP/new.mmdb' } } } });
+    expect(status).toBe(403);
+    expect(body.code).toBe('global_protected_file');
+    expect(body.nodes.find((n: { node: string }) => n.node === 'a')).toMatchObject({ outcome: 'applied', undone: true });
+    expect(api.a.geoip).toEqual({ country_db: '/var/lib/GeoIP/old.mmdb' });
+  });
+
+  it('removing acme that rules use is 409 global_in_use', async () => {
+    flags(true);
+    api = { a: { acme: { accounts: { le: { allowed_names: ['example.com'] } } } } };
+    mocks.patchGlobalSettings.mockRejectedValue(new RproxyError('global.acme: resolver le-http is used by rules', 'in_use', 409));
+    const { status, body } = await call('POST', { body: { target: 'a', values: { acme: null } } });
+    expect(status).toBe(409);
+    expect(body.code).toBe('global_in_use');
+  });
+
+  it('does not send a hidden (***) previous acme back when rolling back: that node is reported as not undone', async () => {
+    flags(true);
+    const masked = { accounts: { le: { allowed_names: ['example.com'], eab: { kid: '***', hmac_key_file: '***' } } } };
+    api = { a: { acme: { accounts: { le: { allowed_names: ['example.com'] } } } } };
+    mocks.patchGlobalSettings.mockImplementation(async (body: Record<string, unknown>, dryRun: boolean) => {
+      if (node() === 'b') throw new RproxyError('in use', 'in_use', 409);
+      const r = fakePatch(body, dryRun) as { changes: { api_before: unknown }[] };
+      // rproxy hides the secret-shaped values of acme in the changes
+      for (const c of r.changes) c.api_before = masked;
+      return r;
+    });
+    const next = { accounts: { le2: { allowed_names: ['example.com'] } } };
+    const { status, body } = await call('POST', { body: { target: 'g', values: { acme: next } } });
+    expect(status).toBe(409);
+    expect(body.nodes.find((n: { node: string }) => n.node === 'a')).toMatchObject({ outcome: 'applied', undone: false });
+    // no PATCH carried ***
+    expect(mocks.patchGlobalSettings.mock.calls.every((c) => !JSON.stringify(c[0]).includes('***'))).toBe(true);
+    expect(api.a.acme).toEqual(next);
+  });
+});
+
 describe('globalFailure', () => {
   it('renames the codes that clash with the rules, and keeps unknown ones with rproxy\'s text', () => {
     expect(globalFailure(new RproxyError('x', 'restart_only', 409))).toMatchObject({ status: 409, code: 'global_restart_only' });
     expect(globalFailure(new RproxyError('x', 'in_use', 409))).toMatchObject({ status: 409, code: 'global_in_use' });
     expect(globalFailure(new RproxyError('outside', 'protected_file', 403))).toMatchObject({ status: 403, code: 'global_protected_file' });
+    expect(globalFailure(new RproxyError('too many listeners', 'limit', 409))).toMatchObject({ status: 409, code: 'global_limit' });
     expect(globalFailure(new RproxyError('not loaded yet', 'not_ready', 503))).toMatchObject({ status: 503, code: 'not_ready', error: 'not loaded yet' });
     expect(globalFailure(new RproxyError('new refusal', 'some_new_code', 422))).toMatchObject({ status: 422, code: 'some_new_code', error: 'new refusal' });
     expect(globalFailure(new RproxyError('lacks admin', 'forbidden', 403))).toMatchObject({ status: 502, code: 'global_forbidden' });

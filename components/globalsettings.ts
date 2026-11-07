@@ -4,6 +4,10 @@
 // UI は知らない項目も JSON のまま出して編集できるようにする（rproxy の版で項目や制限が変わっても画面を直さずに済むように）。
 // React と Node に依存しない（tests/globalsettings.test.ts）
 import { parseCidr } from './cidr';
+import { GlobalPatchError, MASKED, buildAcme, buildGeoip, toAcmeForm, toGeoipForm } from './globalacme';
+import type { AcmeForm, GeoipForm } from './globalacme';
+
+export { GlobalPatchError, MASKED };
 
 export type GlobalSource = 'file' | 'env' | 'api' | 'default';
 export type GlobalApply = 'live' | 'restart';
@@ -17,7 +21,7 @@ export interface GlobalItem {
   settable: boolean;
   api_value?: unknown;
   shadowed?: boolean;
-  // crowdsec：設定ファイルから消えたが、使うルールがあるので残している（source は file）
+  // 設定ファイルから消えた・変わったが、ルールが使うので前のものを残している（source は file。keptNote）
   kept?: boolean;
   // 再起動が要る項目の値は UI が出さない（acme の contact・directory・eab・DNS のプロバイダなど。/api/forward/acme と同じ考え方）。
   // redacted のときは value が null で、keys に一番上の項目の名前だけ
@@ -93,8 +97,14 @@ export const GLOBAL_ITEM_LABELS: Record<string, { label: string; help: string }>
   crowdsec: { label: 'CrowdSec', help: 'LAPI の URL と API キーのファイル（絶対パス）。新しい接続・リクエストから効きます。' },
   'http.timeouts': { label: 'HTTP の接続の時間の上限', help: 'http のルールのクライアントの接続の時間の上限（10s・5m などの時間、0s は上限なし。空の欄は既定）。http2_max_streams は時間ではなく、HTTP/2 の接続 1 本で同時に開けるストリームの数（1〜10000）です。新しい接続から効きます。' },
   udp_max_sessions: { label: 'UDP のセッションの上限', help: 'UDP のルールごとのセッションの数の上限（既定の値）。新しいセッションから効き、今のセッションは切りません。' },
-  acme: { label: 'ACME', help: '証明書の自動取得。設定ファイルで決め、再起動まで効きません。' },
-  geoip: { label: 'GeoIP のデータベース', help: '設定ファイルで決め、再起動まで効きません。' },
+  acme: {
+    label: 'ACME',
+    help: '証明書の自動取得（アカウント・DNS のプロバイダ・resolver・取ってよい名前）。新しい設定を組み立ててから入れ替えます（注文中の仕事はあきらめ、書いた TXT を消してからやり直します）。秘密は書けません：秘密のファイルを指すだけで、指せるのは rproxy-api の RPROXY_API_ACME_DIR のすぐ下のファイルだけです。',
+  },
+  geoip: {
+    label: 'GeoIP のデータベース',
+    help: 'ルールの geoip が使う mmdb のデータベース（国と ASN）。データベースを開き直してから入れ替え、新しい接続・リクエストから効きます。指せるのは rproxy-api の RPROXY_API_GEOIP_DIR のすぐ下のファイルだけです。',
+  },
   performance: { label: 'performance', help: 'ワーカーの数・UDP のソケットの数・CPU の固定・busy poll・splice・XDP。設定ファイルか環境変数で決め、再起動まで効きません。' },
   files: { label: 'ファイルの所有者の確かめ', help: '設定ファイルか環境変数で決め、再起動まで効きません。' },
   control_api: { label: '制御 API の待ち受け', help: 'RPROXY_API_ADDR・RPROXY_API_PORT・RPROXY_API_SOCKET。再起動まで効きません。' },
@@ -106,6 +116,13 @@ export const SOURCE_LABELS: Record<string, string> = {
   api: 'API',
   default: '既定',
 };
+
+// kept（設定ファイルの読み直しで、ルールが使うので前のものを残している）の注記。項目ごとに何を残しているかが違う
+export function keptNote(name: string): string {
+  if (name === 'geoip') return 'ルールの国・ASN のリストが要るデータベースを設定ファイルが外したため、前の geoip を残しています（使うルールがなくなれば入れ替えます）。';
+  if (name === 'acme') return 'ルールの ACME の証明書が使う resolver・名前を設定ファイルがなくしたため、前の acme を残しています（使うルールがなくなれば入れ替えます）。';
+  return '設定ファイルから消えたが、使うルールがあるので残しています。';
+}
 
 // 設定ファイル・環境変数の項目は API で変えられない（固定のルールと同じ考え方）
 export function fixedNote(source: string): string | null {
@@ -153,13 +170,6 @@ export function globalPatchBody(values: Record<string, unknown>): Record<string,
     at[path[path.length - 1]] = value === undefined ? null : value;
   }
   return body;
-}
-
-export class GlobalPatchError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'GlobalPatchError';
-  }
 }
 
 const ITEM_NAME = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$/;
@@ -217,10 +227,16 @@ export function globalSettingsView(raw: unknown): GlobalSettings | null {
 }
 
 // 再起動が要る項目の値を伏せる（UI の応答に入れない）。値がオブジェクトなら一番上の名前だけを残す。
-// 数・文字列・真偽（performance の workers など）は伏せるものがないのでそのまま
+// 数・文字列・真偽（performance の workers など）は伏せるものがないのでそのまま。
+// その場で変えられる acme（rproxy-api v0.4.22、#345）は、rproxy が伏せた形にもう一度 maskSecrets を掛けて渡す
+// （秘密らしい名前・ヘッダ・本文・URL の利用者・パス・クエリは ***。UI の側でも伏せることを rproxy の版に頼らない）
 export function redactRestartItems(settings: GlobalSettings): GlobalSettings {
   const items: Record<string, GlobalItem> = {};
   for (const [name, item] of Object.entries(settings.items)) {
+    if (item.apply === 'live' && SECRET_SHAPED_ITEMS.includes(name)) {
+      items[name] = { ...item, value: maskSecrets(item.value), ...('api_value' in item ? { api_value: maskSecrets(item.api_value) } : {}) };
+      continue;
+    }
     if (item.apply === 'live' || item.value === null || typeof item.value !== 'object') {
       items[name] = item;
       continue;
@@ -230,6 +246,77 @@ export function redactRestartItems(settings: GlobalSettings): GlobalSettings {
     items[name] = { ...rest, value: null, redacted: true, keys: Array.isArray(item.value) ? [] : Object.keys(item.value as Record<string, unknown>) };
   }
   return { ...settings, items: items };
+}
+
+// rproxy-api v0.4.22（#345）からその場で変えられる項目と、その印（GET /capabilities の features）。
+// 印を返さない rproxy では、答えの apply に関わらず再起動が要る項目として読み取り専用にする（中身も伏せる）
+export const LIVE_ITEM_FLAGS: Record<string, string> = { geoip: 'global_api_geoip', acme: 'global_api_acme' };
+
+export function gateLiveItems(settings: GlobalSettings, features: Record<string, unknown> | undefined): GlobalSettings {
+  const items = { ...settings.items };
+  for (const [name, flag] of Object.entries(LIVE_ITEM_FLAGS)) {
+    const item = items[name];
+    if (item && features?.[flag] !== true) items[name] = { ...item, apply: 'restart', settable: false };
+  }
+  return { ...settings, items: items };
+}
+
+// 秘密を含みうる形の項目（値を出すときに maskSecrets を掛ける）
+export const SECRET_SHAPED_ITEMS = ['acme'];
+
+// rproxy の redact_named と同じ名前の部分（この名前を含むキーの値は文字列をすべて ***）
+const SECRET_KEY_PARTS = ['headers', 'body', 'secret', 'token', 'key', 'password', 'credential', 'eab'];
+
+// 秘密らしい名前の値・URL の利用者とパスとクエリを *** にする（rproxy の config::global::redact_named と同じ考え方）
+export function maskSecrets(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(maskSecrets);
+  if (typeof v !== 'object' || v === null) return v;
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => {
+    const lower = k.toLowerCase();
+    if (SECRET_KEY_PARTS.some((p) => lower.includes(p))) return [k, maskAll(x)];
+    if ((lower === 'url' || lower.endsWith('_url')) && typeof x === 'string') return [k, maskUrl(x)];
+    return [k, maskSecrets(x)];
+  }));
+}
+
+function maskAll(v: unknown): unknown {
+  if (typeof v === 'string') return MASKED;
+  if (Array.isArray(v)) return v.map(maskAll);
+  if (typeof v === 'object' && v !== null) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, maskAll(x)]));
+  return v;
+}
+
+// URL の利用者・パス（/ より先）・クエリ・# 以降を伏せる
+export function maskUrl(u: string): string {
+  const noFrag = u.split('#')[0];
+  const q = noFrag.indexOf('?');
+  const base = q >= 0 ? noFrag.slice(0, q) : noFrag;
+  const at = base.indexOf('://');
+  if (at < 0) return q >= 0 ? `${base}?${MASKED}` : base;
+  const scheme = base.slice(0, at);
+  const rest = base.slice(at + 3);
+  const slash = rest.indexOf('/');
+  let authority = slash >= 0 ? rest.slice(0, slash) : rest;
+  const path = slash >= 0 ? rest.slice(slash) : '';
+  const user = authority.lastIndexOf('@');
+  if (user >= 0) authority = `${MASKED}@${authority.slice(user + 1)}`;
+  const shownPath = path === '' || path === '/' ? path : `/${MASKED}`;
+  return `${scheme}://${authority}${shownPath}${q >= 0 ? `?${MASKED}` : ''}`;
+}
+
+// dry run・適用の答えの changes の、秘密を含みうる形の項目（acme）の値を伏せる（rproxy も伏せて返すが、UI の側でも）
+export function maskChanges(changes: GlobalChange[]): GlobalChange[] {
+  return changes.map((c) => (SECRET_SHAPED_ITEMS.includes(c.item)
+    ? { ...c, before: maskSecrets(c.before), after: maskSecrets(c.after), api_before: maskSecrets(c.api_before), api_after: maskSecrets(c.api_after) }
+    : c));
+}
+
+// 値のどこかに伏せた印（***）があるか（伏せた値は送り返せない）
+export function hasMasked(v: unknown): boolean {
+  if (typeof v === 'string') return v.includes(MASKED);
+  if (Array.isArray(v)) return v.some(hasMasked);
+  if (typeof v === 'object' && v !== null) return Object.values(v).some(hasMasked);
+  return false;
 }
 
 // 2 つの値が同じか（キーの順を問わない。undefined と null は同じ）
@@ -271,7 +358,9 @@ export type GlobalForm =
   | { kind: 'text'; text: string }
   | { kind: 'number'; text: string }
   | { kind: 'fields'; keys: string[]; fields: Record<string, string> }
-  | { kind: 'json'; text: string };
+  | { kind: 'json'; text: string }
+  | GeoipForm
+  | AcmeForm;
 
 // 欄の初めの値：API の値だけ（今効いている既定の値を入れると、触らずに送ったときに既定が API の値として固まるため）。
 // グループでノードの API の値が違うときは呼ぶ側が undefined を渡して空にする。
@@ -293,6 +382,10 @@ export function toGlobalForm(name: string, item: GlobalItem | undefined, streamL
       return fields(httpTimeoutKeys(streamLimits, v));
     case 'crowdsec':
       return fields(CROWDSEC_KEYS);
+    case 'geoip':
+      return toGeoipForm(v);
+    case 'acme':
+      return toAcmeForm(v);
     default:
       return { kind: 'json', text: v === undefined || v === null ? '' : JSON.stringify(v, null, 2) };
   }
@@ -338,6 +431,10 @@ export function buildGlobalValue(name: string, form: GlobalForm): unknown {
       }
       return o;
     }
+    case 'geoip':
+      return buildGeoip(form);
+    case 'acme':
+      return buildAcme(form);
     case 'json': {
       const s = form.text.trim();
       if (s === '') return null;

@@ -350,11 +350,18 @@ jobs:
           docker rm rproxy-node-prep
           db_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${{ job.container.id }}")
           install -m 0755 rproxy-api/target/debug/rproxy-api "$E2E_DIR/rproxy-api"
+          # geoip・acme の API（rproxy-api v0.4.22、UI #189）：n2 にだけ API で指せるディレクトリを置く（n1 は断る。グループの戻しを確かめる）
+          mkdir -p "$E2E_DIR/n2/geoip" "$E2E_DIR/n2/acme"
+          echo 'not an mmdb' > "$E2E_DIR/n2/geoip/country.mmdb"
+          (umask 077; echo 'ZTJlLWhtYWMta2V5' > "$E2E_DIR/n2/acme/eab.key")
           for n in n1 n2; do
             mkdir -p "$E2E_DIR/$n"
             echo "token-$n" > "$E2E_DIR/$n/tokens"
+            dirs=
+            if [ "$n" = n2 ]; then dirs="-e RPROXY_API_GEOIP_DIR=/run/rproxy/geoip -e RPROXY_API_ACME_DIR=/run/rproxy/acme"; fi
+            # shellcheck disable=SC2086
             docker run -d --name "rproxy-$n" --network "${{ job.container.network }}" --cap-add NET_ADMIN \
-              -v "$E2E_DIR/rproxy-api:/usr/local/bin/rproxy-api:ro" -v "$E2E_DIR/$n:/run/rproxy" \
+              -v "$E2E_DIR/rproxy-api:/usr/local/bin/rproxy-api:ro" -v "$E2E_DIR/$n:/run/rproxy" $dirs \
               -e RPROXY_API_PORT=0 -e RPROXY_API_SOCKET=/run/rproxy/api.sock -e RPROXY_TOKEN_FILE=/run/rproxy/tokens -e RPROXY_NODE_NAME="$n" \
               -e RPROXY_DATABASE_URL="mysql://rproxy_$n:pw-$n@$db_ip:3306/rproxy_node_$n" \
               rproxy-e2e-node rproxy-api

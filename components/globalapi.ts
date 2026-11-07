@@ -10,7 +10,7 @@
 //   （502 crowdsec_unavailable（新しい LAPI が答えない）もコードはそのまま。503 not_loaded・upgrading・shutting_down は 503 のまま）
 import { rproxyFailure } from './apiguard';
 import { GLOBAL_UNKNOWN_MESSAGE, GLOBAL_UNSUPPORTED_MESSAGE } from './messages';
-import { UNIX_ONLY_MESSAGE, formatGlobalValue, globalPatchBody, globalSettingsView, sameValue } from './globalsettings';
+import { UNIX_ONLY_MESSAGE, formatGlobalValue, globalPatchBody, globalSettingsView, hasMasked, sameValue } from './globalsettings';
 import type { GlobalChange, GlobalNodeResult, GlobalSettings } from './globalsettings';
 import { RproxyError, getGlobalSettings, patchGlobalSettings } from './rproxy';
 
@@ -27,6 +27,8 @@ const RENAMED: Record<string, string> = {
   in_use: 'global_in_use',
   // アクセスログの場所の制限も含む（ルールのファイルの protected_file と説明を分ける）
   protected_file: 'global_protected_file',
+  // acme.http01_listen の待ち受けの数（RPROXY_MAX_LISTENERS）
+  limit: 'global_limit',
 };
 
 export interface Failure {
@@ -134,15 +136,24 @@ async function applyOne(n: ApplyNode, values: Record<string, unknown>, logger: L
 }
 
 // 効かせたノードを戻す：今の API の値がまだ UI が入れた値（api_after）のままの項目だけを前の値（なければ null）にする
-// （その間にほかの管理者が変えた値を上書きしない）
+// （その間にほかの管理者が変えた値を上書きしない）。
+// rproxy が伏せて返した前の値（acme の秘密らしい値・URL のパスなど。***）は送り返せないので戻さず、戻せなかったことにする
+// （*** をそのまま送ると、伏せた印が API の値になってしまう）
 async function undoOne(n: ApplyNode, s: NodeState, logger: Logger): Promise<boolean> {
   if (s.changes.length === 0) return true;
   try {
     const now = await readSettings(n);
-    const back = Object.fromEntries(s.changes.filter((c) => sameValue(apiOf(now, c.item), c.api_after)).map((c) => [c.item, c.api_before ?? null]));
-    const skipped = s.changes.map((c) => c.item).filter((i) => !(i in back));
+    const masked = s.changes.filter((c) => hasMasked(c.api_before)).map((c) => c.item);
+    const back = Object.fromEntries(s.changes
+      .filter((c) => !masked.includes(c.item) && sameValue(apiOf(now, c.item), c.api_after))
+      .map((c) => [c.item, c.api_before ?? null]));
+    const skipped = s.changes.map((c) => c.item).filter((i) => !(i in back) && !masked.includes(i));
     if (skipped.length > 0) logger.warn(`ノード ${n.name} の ${skipped.join(', ')} はほかで変わったので戻しません`);
     if (Object.keys(back).length > 0) await n.run(() => patchGlobalSettings(globalPatchBody(back), false));
+    if (masked.length > 0) {
+      logger.error(`ノード ${n.name} の ${masked.join(', ')} は前の値を rproxy が伏せて返すため戻せません（このノードだけ値が違います）`);
+      return false;
+    }
     return true;
   } catch (err) {
     logger.error(`ノード ${n.name} の global の設定を戻せませんでした（このノードだけ値が違います）: ${err}`);
