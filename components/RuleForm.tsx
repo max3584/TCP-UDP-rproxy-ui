@@ -26,7 +26,8 @@ import {
   routeTakesUpstream,
 } from './lib';
 import UpstreamFields, {
-  CHAIN_HELP, EMPTY_UPSTREAM_FORM, ROUTE_UPSTREAM_HELP, UpstreamForm, toUpstreamForm, upstreamFormUsed, upstreamSpec, upstreamSummary,
+  CHAIN_HELP, EMPTY_UPSTREAM_FORM, HTTP_UPSTREAM_HELP, ROUTE_UPSTREAM_HELP, UpstreamForm, ruleUpstreamSpec, servicesWithOwnTls, toUpstreamForm,
+  upstreamFormUsed, upstreamSpec, upstreamSummary,
 } from './UpstreamFields';
 import { CIPHER_SUITES, TLS12_CIPHER_SUITES, TLS13_CIPHER_SUITES, isTls13Suite } from './tls';
 import { checkTls, normalizeExtraListenAddrs, normalizeStartTlsRequired, normalizeTls, portCount, splitServerNames } from './tls';
@@ -778,9 +779,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
       if (protocol === 'tcp') {
         spec.alpn = alpnText.split(',').map((a) => a.trim()).filter((a) => a !== '');
       }
-      if (upstreamTls) {
-        spec.upstream = upstreamSpec(true, upstreamForm);
-      }
+      // L7 のルールは tls を付けずに欄の値だけ（#187）。L4 は「再暗号化する」のときだけ
+      const upstream = ruleUpstreamSpec(l7, upstreamTls, upstreamForm);
+      if (upstream !== undefined) spec.upstream = upstream;
     }
     return spec;
   };
@@ -1677,6 +1678,19 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
               </div>
             )}
 
+            {l7 ? (
+              // L7 のルール（#187）：TLS でつなぐかは転送先の URL（https://）で決まるので「再暗号化する」のチェックは出さず、欄をいつも出す
+              <fieldset className="mb-4" data-testid="http-upstream">
+                <legend className="text-sm font-medium text-gray-800">https:// の転送先への TLS</legend>
+                <p className={helpClass} id="rule-upstream-http-help">{HTTP_UPSTREAM_HELP}</p>
+                {servicesWithOwnTls(httpRules).length > 0 && (
+                  <p className="mt-1 text-xs text-amber-900" data-testid="http-upstream-overridden">
+                    {`転送先への TLS を設定したサービス（${servicesWithOwnTls(httpRules).join(', ')}）では、ここの設定を使いません。`}
+                  </p>
+                )}
+                <UpstreamFields idPrefix="rule-upstream" value={upstreamForm} onChange={(patch) => setUpstreamForm({ ...upstreamForm, ...patch })} filesLocked={restricted} />
+              </fieldset>
+            ) : (
             <div className="mb-4">
               <label className="inline-flex items-center text-sm font-medium text-gray-800">
                 <input type="checkbox" checked={upstreamTls} onChange={(e) => setUpstreamTls(e.target.checked)} className="mr-2" />
@@ -1689,6 +1703,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
                 <p className={helpClass}>サーバ名ごとの転送先に「転送先への TLS」を指定した名前では、ここの設定の代わりにそれを使います。</p>
               )}
             </div>
+            )}
             <p className={helpClass} data-testid="file-owner-note">{FILE_OWNER_NOTE}</p>
             {restricted && <p className="mt-1 text-xs text-amber-900" data-testid="user-files-note">{USER_FILES_NOTE}</p>}
           </>
