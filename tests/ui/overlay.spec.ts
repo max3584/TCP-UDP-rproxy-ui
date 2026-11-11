@@ -176,10 +176,12 @@ test.describe('overlays on static rules (#193)', () => {
     // 設定ファイルのサービスと、秘密のファイルを持つファイルのミドルウェアは選べない
     await expect(section.locator('#http-route-0-target option', { hasText: 'file-web' })).toBeDisabled();
     await expect(section.locator('#http-route-0-target')).toHaveValue('service:backend');
-    const option = section.getByLabel(/にミドルウェアを足す$/).locator('option', { hasText: 'file-auth' });
+    // サービスの転送先ごとのミドルウェアの欄もあるので、ルートの欄を名前で選ぶ
+    const routeMiddlewares = section.getByLabel('ルート route にミドルウェアを足す');
+    const option = routeMiddlewares.locator('option', { hasText: 'file-auth' });
     await expect(option).toBeDisabled();
     await expect(option).toContainText('秘密のファイルあり');
-    await expect(section.getByLabel(/にミドルウェアを足す$/).locator('option', { hasText: 'file-headers' })).toBeEnabled();
+    await expect(routeMiddlewares.locator('option', { hasText: 'file-headers' })).toBeEnabled();
 
     const put = (http: Record<string, unknown>) => page.request.post('/api/forward/overlay-put', {
       headers: SAME_ORIGIN, data: { protocol: 'tcp', addr: '127.0.0.1', port: HTTP_PORT, etag: null, overlay: { http } },
