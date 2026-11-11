@@ -6,6 +6,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import type { Balance, CertStatus, HealthCheck, HttpSpec, Protocol, RuleOrigin, RuleStats, SourceIp, StartTls, Target, TlsMode, TlsSpec } from './lib';
 import type { InterfacesInfo } from './listen';
 import type { BandwidthSpec, Condition, GeoipSpec, L4OutlierSpec, Labels, LimitsSpec, ProxyProtocolSpec, RulePlan } from './v04';
+import type { OverlaySpec, OverlaySummary, OverlayView } from './overlay';
 
 export type { HttpSpec, Protocol, RuleStats, SourceIp, StartTls, TlsMode, TlsSpec };
 
@@ -75,6 +76,8 @@ export interface RproxyRuleStatus extends Omit<RproxyRule, 'listen_port_end' | '
   cert_status?: CertStatus[];
   // ACME の証明書の状態（rproxy v0.3.21 以降。ACME の証明書がないルールでは省かれる。components/acme.ts）
   acme?: unknown[];
+  // 固定ルールに重ねる分の様子（rproxy-api v0.4.23、#397。重ねる分のある固定ルールだけ）
+  overlay?: OverlaySummary;
 }
 
 export interface RproxyRuleKey {
@@ -168,6 +171,8 @@ export interface CapabilityFeatures {
   performance?: string[];
   // v0.4.19：global の設定の API（GET / PATCH /config/global、#342）
   global_api?: boolean;
+  // v0.4.23：固定ルールに重ねる分（GET / PUT / DELETE /rules/{key}/overlay、#397）
+  static_overlay?: boolean;
 }
 
 export interface Capabilities {
@@ -371,9 +376,14 @@ export function currentNode(): RproxyNode | undefined {
 }
 
 async function request<T>(method: string, path: string, body?: unknown, timeoutMs = TIMEOUT_MS): Promise<T> {
+  return (await requestWithHeaders<T>(method, path, body, timeoutMs)).data;
+}
+
+// 応答のヘッダも返す（重ねる分の ETag）。extra は要求に足すヘッダ（If-Match など）
+async function requestWithHeaders<T>(method: string, path: string, body?: unknown, timeoutMs = TIMEOUT_MS, extra: Record<string, string> = {}): Promise<{ data: T; etag: string | null }> {
   const node = nodeContext.getStore();
   const clientTls = node ? node.tls : envClientTls();
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { ...extra, Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
   if (node?.readonly && staleNodes.has(node.name)) {
@@ -423,9 +433,10 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
     throw new RproxyError(message, code, res.status, Number.isFinite(retry) && retry > 0 ? retry : undefined);
   }
 
-  if (res.status === 204 || text === '') return undefined as T;
+  const etag = res.headers?.get('etag') ?? null;
+  if (res.status === 204 || text === '') return { data: undefined as T, etag: etag };
   try {
-    return JSON.parse(text) as T;
+    return { data: JSON.parse(text) as T, etag: etag };
   } catch {
     throw new RproxyError(`rproxy の応答を解釈できません: ${text.slice(0, 200)}`, 'bad_response', res.status);
   }
@@ -506,4 +517,24 @@ export function planDelete(key: RproxyRuleKey): Promise<RulePlan> {
 export async function deleteRule(key: RproxyRuleKey, drainSecs?: number): Promise<void> {
   const query = drainSecs !== undefined ? `?drain_secs=${drainSecs}` : '';
   await request<void>('DELETE', `${rulePath(key)}${query}`);
+}
+
+// 固定ルールに重ねる分（rproxy-api v0.4.23、#397、features.static_overlay）。GET は重ねる分がなければ 404 not_found
+export function overlayPath(key: RproxyRuleKey): string {
+  return `${rulePath(key)}/overlay`;
+}
+
+export async function getOverlay(key: RproxyRuleKey): Promise<{ view: OverlayView; etag: string | null }> {
+  const out = await requestWithHeaders<OverlayView>('GET', overlayPath(key));
+  return { view: out.data, etag: out.etag ?? out.data?.etag ?? null };
+}
+
+// 丸ごと置き換える。ifMatch は GET の ETag（変わっていれば 412 precondition_failed）。作るときは null（If-Match を付けない）
+export async function putOverlay(key: RproxyRuleKey, spec: OverlaySpec, ifMatch: string | null): Promise<{ view: OverlayView; etag: string | null }> {
+  const out = await requestWithHeaders<OverlayView>('PUT', overlayPath(key), spec, TIMEOUT_MS, ifMatch !== null ? { 'If-Match': ifMatch } : {});
+  return { view: out.data, etag: out.etag ?? out.data?.etag ?? null };
+}
+
+export async function deleteOverlay(key: RproxyRuleKey, ifMatch: string | null): Promise<void> {
+  await requestWithHeaders<void>('DELETE', overlayPath(key), undefined, TIMEOUT_MS, ifMatch !== null ? { 'If-Match': ifMatch } : {});
 }

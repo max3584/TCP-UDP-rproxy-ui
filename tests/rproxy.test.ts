@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RproxyError, addRule, apiTarget, deleteRule, getCapabilities, listRules, modifyRule } from '@/components/rproxy';
+import { RproxyError, addRule, apiTarget, deleteOverlay, deleteRule, getCapabilities, getOverlay, listRules, modifyRule, putOverlay } from '@/components/rproxy';
 
 const fetchMock = vi.fn();
 
@@ -28,6 +28,31 @@ afterEach(() => {
 });
 
 describe('rproxy client', () => {
+  it('reads, replaces and removes a static rule\'s overlay with the ETag and If-Match (#193)', async () => {
+    const key = { protocol: 'tcp' as const, listen_addr: '::1', listen_port: 443 };
+    const view = { rule: 'tcp/[::1]:443', http: { routes: [] }, state: 'applied', etag: '"o-1"' };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(view), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"o-1"' } }));
+    const got = await getOverlay(key);
+    expect(got.etag).toBe('"o-1"');
+    expect(lastCall().url).toBe('http://127.0.0.1:8080/rules/tcp/%3A%3A1/443/overlay');
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ...view, etag: '"o-2"' }), { status: 200, headers: { ETag: '"o-2"' } }));
+    const put = await putOverlay(key, { http: { routes: [] } }, '"o-1"');
+    expect(put.etag).toBe('"o-2"');
+    expect(lastCall().init.method).toBe('PUT');
+    expect(lastCall().init.headers['If-Match']).toBe('"o-1"');
+
+    fetchMock.mockResolvedValueOnce(json({}, 201));
+    await putOverlay(key, { http: { routes: [] } }, null);
+    expect(lastCall().init.headers).not.toHaveProperty('If-Match');
+
+    fetchMock.mockResolvedValueOnce(json({ error: 'the overlay changed', code: 'precondition_failed' }, 412));
+    const err = await deleteOverlay(key, '"o-1"').catch((e) => e);
+    expect(err).toBeInstanceOf(RproxyError);
+    expect(err.status).toBe(412);
+    expect(lastCall().init.method).toBe('DELETE');
+  });
+
   it('returns parsed rules on success', async () => {
     const rules = [{ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 80, remote_addr: 'example.com', remote_port: 8080, state: 'running', error: null, resolved: [], connections: 2 }];
     fetchMock.mockResolvedValueOnce(json(rules));

@@ -50,6 +50,9 @@ async function mockApi(context: BrowserContext, lang: Locale): Promise<void> {
         const perPage = Number(q.get('per_page') ?? 20);
         return json({ entries: entries.slice(0, perPage), total: entries.length, page: 1, perPage: perPage });
       }
+      // 固定ルールに重ねる分（#193）：サンプルの rproxy は使えない（欄を出さない）
+      case 'overlay':
+        return json({ available: false, features: null, overlay: null, etag: null, canEdit: false, secretItems: { services: [], middlewares: [] }, shape: { http: false, tlsRoutes: false } });
       case 'capabilities':
         return json(CAPABILITIES);
       case 'interfaces':

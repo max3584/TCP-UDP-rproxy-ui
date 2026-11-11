@@ -2,6 +2,9 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { useSession } from 'next-auth/react';
+import type { sessionUser } from '@/components/lib';
+import OverlayEditor from '@/components/OverlayEditor';
 import { routeNames } from '@/components/lib';
 import type { CacheCounts, CertStatus, ForwardRules, HttpStats } from '@/components/lib';
 import { capText, fullNodes, healthCheckLabel, nodeTargetStatus, reportsTargetHealth, targetStatus, tlsRouteStatus } from '@/components/targets';
@@ -617,6 +620,10 @@ const RuleDetailPage: React.FC = () => {
   const router = useRouter();
   const key = useMemo(() => (router.isReady ? parseRuleKey(router.query) : null), [router.isReady, router.query]);
   const { rule, error, setError, notFound, lastUpdated, load } = useRule(key);
+  const { data: session } = useSession();
+  const user = (session as sessionUser | null)?.user;
+  // 重ねる分を変えたら履歴を読み直す
+  const [historyKey, setHistoryKey] = useState(0);
   // ノードが 2 つ以上なら、ノード／グループとノードごとの状態を出す（#98）
   const nodesInfo = useNodes();
   const manyNodes = multiNode(nodesInfo);
@@ -749,6 +756,11 @@ const RuleDetailPage: React.FC = () => {
           <p className="inline-flex flex-wrap items-center gap-2 text-sm text-gray-800" data-testid="static-note">
             <StaticBadge />
             {STATIC_RULE_NOTE}
+            {rule.overlay && (
+              <span className={`badge border ${rule.overlay.state === 'applied' ? 'bg-blue-50 text-blue-900 border-blue-300' : 'bg-red-50 text-red-900 border-red-300'}`} data-testid="overlay-badge">
+                {rule.overlay.state === 'applied' ? '重ねる分あり' : '重ねる分が効いていません'}
+              </span>
+            )}
           </p>
         )}
         {rule && key && rule.readonlyNode && (
@@ -916,6 +928,12 @@ const RuleDetailPage: React.FC = () => {
             </Section>
           )}
 
+          {/* 固定ルールに API で重ねる分（rproxy-api v0.4.23、#193）。固定ルールはノードごとなので target はそのノード */}
+          {rule.origin === 'static' && !rule.readonlyNode && (
+            <OverlayEditor rule={rule} target={rule.target} admin={user?.access === 'admin'} cacheCaps={user?.cacheCaps}
+              onChanged={() => { setHistoryKey((k) => k + 1); void load(); }} />
+          )}
+
           {rule.origin !== 'static' && (
             <UsagePanel id="section-usage" title="通信量（集計）"
               query={new URLSearchParams({ protocol: rule.protocol, addr: rule.srcAddr, port: String(rule.srcPort), ...(rule.target !== undefined ? { target: rule.target } : {}), ...(rule.target !== undefined && tab !== 'all' ? { node: tab } : {}) }).toString()} />
@@ -975,10 +993,10 @@ const RuleDetailPage: React.FC = () => {
         </div>
       )}
 
-      {/* 変更の履歴（#61）。固定ルールは DB にないので履歴もない */}
-      {key && !(rule && rule.origin !== 'dynamic') && (
+      {/* 変更の履歴（#61）。固定ルールは DB にないので、履歴は重ねる分の変更（OVERLAY、#193）だけ */}
+      {key && !(rule && rule.origin === 'api') && (
         <Section id="section-history" title="変更の履歴">
-          <HistoryList filter={{ protocol: key.protocol, addr: key.addr, port: key.port, ...((key.target ?? rule?.target) !== undefined ? { target: key.target ?? rule?.target } : {}) }} onReverted={() => void load()} />
+          <HistoryList key={historyKey} filter={{ protocol: key.protocol, addr: key.addr, port: key.port, ...((key.target ?? rule?.target) !== undefined ? { target: key.target ?? rule?.target } : {}) }} onReverted={() => void load()} />
         </Section>
       )}
 

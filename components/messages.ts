@@ -5,6 +5,10 @@ import { UNIX_ONLY_MESSAGE } from './globalsettings';
 export const STATIC_RULE_MESSAGE = '固定ルールは rproxy の設定ファイルで管理されているため、画面からは変更・削除できません。';
 // 詳細画面で、編集・削除のボタンの代わりに出す
 export const STATIC_RULE_NOTE = '固定ルール（rproxy の設定ファイルで管理）';
+// 固定ルールに重ねる分（#193）の断り
+export const OVERLAY_CONFLICT_MESSAGE = '設定ファイルにある名前（ルート・サービス・ミドルウェア・サーバ名）は、重ねる分では使えません（ファイルの *.example.com がすべてを受ける名前も同じ）。別の名前にしてください。';
+export const FILE_IN_USE_MESSAGE = 'ほかの持ち主（設定ファイル・ほかのトークン）の鍵・秘密のファイルは使えません。設定ファイルのサービス・ミドルウェアのうち、秘密のファイル（サービスのクライアントの鍵・OIDC の秘密・basic_auth の users_file）を持つもの（とそれを使うもの）は、管理者だけが重ねる分から使えます。';
+export const PRECONDITION_FAILED_MESSAGE = 'ほかの人が先に変えました（ETag が合いません）。読み直してから、もう一度直してください。';
 
 // ACME の証明書（tls.certificates[].acme）を、ACME に対応していない rproxy（GET /capabilities の features.acme が false。v0.3.21 より前）で見たとき
 export const ACME_UNSUPPORTED_NOTE =
@@ -153,6 +157,12 @@ const EXPLAIN: Record<string, string> = {
   upgrading: 'rproxy が引き継ぎ（更新）の途中です。少し待ってからやり直してください。',
   shutting_down: 'rproxy が終了の途中です。起動し直してからやり直してください。',
   forbidden_admin: '管理者だけが使えます。',
+  // 固定ルールに重ねる分（rproxy-api v0.4.23、#397、UI #193）
+  overlay_conflict: OVERLAY_CONFLICT_MESSAGE,
+  not_static: '重ねる分は設定ファイルの固定ルールにだけ足せます（API のルールは「編集」で、ルールの組は組の側で直してください）。',
+  file_in_use: FILE_IN_USE_MESSAGE,
+  precondition_failed: PRECONDITION_FAILED_MESSAGE,
+  target_required: 'ノード／グループ（target）を指定してください。',
 };
 
 // 1024 未満のポートは、rproxy に CAP_NET_BIND_SERVICE がないと開けない

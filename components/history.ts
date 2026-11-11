@@ -1,14 +1,16 @@
 // 変更の履歴（forward_rules_log。#61）の型と、前の版との差分。React に依存しない（tests/history.test.ts）
 
 import type { ForwardRule } from './lib';
+import type { OverlaySpec } from './overlay';
 import { hostPort, portsLabel } from './dashboard';
 import { tc, translate } from '@/i18n/core';
 import { connectTimeoutText, relayTimeoutText, v04Fields } from './v04';
 import { targetCapsOf, withoutTargetCaps } from './targets';
 
-// RESEND は 1 つのノードへの送り直し（#98。内容は変えない）、OVERRIDE はノードごとの上書きの変更（内容はそのノードで動かす内容）
-export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND' | 'OVERRIDE';
-export const HISTORY_ACTIONS: HistoryAction[] = ['ADD', 'UPDATE', 'DELETE', 'RESEND', 'OVERRIDE'];
+// RESEND は 1 つのノードへの送り直し（#98。内容は変えない）、OVERRIDE はノードごとの上書きの変更（内容はそのノードで動かす内容）、
+// OVERLAY は固定ルールに重ねる分の変更（#193。内容は rule ではなく overlay。null は外した）
+export type HistoryAction = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND' | 'OVERRIDE' | 'OVERLAY';
+export const HISTORY_ACTIONS: HistoryAction[] = ['ADD', 'UPDATE', 'DELETE', 'RESEND', 'OVERRIDE', 'OVERLAY'];
 
 export const ACTION_LABELS: Record<HistoryAction, string> = {
   ADD: '追加',
@@ -16,6 +18,7 @@ export const ACTION_LABELS: Record<HistoryAction, string> = {
   DELETE: '削除',
   RESEND: '送り直し',
   OVERRIDE: 'ノードの上書き',
+  OVERLAY: '固定ルールに重ねる分',
 };
 
 // 1 件の履歴。rule はその操作のあとの内容（DELETE は削除する前の内容）。
@@ -35,6 +38,8 @@ export interface HistoryEntry {
   // 送り直し（RESEND）の相手のノード
   node?: string;
   rule: ForwardRule | null;
+  // 固定ルールに重ねる分（OVERLAY の行だけ。null は外した）
+  overlay?: OverlaySpec | null;
   // 同じルールの 1 つ前の版との違い（最初の版、または読めないときは空）
   changes: string[];
   // 利用者が巻き戻せるか（固定ルールの履歴、内容が読めない履歴は false）

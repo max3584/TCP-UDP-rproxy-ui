@@ -466,6 +466,17 @@ rx is the number of bytes from the client to the target, tx from the target to t
 Static rules are the rules in the file rproxy loads at startup (`RPROXY_STATIC_RULES` / `--static-rules`; "Static rules" in `../rproxy-api/docs/API.md`) and are not stored in the DB.
 They are shown on the dashboard and details screens to anyone who is signed in, but cannot be changed or deleted from the screens (edit the file and restart rproxy).
 
+**Overlays on static rules** (rproxy-api v0.4.23's `GET` / `PUT` / `DELETE /rules/{key}/overlay`, `features.static_overlay`; UI #193): under "Overlay" in a static rule's details you can add, leaving the file's rule as it is, http routes, services and middlewares (when the rule has `http`) or per-server-name destinations (`tls.routes`; when the TLS mode is sni, or terminate without http and client authentication). It is shown only on nodes that return `features.static_overlay`.
+
+- Overlay routes only see requests that match none of the file's routes (a higher priority does not take requests of the file's routes). Server names likewise only those that match none of the file's `tls.routes` (names under the file's `*.example.com` cannot be used).
+- Editing uses the same fields as the "L7 (HTTP)" tab, and the file's services and middlewares can be chosen by name (marked "settings file"). Names the file has cannot be used in the overlay (`409 overlay_conflict`; also reported before saving). "When no route matches" and HTTP/3 are the file's.
+- Saving replaces the whole overlay and sends the `ETag` from when it was opened as `If-Match`. If someone else changed it first, it is `412`, and "Reload" shows the current overlay.
+- States: applied, not applied (`not_applied`: after a reload the static rule is gone, changed shape, or no longer validates merged; the overlay is kept and applies again when the file allows it), and items left out because the file now has the same name (`shadowed`). A note is shown when it could not be stored in the database (`persisted: false`).
+- Permissions: it can be changed by people who may use the node (`RPROXY_UI_USER_NODES`) and the rule's whole port range (`RPROXY_UI_USER_PORTS`). Non-administrators cannot write file paths (`403 file_not_allowed`; existing values stay hidden in the same place), their destinations are checked against the allow list, and they cannot use the file's services and middlewares that hold (or use something that holds) secret files (a service's client key, an OIDC secret, a `users_file`) (`409 file_in_use`; the UI refuses it even when the UI's token is an rproxy admin; such items are shown as "holds secret files" and cannot be chosen). `basic_auth`'s `user_header` and `forward_auth`'s `response_headers` cannot name forwarding headers such as `X-Forwarded-For` (`400`).
+- Several rproxy instances: static rules come from each node's own settings file, so overlays are per node too (never grouped; only the node of the details page is changed).
+- Storage: rproxy follows the UI token's `persist` and stores overlays in the database's `rproxy_rule_overlays` (migration 014). The UI does not read this table; it reads and writes through the rproxy API.
+- Changes are recorded in the history as "Overlay on a static rule" (`OVERLAY`; they cannot be reverted).
+
 The form is divided into tabs.
 
 | Tab | Contents |
@@ -545,7 +556,7 @@ You can filter by protocol, listen address, port, operation and period (`rproxy-
   - **Earlier owners' versions are visible too**: history rows have no owner column, and rules are matched by key (protocol, listen address, port and, with nodes configured, the node / group). A user who creates a rule with the key of a rule someone else deleted also sees the versions from when the other person owned it (who performed it, targets, stored certificate names, file paths, allowed sources, labels and so on; nothing is hidden) as "history of the rules they currently own", and "Revert to this version" can create the same contents (the user limits check them like new values). To hide old versions between users, an administrator deletes them from `forward_rules_log` with the DB's admin user (e.g. `DELETE FROM forward_rules_log WHERE protocol = 'tcp' AND src_addr = '0.0.0.0' AND src_port = 8443 AND updated_at < '2026-10-01'`).
 - "Revert to this version" restores the contents at that point. For change and add rows it restores the contents after that operation; for delete rows, the contents just before deletion.
   If the rule still exists it is replaced (a version that differs in source IP handling, port range or L4 / L7 is recreated); if it was deleted it is recreated. Reverts are also recorded in the history.
-- rproxy static rules are not in the DB, so they do not appear in the history (a revert is not possible when a static rule with the same key exists).
+- rproxy static rules are not in the DB, so they do not appear in the history (a revert is not possible when a static rule with the same key exists). Changes of overlays on static rules (`OVERLAY`) do appear (they cannot be reverted).
 - The history is the DB's `forward_rules_log`. No columns were added, so no migration is needed.
 
 ## Usage (traffic accounting)
