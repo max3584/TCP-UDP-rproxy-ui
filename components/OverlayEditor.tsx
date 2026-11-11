@@ -18,13 +18,17 @@ import {
   OverlaySpec,
   OverlayView,
   SecretItems,
+  fileItemsUsed,
   fileNames,
+  fileSecretItems,
   forwardingIdentityProblems,
+  secretFileItemsUsed,
   isEmptyOverlay,
   overlayConflicts,
   overlaySpecOf,
 } from './overlay';
 import { ConfirmDialog, ErrorBanner, errorDetail } from './ui';
+import { FILE_SERVICE_NOT_ALLOWED_MESSAGE } from './messages';
 import { formatTimestamp, hostPort } from './dashboard';
 
 interface OverlayInfo {
@@ -65,9 +69,21 @@ function buildSpec(http: HttpRules | null, routes: RouteRow[] | null, ctx: Param
   return overlaySpecOf(out);
 }
 
-// 画面で先に確かめる（rproxy と API route も確かめる）
-export function overlayProblems(rule: ForwardRules, spec: OverlaySpec): string[] {
+// 管理者でない人が使えないファイルの項目（ファイルのサービスはどれも、ミドルウェアは秘密を持つもの）と理由。
+// secrets は API が伏せない形で数えたもの（画面のルールはパスを伏せてあるので、なければルールから数える）
+export function userRefusedItems(rule: ForwardRules, spec: OverlaySpec, secrets?: SecretItems): string[] {
+  const names = fileNames(rule);
   const out: string[] = [];
+  const services = fileItemsUsed(spec, names).services;
+  if (services.length > 0) out.push(`設定ファイルのサービス ${services.join(', ')}: ${FILE_SERVICE_NOT_ALLOWED_MESSAGE}`);
+  const secret = secretFileItemsUsed(spec, names, secrets ?? fileSecretItems(rule.http)).middlewares;
+  if (secret.length > 0) out.push(`設定ファイルのミドルウェア ${secret.join(', ')}: 秘密のファイル（鍵・OIDC の秘密・users_file）を持つ（か、それを使う）ので、管理者だけが使えます。`);
+  return out;
+}
+
+// 画面で先に確かめる（rproxy と API route も確かめる）。admin でなければ使えないファイルの項目も
+export function overlayProblems(rule: ForwardRules, spec: OverlaySpec, admin = true, secrets?: SecretItems): string[] {
+  const out: string[] = admin ? [] : userRefusedItems(rule, spec, secrets);
   for (const c of overlayConflicts(fileNames(rule), spec)) out.push(`${OVERLAY_KIND_LABELS[c.kind] ?? c.kind} ${c.name}: ${c.reason}（設定ファイルにある名前は使えません）`);
   if (spec.http) {
     const file = toHttpRules(rule.http);
@@ -106,6 +122,8 @@ const OverlayEditor: React.FC<{
   const [problems, setProblems] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // 直し始めたときに、前から使っていて利用者には断られるファイルの項目（理由を先に出す）
+  const [startRefused, setStartRefused] = useState<string[]>([]);
 
   const query = useMemo(() => new URLSearchParams({
     protocol: rule.protocol, addr: rule.srcAddr, port: String(rule.srcPort), ...(target !== undefined ? { target } : {}),
@@ -150,6 +168,7 @@ const OverlayEditor: React.FC<{
     setHttp(info.shape.http ? httpForm(spec) : null);
     setRoutes(info.shape.tlsRoutes ? (spec.tls?.routes ?? []).map(routeRow) : null);
     setProblems([]);
+    setStartRefused(admin ? [] : userRefusedItems(rule, spec, info.secretItems));
     setError('');
     setNotice('');
     setStale(false);
@@ -167,7 +186,7 @@ const OverlayEditor: React.FC<{
       setProblems(['足すものがありません（重ねる分をすべて外すときは「重ねる分を外す」を使ってください）。']);
       return;
     }
-    const found = overlayProblems(rule, next);
+    const found = overlayProblems(rule, next, admin, info.secretItems);
     setProblems(found);
     if (found.length > 0) return;
     setBusy(true);
@@ -303,8 +322,15 @@ const OverlayEditor: React.FC<{
         <div className="mt-3" data-testid="overlay-editor">
           {!admin && (
             <p className="mb-3 text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-sm px-2 py-1" data-testid="overlay-secret-note">
-              設定ファイルのサービス・ミドルウェアのうち「秘密のファイルあり」のもの（クライアントの鍵・OIDC の秘密・users_file を持つか、それを使うもの）は、管理者だけが使えます。
+              {FILE_SERVICE_NOT_ALLOWED_MESSAGE}
+              設定ファイルのミドルウェアのうち「秘密のファイルあり」のもの（OIDC の秘密・users_file を持つか、それを使うもの）も、管理者だけが使えます。
             </p>
+          )}
+          {!admin && startRefused.length > 0 && (
+            <div role="alert" className="mb-3 text-xs text-red-800 bg-red-50 border border-red-300 rounded-sm px-2 py-1" data-testid="overlay-refused-items">
+              <p>今の重ねる分は、利用者には使えない設定ファイルの項目を使っているため、このままでは保存できません（外してから保存してください）。</p>
+              <ul className="list-disc pl-5">{startRefused.map((p) => <li key={p}>{p}</li>)}</ul>
+            </div>
           )}
           {http !== null && (
             <HttpEditor
@@ -318,7 +344,7 @@ const OverlayEditor: React.FC<{
               streamLimits={features?.http_stream_limits === true}
               filesLocked={!admin}
               cacheCaps={cacheCaps}
-              overlayFile={{ http: toHttpRules(rule.http), secrets: info.secretItems, lockSecrets: !admin }}
+              overlayFile={{ http: toHttpRules(rule.http), secrets: info.secretItems, lockSecrets: !admin, lockServices: !admin }}
             />
           )}
           {routes !== null && (

@@ -64,8 +64,10 @@ import {
 } from '@/components/rproxy';
 import type { CapabilityFeatures } from '@/components/rproxy';
 import {
+  fileItemsUsed,
   fileNames,
   fileSecretItems,
+  overlayCreatedAt,
   forwardingIdentityProblems,
   isEmptyOverlay,
   overlayAsRule,
@@ -1898,10 +1900,11 @@ async function overlayPlace(actor: Actor, input: any, write: boolean): Promise<O
   } else {
     const target = requestedTarget(cfg, queryString(input?.target) || undefined) ?? cfg.defaultTarget ?? cfg.nodes[0]?.name;
     if (target === undefined || target === null) throw new HttpError(404, 'ルールが見つかりません。', 'not_found');
-    place = placeOf(cfg, target);
-    if (place.nodes.length !== 1) {
+    // グループの名前は断る（ノードが 1 つのグループも。固定ルールはノードの設定ファイルのもの）
+    if (!cfg.nodes.some((n) => n.name === target)) {
       throw new HttpError(400, '固定ルールに重ねる分はノードごとです（固定ルールは各ノードの設定ファイルのもの）。ノードの名前を target に指定してください。', 'target_required');
     }
+    place = placeOf(cfg, target);
   }
   if (write) checkNodes(actor, place);
   else checkNodesVisible(actor, place);
@@ -1925,6 +1928,30 @@ function checkOverlayWritable(actor: Actor, t: OverlayPlace): void {
   checkPorts(actor, t.file);
 }
 
+// 今の重ねる分を作った UI の利用者（auth_id）。rproxy の created_by はいつも UI のトークンなので、UI の履歴（OVERLAY）で決める：
+// 書いた行の options に rproxy の created_at を入れておき、同じ created_at のいちばん古い行の操作者が作った人。
+// 履歴にない（rproxy の API で直接作った・履歴を書けなかった）なら null（管理者でない人には読み取りだけ）
+async function overlayCreator(t: OverlayPlace, view: OverlayView): Promise<string | null> {
+  if (typeof view.created_at !== 'number') return null;
+  const where = t.node ? 'l.target = ? AND ' : '';
+  const rows = await pool.query(
+    `SELECT l.auth_id, l.options FROM forward_rules_log l WHERE ${where}l.protocol = ? AND l.src_addr = ? AND l.src_port = ? AND l.update_action = 'OVERLAY' ORDER BY l.id`,
+    [...(t.node ? [t.node.name] : []), t.key.protocol, t.key.listen_addr, t.key.listen_port]
+  );
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (overlayCreatedAt(row.options) === view.created_at) return row.auth_id === null || row.auth_id === undefined ? null : String(row.auth_id);
+  }
+  return null;
+}
+
+// 管理者でない人は、自分が作った重ねる分だけを直す・外せる（管理者・ほかの人が作ったものは読むだけ）
+async function checkOverlayOwner(actor: Actor, t: OverlayPlace, current: { view: OverlayView } | null): Promise<void> {
+  if (actor.access === 'admin' || current === null) return;
+  if ((await overlayCreator(t, current.view)) !== actor.id) {
+    throw new HttpError(403, 'この重ねる分は管理者かほかの利用者が作ったので、直す・外すことはできません（管理者だけが変えられます）。', 'overlay_not_owner');
+  }
+}
+
 // 利用者に見せる重ねる分（ファイルのパスと、誤りの文に出てくるそのパスを伏せる）
 function overlayForViewer(actor: Actor, view: OverlayView | null): OverlayView | null {
   if (view === null || actor.access === 'admin') return view;
@@ -1939,6 +1966,11 @@ async function overlayFeatures(t: OverlayPlace, logger: AppLogger): Promise<Capa
     logger.warn(`rproxy の機能を聞けません: ${err}`);
     return null;
   }
+}
+
+function redactOverlay(spec: OverlaySpec): OverlaySpec {
+  const red = redactFiles({ http: spec.http, tls: spec.tls });
+  return { ...(red.http !== undefined ? { http: red.http } : {}), ...(red.tls !== undefined ? { tls: red.tls } : {}) };
 }
 
 async function currentOverlay(t: OverlayPlace): Promise<{ view: OverlayView; etag: string | null } | null> {
@@ -1977,6 +2009,7 @@ async function overlayInfo(actor: Actor, query: NextApiRequest['query'], logger:
   let editCode: string | undefined;
   try {
     checkOverlayWritable(actor, t);
+    await checkOverlayOwner(actor, t, current);
   } catch (err) {
     if (!(err instanceof HttpError)) throw err;
     canEdit = false;
@@ -2036,6 +2069,12 @@ async function checkOverlaySpec(actor: Actor, t: OverlayPlace, spec: OverlaySpec
   if (errors.length > 0) throw invalid(errors.join('\n'));
   const out: OverlaySpec = { ...spec, ...(tlsRoutes !== undefined ? { tls: { routes: tlsRoutes } } : {}) };
   if (actor.access !== 'admin') {
+    // 重ねる分のルートはファイルのサービスにファイルのルートのミドルウェアを通らずに届き、その転送先は利用者の許可リストの外なので、
+    // 管理者でない人はファイルのサービスを使えない（自分のサービスを定義する。ファイルの秘密のないミドルウェアは使える）
+    const services = fileItemsUsed(out, fileNames(t.file)).services;
+    if (services.length > 0) {
+      throw new HttpError(403, `設定ファイルのサービス（${services.join(', ')}）は管理者だけが重ねる分から使えます（重ねる分のルートはファイルのルートのミドルウェアを通らずにその転送先へ届き、転送先は利用者の許可リストの外のため）。重ねる分に自分のサービスを定義してください。`, 'file_service_not_allowed');
+    }
     const used = secretFileItemsUsed(out, fileNames(t.file), fileSecretItems(t.file.http));
     const names = [...used.services.map((n) => `サービス ${n}`), ...used.middlewares.map((n) => `ミドルウェア ${n}`)];
     if (names.length > 0) {
@@ -2048,9 +2087,10 @@ async function checkOverlaySpec(actor: Actor, t: OverlayPlace, spec: OverlaySpec
 }
 
 // 履歴（OVERLAY）。重ねる分の正は rproxy なので、書けなくても変更は取り消さない（ログに残す）
-async function insertOverlayLog(actor: Actor, t: OverlayPlace, spec: OverlaySpec | null, logger: AppLogger): Promise<void> {
+async function insertOverlayLog(actor: Actor, t: OverlayPlace, spec: OverlaySpec | null, logger: AppLogger, createdAt?: number): Promise<void> {
   const f = t.file;
-  const opts = JSON.stringify({ overlay: spec });
+  // created_at は rproxy が重ねる分を作った時刻（作った人を探すのに使う。overlayCreator）
+  const opts = JSON.stringify({ overlay: spec, ...(spec !== null && typeof createdAt === 'number' ? { created_at: createdAt } : {}) });
   try {
     if (t.node) {
       await pool.query(
@@ -2096,6 +2136,7 @@ async function putStaticOverlay(actor: Actor, body: any, logger: AppLogger) {
   if (isEmptyOverlay(spec)) throw invalid('重ねる分が空です（外すときは「重ねる分を外す」を使ってください）。');
   const current = await currentOverlay(t);
   const ifMatch = checkEtag(body?.etag, current);
+  await checkOverlayOwner(actor, t, current);
   const before = current ? overlaySpecOf(current.view) : null;
   if (actor.access !== 'admin') {
     const restored = restoreHidden(spec, before ?? {}, HIDDEN_FILE);
@@ -2106,7 +2147,7 @@ async function putStaticOverlay(actor: Actor, body: any, logger: AppLogger) {
   }
   spec = await checkOverlaySpec(actor, t, spec, before, logger);
   const out = await onOverlayNode(t, () => putOverlay(t.key, spec, ifMatch));
-  await insertOverlayLog(actor, t, spec, logger);
+  await insertOverlayLog(actor, t, spec, logger, out.view?.created_at);
   return {
     rule: `${t.key.protocol}/${t.key.listen_addr}/${t.key.listen_port}`,
     created: current === null,
@@ -2126,6 +2167,7 @@ async function deleteStaticOverlay(actor: Actor, body: any, logger: AppLogger) {
   const current = await currentOverlay(t);
   if (current === null) throw new HttpError(404, 'このルールに重ねる分はありません。', 'not_found');
   const ifMatch = checkEtag(body?.etag, current);
+  await checkOverlayOwner(actor, t, current);
   await onOverlayNode(t, () => deleteOverlay(t.key, ifMatch));
   await insertOverlayLog(actor, t, null, logger);
   return { rule: `${t.key.protocol}/${t.key.listen_addr}/${t.key.listen_port}`, ...(t.node ? { node: t.node.name } : {}) };
@@ -2159,7 +2201,8 @@ async function overlayHistoryEntry(actor: Actor, row: any): Promise<HistoryEntry
     ...(actor.cfg.configured ? { target: String(row.target) } : {}),
     ...(row.node !== null && row.node !== undefined ? { node: String(row.node) } : {}),
     rule: null,
-    ...(spec !== undefined ? { overlay: spec } : {}),
+    // 管理者でない人には、ファイルのパス（戻した値を含む）を伏せる
+    ...(spec !== undefined ? { overlay: spec === null || actor.access === 'admin' ? spec : redactOverlay(spec) } : {}),
     changes: changes,
     revertible: false,
   };
@@ -2448,9 +2491,9 @@ async function revertToVersion(actor: Actor, body: any, logger: AppLogger): Prom
     [...scope.params, id]
   );
   if (rows.length === 0) throw new HttpError(404, '履歴が見つかりません。', 'not_found');
+  if (String(rows[0].update_action) === 'OVERLAY') throw invalid('固定ルールに重ねる分の履歴は巻き戻せません（ルールの詳細の「重ねる分」で直してください）。');
   const rule = logRule(rows[0]);
   if (rule === null) throw invalid('この履歴の内容は読めないため、巻き戻せません。');
-  if (String(rows[0].update_action) === 'OVERLAY') throw invalid('固定ルールに重ねる分の履歴は巻き戻せません（ルールの詳細の「重ねる分」で直してください）。');
   if (String(rows[0].update_action) === 'OVERRIDE') throw invalid('ノードごとの上書きの履歴は巻き戻せません（ルールの詳細のノードのタブで上書きを直してください）。');
   // 履歴の行の置き場所に戻す（設定から消えたノード／グループなら 400 unknown_target）
   const place = placeOf(actor.cfg, actor.cfg.configured ? String(rows[0].target) : null);

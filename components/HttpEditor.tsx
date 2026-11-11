@@ -61,6 +61,9 @@ export interface HttpEditorProps {
     secrets: { services: string[]; middlewares: string[] };
     // 秘密のものを選べない（管理者でない人）
     lockSecrets: boolean;
+    // 設定ファイルのサービスを選べない（管理者でない人。重ねる分のルートはファイルのルートのミドルウェアを通らずに届き、
+    // 転送先は利用者の許可リストの外のため）
+    lockServices: boolean;
   };
 }
 
@@ -646,7 +649,9 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
   const fileMark = (secret: boolean) => translate(secret ? '（設定ファイル・秘密のファイルあり）' : '（設定ファイル）');
   const serviceLabel = (n: string) => (isFileService(n) ? `${n}${fileMark(secretService(n))}` : n);
   const mwLabel = (n: string) => (isFileMw(n) ? `${n}${fileMark(secretMw(n))}` : n);
-  const lockedSecretService = (n: string) => overlayFile?.lockSecrets === true && secretService(n);
+  const lockedSecretService = (n: string) => isFileService(n) && (overlayFile?.lockServices === true || (overlayFile?.lockSecrets === true && secretService(n)));
+  // 選べるサービス（新しいルート・mirror の写しの先）
+  const pickableServices = serviceNames.filter((n) => !lockedSecretService(n));
   const lockedSecretMw = (n: string) => overlayFile?.lockSecrets === true && secretMw(n);
   // 選べるミドルウェアの種類（features.middlewares。使っている種類は残す）
   // cache（#340）は features.middlewares に書いてあるときだけ（features を取れないときも出さない）
@@ -845,7 +850,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           onClick={() => setRoutes([...value.routes, {
             name: uniqueName('route', [...value.routes.map((r) => r.name), ...(overlayFile?.http.routes ?? []).map((r) => r.name)]),
             match: 'PathPrefix(`/`)',
-            ...(serviceNames[0] ? { service: serviceNames[0] } : {}),
+            ...(pickableServices[0] ? { service: pickableServices[0] } : {}),
           }])}
         >
           ルートを追加
@@ -1048,7 +1053,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                   ? <Preserved label="キャッシュの設定" value={config} note="（この rproxy では cache を使えないので編集できません。値は消さずに残しますが、このミドルウェアがある間は保存できません。保存するには、このミドルウェアを削除してください）" />
                   : <CacheConfig id={id} value={config} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />
                 : kind === 'mirror'
-                ? <MirrorConfig id={id} value={config} services={serviceNames} streamLimits={streamLimits} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />
+                ? <MirrorConfig id={id} value={config} services={pickableServices} streamLimits={streamLimits} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />
                 : FIELDS[kind]
                   ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} httpOptions={httpOptions} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />
                   : <JsonConfig key={`${name}-${kind}`} id={`${id}-json`} value={config} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />}

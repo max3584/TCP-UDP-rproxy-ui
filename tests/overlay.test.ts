@@ -12,12 +12,14 @@ import {
   overlayChanges,
   overlayConflicts,
   overlayFromLogOptions,
+  overlayCreatedAt,
   overlayShape,
   overlaySpecOf,
+  patternMatches,
   restoreHidden,
   secretFileItemsUsed,
 } from '@/components/overlay';
-import { overlayProblems } from '@/components/OverlayEditor';
+import { overlayProblems, userRefusedItems } from '@/components/OverlayEditor';
 import type { ForwardRules } from '@/components/lib';
 
 const fileHttp = {
@@ -76,6 +78,19 @@ describe('names the settings file has', () => {
     expect(coversPattern('a.test', '*.test')).toBe(false);
     expect(coversPattern('A.test', 'a.test')).toBe(true);
     expect(coversPattern('**.test', 'x.y.test')).toBe(true);
+    // 大文字・小文字はどちらの側も区別しない（rproxy は patterns() と match_rank で小文字にする）
+    expect(coversPattern('*.Wild.TEST', 'X.wild.test')).toBe(true);
+    expect(coversPattern('**.Deep.test', '*.A.DEEP.test')).toBe(true);
+    expect(coversPattern('a.Test', 'A.test')).toBe(true);
+  });
+
+  it('matches names like rproxy (tls::config::match_rank)', () => {
+    expect(patternMatches('**.test', 'a.test')).toBe(true);
+    expect(patternMatches('**.test', 'test')).toBe(false);
+    expect(patternMatches('**.test', '.a.test')).toBe(false);
+    expect(patternMatches('*.test', '.test')).toBe(false);
+    expect(patternMatches('*.test', 'a.b.test')).toBe(false);
+    expect(patternMatches('*.TEST', 'A.test')).toBe(true);
   });
 });
 
@@ -132,6 +147,8 @@ describe('the body and history', () => {
     expect(overlayFromLogOptions({ overlay: a })).toEqual(a);
     expect(overlayFromLogOptions('{"tls":{}}')).toBeUndefined();
     expect(overlayFromLogOptions('not json')).toBeUndefined();
+    expect(overlayCreatedAt('{"overlay":{},"created_at":1790000000}')).toBe(1790000000);
+    expect(overlayCreatedAt({ overlay: null })).toBeUndefined();
   });
 
   it('puts hidden file paths back from the same place, or names where it cannot', () => {
@@ -162,7 +179,21 @@ describe('the editor checks before saving (overlayProblems)', () => {
     expect(p.some((x) => x.includes('site'))).toBe(true);
     expect(p.some((x) => x.includes('nope'))).toBe(true);
     expect(p.some((x) => x.includes('X-Real-IP'))).toBe(true);
-    // ファイルのサービス・ミドルウェアを名前で使うのはよい
-    expect(overlayProblems(rule(), { http: { routes: [{ name: 'n', match: 'Path(`/n`)', service: 'web', middlewares: ['hdr'] }] } })).toEqual([]);
+    // ファイルのサービス・ミドルウェアを名前で使うのはよい（管理者）
+    const usesFile = { http: { routes: [{ name: 'n', match: 'Path(`/n`)', service: 'web', middlewares: ['hdr'] }] } };
+    expect(overlayProblems(rule(), usesFile)).toEqual([]);
+    // 利用者はファイルのサービスを使えない（秘密のないミドルウェアは使える）
+    expect(overlayProblems(rule(), usesFile, false).join()).toContain('web');
+    const own = { http: { routes: [{ name: 'n', match: 'Path(`/n`)', service: 'mine', middlewares: ['hdr'] }], services: { mine: { servers: [{ url: 'http://10.0.0.9' }] } } } };
+    expect(overlayProblems(rule(), own, false)).toEqual([]);
+  });
+
+  it('says up front which file items a user cannot keep', () => {
+    const spec = { http: { routes: [{ name: 'n', match: 'Path(`/n`)', service: 'secure', middlewares: ['auth', 'hdr'] }] } };
+    const items = userRefusedItems(rule(), spec);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toContain('secure');
+    expect(items[1]).toContain('auth');
+    expect(items[1]).not.toContain('hdr');
   });
 });

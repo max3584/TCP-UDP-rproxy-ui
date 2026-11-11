@@ -94,6 +94,13 @@ const view = (spec: Record<string, unknown>, over: Record<string, unknown> = {})
 const key = { protocol: 'tcp', addr: '0.0.0.0', port: '8443' };
 const notFound = () => new RproxyError('tcp/0.0.0.0/8443 has no overlay', 'not_found', 404);
 
+// 履歴の OVERLAY の行（作った人を探す overlayCreator が読む）
+function overlayRows(rows: { auth_id: string; created_at?: number; overlay?: unknown }[]) {
+  pool.query.mockImplementation(async (q: string) => (q.includes("update_action = 'OVERLAY' ORDER BY l.id") && q.includes('SELECT l.auth_id')
+    ? rows.map((r) => ({ auth_id: r.auth_id, options: JSON.stringify({ overlay: r.overlay ?? {}, ...(r.created_at !== undefined ? { created_at: r.created_at } : {}) }) }))
+    : []));
+}
+
 function logInserts(): unknown[][] {
   return pool.query.mock.calls.filter((c) => String(c[0]).startsWith('INSERT INTO forward_rules_log')).map((c) => c[1] as unknown[]);
 }
@@ -150,6 +157,38 @@ describe('GET overlay', () => {
 });
 
 describe('PUT overlay (overlay-put)', () => {
+  it('lets users change or remove only overlays they created (the UI history), others are read-only', async () => {
+    mocks.getServerSession.mockResolvedValue(user);
+    vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-1"' });
+    // 管理者が作った（同じ created_at の最初の行が管理者）
+    overlayRows([{ auth_id: 'admin-1', created_at: 1790000000 }, { auth_id: 'user-1', created_at: 1790000000 }]);
+    const info = await call('overlay', undefined, 'GET', key);
+    expect(info.body).toMatchObject({ canEdit: false, editCode: 'overlay_not_owner' });
+    expect((await call('overlay-put', { ...key, overlay: wiki, etag: '"o-1"' })).body.code).toBe('overlay_not_owner');
+    expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).body.code).toBe('overlay_not_owner');
+    // 履歴にない（rproxy の API で直接作った）・前の重ねる分の行（created_at が違う）だけでも読むだけ
+    overlayRows([{ auth_id: 'user-1', created_at: 1780000000 }]);
+    expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).body.code).toBe('overlay_not_owner');
+    overlayRows([]);
+    expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).body.code).toBe('overlay_not_owner');
+    // 自分で作ったもの
+    overlayRows([{ auth_id: 'user-1', created_at: 1790000000 }]);
+    expect((await call('overlay', undefined, 'GET', key)).body.canEdit).toBe(true);
+    expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).status).toBe(200);
+    expect(mocks.deleteOverlay).toHaveBeenCalledTimes(1);
+    // 管理者はだれのものでも
+    mocks.getServerSession.mockResolvedValue(admin);
+    overlayRows([]);
+    expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).status).toBe(200);
+  });
+
+  it('records the rproxy created_at with the overlay (to find who created it)', async () => {
+    await call('overlay-put', { ...key, overlay: wiki, etag: null });
+    const opts = logInserts()[0].find((v) => typeof v === 'string' && v.startsWith('{"overlay"')) as string;
+    expect(JSON.parse(opts)).toEqual({ overlay: wiki, created_at: 1790000000 });
+  });
+
   it('creates it without If-Match and records OVERLAY in the history', async () => {
     const { status, body } = await call('overlay-put', { ...key, overlay: wiki, etag: null });
     expect(status).toBe(200);
@@ -158,7 +197,7 @@ describe('PUT overlay (overlay-put)', () => {
     const [log] = logInserts();
     expect(log).toContain('OVERLAY');
     expect(log).toContain('admin-1');
-    expect(JSON.parse(String(log.find((v) => typeof v === 'string' && v.startsWith('{"overlay"'))))).toEqual({ overlay: wiki });
+    expect(JSON.parse(String(log.find((v) => typeof v === 'string' && v.startsWith('{"overlay"')))).overlay).toEqual(wiki);
   });
 
   it('replaces it with the ETag of GET as If-Match', async () => {
@@ -209,7 +248,7 @@ describe('PUT overlay (overlay-put)', () => {
   });
 
   it('lets admins use file items that hold secrets, but not users (409 file_in_use)', async () => {
-    const usesAuth = { http: { routes: [{ name: 'w', match: 'Host(`w.example.com`)', service: 'web', middlewares: ['auth'] }] } };
+    const usesAuth = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], middlewares: ['auth'] }] } };
     expect((await call('overlay-put', { ...key, overlay: usesAuth, etag: null })).status).toBe(200);
     mocks.getServerSession.mockResolvedValue(user);
     vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
@@ -217,9 +256,23 @@ describe('PUT overlay (overlay-put)', () => {
     expect(status).toBe(409);
     expect(body.code).toBe('file_in_use');
     expect(body.error).toContain('auth');
-    // 秘密のないファイルのサービス・ミドルウェアは使える
-    const plain = { http: { routes: [{ name: 'w', match: 'Host(`w.example.com`)', service: 'web', middlewares: ['hdr'] }] } };
+    // 秘密のないファイルのミドルウェアは、自分のサービスと一緒なら使える
+    const plain = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], middlewares: ['hdr'] }] } };
     expect((await call('overlay-put', { ...key, overlay: plain, etag: null })).status).toBe(200);
+  });
+
+  it('never lets users reference a file service, even one without secrets (403 file_service_not_allowed); admins may', async () => {
+    const fileService = { http: { routes: [{ name: 'w', match: 'Host(`w.example.com`)', service: 'web' }] } };
+    const viaMirror = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], middlewares: ['m'] }], middlewares: { m: { mirror: { service: 'web' } } } } };
+    expect((await call('overlay-put', { ...key, overlay: fileService, etag: null })).status).toBe(200);
+    mocks.getServerSession.mockResolvedValue(user);
+    vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
+    for (const overlay of [fileService, viaMirror]) {
+      const { status, body } = await call('overlay-put', { ...key, overlay, etag: null });
+      expect(status).toBe(403);
+      expect(body.code).toBe('file_service_not_allowed');
+      expect(body.error).toContain('web');
+    }
   });
 
   it('passes rproxy 409 file_in_use through', async () => {
@@ -248,6 +301,7 @@ describe('PUT overlay (overlay-put)', () => {
     vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
     const current = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], middlewares: ['ba'] }], middlewares: { ba: { basic_auth: { users_file: '/etc/rproxy/team-users' } } } } };
     mocks.getOverlay.mockResolvedValue({ view: view(current), etag: '"o-1"' });
+    overlayRows([{ auth_id: 'user-1', created_at: 1790000000 }]);
     const sent = { http: { ...current.http, middlewares: { ba: { basic_auth: { users_file: '<hidden>', realm: 'team' } } } } };
     const { status } = await call('overlay-put', { ...key, overlay: sent, etag: '"o-1"' });
     expect(status).toBe(200);
@@ -302,6 +356,24 @@ describe('history of overlays', () => {
     const r = await call('revert', { id: 7 });
     expect(r.status).toBe(400);
   });
+
+  it('hides file paths in OVERLAY rows from users (they may see their own rows)', async () => {
+    const withFile = { http: { ...wiki.http, middlewares: { ba: { basic_auth: { users_file: '/etc/rproxy/team-users' } } } } };
+    pool.query.mockImplementation(async (q: string) => {
+      if (q.startsWith('SELECT COUNT(*)')) return [{ n: 1 }];
+      if (q.includes('ORDER BY l.id DESC LIMIT ? OFFSET ?')) {
+        return [{ id: 8, auth_id: 'user-1', protocol: 'tcp', src_addr: '0.0.0.0', src_port: 8443, src_port_end: null, dist_addr: '', dist_port: 0, source_ip: 'proxy', udp_idle_secs: 30, options: JSON.stringify({ overlay: withFile, created_at: 1 }), update_action: 'OVERLAY', updated_at: new Date('2026-11-11T00:00:00Z') }];
+      }
+      return [];
+    });
+    mocks.getServerSession.mockResolvedValue(user);
+    const { status, body } = await call('history', undefined, 'GET', {});
+    expect(status).toBe(200);
+    expect(body.entries[0].overlay.http.middlewares.ba.basic_auth.users_file).toBe('<hidden>');
+    expect(JSON.stringify(body)).not.toContain('team-users');
+    mocks.getServerSession.mockResolvedValue(admin);
+    expect((await call('history', undefined, 'GET', {})).body.entries[0].overlay.http.middlewares.ba.basic_auth.users_file).toBe('/etc/rproxy/team-users');
+  });
 });
 
 describe('nodes: overlays are per node (static rules come from each node\'s file)', () => {
@@ -312,6 +384,7 @@ describe('nodes: overlays are per node (static rules come from each node\'s file
     '  - {name: b, url: "http://b:8081"}',
     'groups:',
     '  - {name: ab, nodes: [a, b]}',
+    '  - {name: solo, nodes: [a]}',
   ].join('\n'));
 
   const withNodes = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -338,6 +411,8 @@ describe('nodes: overlays are per node (static rules come from each node\'s file
       const group = await call('overlay', undefined, 'GET', { ...key, target: 'ab' });
       expect(group.status).toBe(400);
       expect(group.body.code).toBe('target_required');
+      // ノードが 1 つのグループも断る
+      expect((await call('overlay-put', { ...key, target: 'solo', overlay: wiki, etag: null })).body.code).toBe('target_required');
     });
   });
 

@@ -164,25 +164,50 @@ test.describe('overlays on static rules (#193)', () => {
     await expect(section.getByTestId('overlay-tls-routes')).toContainText('git.overlay-e2e.test');
   });
 
-  test('users cannot use file items that hold secrets (409 file_in_use)', async ({ page, context }) => {
+  test('users cannot use file services (403) or file items that hold secrets (409 file_in_use)', async ({ page, context }) => {
     await context.clearCookies();
     await context.addCookies(JSON.parse(fs.readFileSync(USER_STATE, 'utf8')).cookies);
     await page.goto(detail(HTTP_PORT));
     const section = page.getByTestId('overlay-section');
     await section.getByTestId('overlay-edit').click();
-    await expect(section.getByTestId('overlay-secret-note')).toBeVisible();
+    await expect(section.getByTestId('overlay-secret-note')).toContainText('設定ファイルのサービスは管理者だけが');
+    await section.getByRole('button', { name: 'サービスを追加' }).click();
     await section.getByRole('button', { name: 'ルートを追加' }).click();
-    // 秘密のファイルを持つファイルのミドルウェアは選べない
+    // 設定ファイルのサービスと、秘密のファイルを持つファイルのミドルウェアは選べない
+    await expect(section.locator('#http-route-0-target option', { hasText: 'file-web' })).toBeDisabled();
+    await expect(section.locator('#http-route-0-target')).toHaveValue('service:backend');
     const option = section.getByLabel(/にミドルウェアを足す$/).locator('option', { hasText: 'file-auth' });
     await expect(option).toBeDisabled();
     await expect(option).toContainText('秘密のファイルあり');
+    await expect(section.getByLabel(/にミドルウェアを足す$/).locator('option', { hasText: 'file-headers' })).toBeEnabled();
 
-    const res = await page.request.post('/api/forward/overlay-put', {
-      headers: SAME_ORIGIN,
-      data: { protocol: 'tcp', addr: '127.0.0.1', port: HTTP_PORT, etag: null, overlay: { http: { routes: [{ name: 'u', match: 'Host(`u.overlay-e2e.test`)', service: 'file-web', middlewares: ['file-auth'] }] } } },
+    const put = (http: Record<string, unknown>) => page.request.post('/api/forward/overlay-put', {
+      headers: SAME_ORIGIN, data: { protocol: 'tcp', addr: '127.0.0.1', port: HTTP_PORT, etag: null, overlay: { http } },
     });
-    expect(res.status()).toBe(409);
-    expect((await res.json()).code).toBe('file_in_use');
+    const fileService = await put({ routes: [{ name: 'u', match: 'Host(`u.overlay-e2e.test`)', service: 'file-web' }] });
+    expect(fileService.status()).toBe(403);
+    expect((await fileService.json()).code).toBe('file_service_not_allowed');
+    const secret = await put({
+      routes: [{ name: 'u', match: 'Host(`u.overlay-e2e.test`)', service: 'mine', middlewares: ['file-auth'] }],
+      services: { mine: { servers: [{ url: `http://127.0.0.1:${BACKEND}` }] } },
+    });
+    expect(secret.status()).toBe(409);
+    expect((await secret.json()).code).toBe('file_in_use');
+  });
+
+  test('an overlay an administrator created is read-only for users', async ({ page, context }) => {
+    const created = await page.request.post('/api/forward/overlay-put', {
+      headers: SAME_ORIGIN,
+      data: { protocol: 'tcp', addr: '127.0.0.1', port: HTTP_PORT, etag: null, overlay: { http: { routes: [{ name: 'adm', match: 'Host(`adm.overlay-e2e.test`)', service: 'file-web' }] } } },
+    });
+    expect(created.status(), await created.text()).toBe(200);
+    await context.clearCookies();
+    await context.addCookies(JSON.parse(fs.readFileSync(USER_STATE, 'utf8')).cookies);
+    await page.goto(detail(HTTP_PORT));
+    const section = page.getByTestId('overlay-section');
+    await expect(section.getByTestId('overlay-readonly')).toContainText('管理者かほかの利用者が作った');
+    await expect(section.getByTestId('overlay-edit')).toHaveCount(0);
+    await expect(section.getByTestId('overlay-remove')).toHaveCount(0);
   });
 
   test('shows the not_applied and shadowed states', async ({ page }) => {

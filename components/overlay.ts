@@ -126,19 +126,30 @@ export function fileNames(rule: Pick<ForwardRule, 'http' | 'tls'>): FileNames {
   };
 }
 
-// ファイルのパターン file が重ねる分のパターン p の名前をすべて受けるか（rproxy の core::overlay::covers）
+// 名前 name がパターン pattern に当たるか（rproxy の tls::config::match_rank。どちらも ASCII の小文字にして比べる）
+export function patternMatches(pattern: string, name: string): boolean {
+  const p = pattern.toLowerCase();
+  const n = name.toLowerCase();
+  if (p.startsWith('**.')) {
+    const dotted = `.${p.slice(3)}`;
+    return n.length > dotted.length && n.endsWith(dotted) && !n.startsWith('.');
+  }
+  if (p.startsWith('*.')) {
+    const dot = n.indexOf('.');
+    return dot > 0 && n.slice(dot + 1) === p.slice(2);
+  }
+  return p === n;
+}
+
+// ファイルのパターン file が重ねる分のパターン p の名前をすべて受けるか（rproxy の core::overlay::covers。
+// rproxy は Route::patterns で両方を小文字にしてから比べる）
 export function coversPattern(file: string, p: string): boolean {
   const f = file.toLowerCase();
   const q = p.toLowerCase();
   const under = (d: string) => f.startsWith('**.') && (d === f.slice(3) || d.endsWith(`.${f.slice(3)}`));
   if (q.startsWith('**.')) return under(q.slice(3));
   if (q.startsWith('*.')) return f === q || under(q.slice(2));
-  if (f === q) return true;
-  if (f.startsWith('*.')) {
-    const rest = f.slice(1);
-    return q.endsWith(rest) && !q.slice(0, -rest.length).includes('.') && q.length > rest.length;
-  }
-  return f.startsWith('**.') && q.endsWith(f.slice(2));
+  return patternMatches(f, q);
 }
 
 // 重ねる分がファイルの名前と重なる項目（rproxy は PUT を 409 overlay_conflict で断る）
@@ -305,15 +316,21 @@ export function overlayChanges(before: OverlaySpec | null, after: OverlaySpec | 
   const a = names(before);
   const b = names(after);
   const out: string[] = [];
-  const kinds: [keyof typeof a, string][] = [['routes', 'ルート'], ['services', 'サービス'], ['middlewares', 'ミドルウェア'], ['tls', 'サーバ名ごとの転送先']];
-  for (const [key, label] of kinds) {
+  // 文は種類ごとに書く（英語で種類の名前を文の途中の小文字にするため）
+  const say: Record<keyof typeof a, [(n: string) => string, (n: string) => string, (n: string) => string]> = {
+    routes: [(n) => translate(`ルートを追加: ${n}`), (n) => translate(`ルートを変更: ${n}`), (n) => translate(`ルートを削除: ${n}`)],
+    services: [(n) => translate(`サービスを追加: ${n}`), (n) => translate(`サービスを変更: ${n}`), (n) => translate(`サービスを削除: ${n}`)],
+    middlewares: [(n) => translate(`ミドルウェアを追加: ${n}`), (n) => translate(`ミドルウェアを変更: ${n}`), (n) => translate(`ミドルウェアを削除: ${n}`)],
+    tls: [(n) => translate(`サーバ名ごとの転送先を追加: ${n}`), (n) => translate(`サーバ名ごとの転送先を変更: ${n}`), (n) => translate(`サーバ名ごとの転送先を削除: ${n}`)],
+  };
+  for (const key of ['routes', 'services', 'middlewares', 'tls'] as const) {
     const added = [...b[key].keys()].filter((n) => !a[key].has(n));
     const changed = [...b[key].keys()].filter((n) => a[key].has(n) && a[key].get(n) !== b[key].get(n));
     const removed = [...a[key].keys()].filter((n) => !b[key].has(n));
-    // 名前は訳さない（joinList は語句を訳すので、日本語でない名前はそのまま）
-    if (added.length > 0) out.push(translate(`${label}を追加: ${joinList(added)}`));
-    if (changed.length > 0) out.push(translate(`${label}を変更: ${joinList(changed)}`));
-    if (removed.length > 0) out.push(translate(`${label}を削除: ${joinList(removed)}`));
+    // 名前は訳さない（joinList は日本語でない語をそのまま並べる）
+    if (added.length > 0) out.push(say[key][0](joinList(added)));
+    if (changed.length > 0) out.push(say[key][1](joinList(changed)));
+    if (removed.length > 0) out.push(say[key][2](joinList(removed)));
   }
   return out;
 }
@@ -330,6 +347,19 @@ export function overlayFromLogOptions(value: unknown): OverlaySpec | null | unde
   }
   if (!isObject(v) || !('overlay' in v)) return undefined;
   return v.overlay === null ? null : overlaySpecOf(v.overlay);
+}
+
+// 履歴の options 列の created_at（rproxy が重ねる分を作った時刻、Unix 秒）。なければ undefined
+export function overlayCreatedAt(value: unknown): number | undefined {
+  let v: unknown = value;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return undefined;
+    }
+  }
+  return isObject(v) && typeof v.created_at === 'number' ? v.created_at : undefined;
 }
 
 // 重ねる分の形のルール（利用者の制限の確かめ・TLS の検証に使う。キーと待ち受けはファイルのルールのもの）
