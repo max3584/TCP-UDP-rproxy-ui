@@ -3,6 +3,7 @@ import pino from 'pino';
 import type { Access } from './roles';
 import type { AcmeCertStatus } from './acme';
 import type { Condition, V04Settings } from './v04';
+import type { OverlaySummary } from './overlay';
 
 
 export const Logger = (level : string, {...propaty}: any) => {
@@ -358,6 +359,8 @@ export interface ForwardRules extends ForwardRule {
   createdAt?: number;
   // UI のルール（dynamic）と同じキーを、rproxy では API のルールが使っている
   shadowedBy?: ShadowedBy;
+  // 固定ルールに API で重ねる分の様子（rproxy-api v0.4.23 の overlay。重ねる分のある固定ルールだけ。UI #193）
+  overlay?: OverlaySummary;
 }
 
 // ルールの 1 ノードでの稼働情報

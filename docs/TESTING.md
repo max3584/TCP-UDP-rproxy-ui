@@ -262,6 +262,15 @@ CI の `e2e` ジョブで、同じ MariaDB と rproxy-api を相手に動く。�
 
 `tests/nodeview.test.ts` は `rproxy_global`（migration 013）のノードの 1 行だけのビュー（`SELECT, INSERT, UPDATE`、`--without-rproxy-global`）も、`tests/migrate.test.ts` は 013 を当てることも確かめる。画面の E2E は `tests/ui/global.spec.ts`（`global_api` のある rproxy で、出どころ・再起動が要る項目・TCP の Unix ソケットだけの項目・差分を見てからの適用と既定に戻すこと・DB への保存・利用者は 403）。複数のノードは `tests/e2e-nodes.test.ts`（グループに送ると Unix ソケットの 2 台に効き、各ノードのビューの `rproxy_global` に自分の行を書き、再起動しても戻る。CI のノードは `RPROXY_NODE_NAME` をノードの名前にする）。geoip・acme（rproxy-api v0.4.22。`features.global_api_acme` のない rproxy-api では飛ばす）も `tests/e2e-nodes.test.ts` で、CI は n2 にだけ `RPROXY_API_GEOIP_DIR`・`RPROXY_API_ACME_DIR` を設定する：n1 のディレクトリの外は 403 `global_protected_file`、n2 の mmdb でないファイルは 400 `invalid`、acme はグループの両方に効き、ルールが使う resolver を外すのは 409 `global_in_use`、EAB の鍵のファイルを n1 が断れば効いた n2 を戻す。`tests/ui/global.spec.ts` は TCP のノードで geoip・acme が Unix ソケットだけと出ること、設定ファイルの acme（Pebble）の中身を出さないことを確かめる。
 
+## 単体テスト：固定ルールに重ねる分（`tests/overlay.test.ts`・`tests/forward-overlay.test.ts`、#193）
+
+| テスト | 確かめること |
+|---|---|
+| 形と名前（`tests/overlay.test.ts`） | 重ねられる形（http のルール・sni・http もクライアント認証もない terminate）、ファイルの名前との重なりとパターンの覆い方（rproxy の `covers` と同じ）、秘密を持つファイルのサービス・ミドルウェア（たどり着くものを含む）、送り元を言うヘッダ、履歴の差分、伏せたパスを同じ場所に戻すこと、画面の保存の前の確かめ |
+| /api/forward/overlay ほか（`tests/forward-overlay.test.ts`） | `features.static_overlay` がなければ出さない・断る（400 `unsupported`）、固定ルールでなければ 409 `not_static`、作るときは If-Match なし・直すときは GET の ETag、変わっていれば 412、ファイルの名前は 409 `overlay_conflict`、送り元のヘッダは 400、sni の `tls.routes`（覆われる名前・`upstream` は断る）、利用者のポート・ファイルのパス・転送先・秘密のファイル（409 `file_in_use`。管理者は使える）、伏せたパスの戻し、rproxy の 409・412 はそのまま、履歴の `OVERLAY`（巻き戻せない）、複数のノードではそのノードにだけ聞き、グループは 400 `target_required`、`RPROXY_UI_USER_NODES` |
+
+`tests/nodeview.test.ts` は `rproxy_rule_overlays`（migration 014）のノードの行だけのビュー（`SELECT, INSERT, UPDATE, DELETE`、`--without-rproxy-rule-overlays`。列は DDL と同じ）も、`tests/migrate.test.ts` は 014 を当てることも確かめる。画面の E2E は `tests/ui/overlay.spec.ts`（CI の e2e ジョブが設定ファイルに固定ルールを 2 つ書いたとき（`UI_E2E_OVERLAY=1`）。ファイルのサービス・ミドルウェアを使う重ねる分を画面で足して実際に転送されること、ファイルの名前（保存の前と 409）、ETag（412 と「読み直す」）、sni のサーバ名、利用者の秘密のファイル（選べない・409）、効いていない・外れた項目の表示、履歴、外すこと）。
+
 ## 単体テスト：利用量（`tests/usage.test.ts`・`tests/usage-route.test.ts`）
 
 | テスト | 確かめること |

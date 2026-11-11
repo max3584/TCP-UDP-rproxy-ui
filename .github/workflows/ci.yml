@@ -248,6 +248,47 @@ jobs:
             echo "rproxy-api has no ACME; skipping tests/ui/acme.spec.ts"
           fi
 
+      # 固定ルールに重ねる分（rproxy-api v0.4.23、#193）：設定ファイルに固定ルールを 2 つ書く（tests/ui/overlay.spec.ts）。
+      # http のルール（ファイルのサービス・ミドルウェア。file-auth は秘密のファイル users_file を持つ）と sni のルール
+      - name: static rules for the overlay E2E
+        run: |
+          if ! grep -q 'static_overlay' rproxy-api/docs/API.md; then
+            echo "rproxy-api has no static overlays; skipping tests/ui/overlay.spec.ts"; exit 0
+          fi
+          dir="$RUNNER_TEMP/overlay"
+          mkdir -p "$dir"
+          printf 'e2e:{SHA}%s\n' "$(printf 'e2e-pw' | openssl dgst -sha1 -binary | base64)" > "$dir/users"
+          chmod 600 "$dir/users"
+          config="${RPROXY_CONFIG:-$dir/rproxy.yaml}"
+          [ -f "$config" ] || echo 'version: 1' > "$config"
+          cat >> "$config" <<YAML
+          rules:
+            - protocol: tcp
+              listen_addr: 127.0.0.1
+              listen_port: 19730
+              http:
+                routes:
+                  - {name: file-site, match: "Host(\`file.overlay-e2e.test\`)", service: file-web}
+                  - {name: file-private, match: "Host(\`private.overlay-e2e.test\`)", service: file-web, middlewares: [file-auth]}
+                services:
+                  file-web: {servers: [{url: "http://127.0.0.1:19731"}]}
+                middlewares:
+                  file-auth: {basic_auth: {users_file: $dir/users}}
+                  file-headers: {headers: {request: {set: {X-From-File: "1"}}}}
+            - protocol: tcp
+              listen_addr: 127.0.0.1
+              listen_port: 19732
+              remote_addr: 127.0.0.1
+              remote_port: 19731
+              tls:
+                mode: sni
+                routes:
+                  - {server_name: "*.files.overlay-e2e.test", remote_addr: 127.0.0.1, remote_port: 19731}
+          YAML
+          cat "$config"
+          echo "RPROXY_CONFIG=$config" >> "$GITHUB_ENV"
+          echo "UI_E2E_OVERLAY=1" >> "$GITHUB_ENV"
+
       - name: start rproxy-api
         run: |
           echo "$RPROXY_API_TOKEN" > "$RUNNER_TEMP/tokens"

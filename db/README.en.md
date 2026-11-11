@@ -21,6 +21,7 @@ Definitions of the tables shared by the UI and rproxy-api.
 | `migrations/012_rproxy_rule_sets.sql` | `rproxy_rule_sets`, where rproxy-api v0.4.2 stores the rule sets of `persist: true` tokens (rproxy-api #241; only rproxy writes it; one row per set). Optional (without it sets are just not stored). With several rproxy instances, recreate the per-node views after applying it |
 | `migrate.mjs` | Applies the migrations in order and records them in `schema_migrations` ("migrate.mjs" below; used by the Kubernetes chart's migration Job, usable with the .deb too) |
 | `migrations/013_rproxy_global.sql` | `rproxy_global`, where rproxy-api v0.4.19 stores the `global` values set through its control API (`PATCH /config/global`) (rproxy-api #342, UI #169; only rproxy writes it; one row per node). Optional (without it the API values are not stored and are lost when rproxy restarts). With several rproxy instances, recreate the per-node views after applying it |
+| `migrations/014_rproxy_rule_overlays.sql` | `rproxy_rule_overlays`, where rproxy-api v0.4.23 stores what the API overlays on the listener of a settings-file (static) rule (http routes, services and middlewares, and `tls.routes` names) (rproxy-api #397, UI #193; only rproxy writes it; one row per static rule key). Optional (without it overlays are not stored and are lost when rproxy restarts). With several rproxy instances, recreate the per-node views after applying it |
 | `node-view.mjs` | Prints the SQL for a per-node database with a `forward_rules` view and a read-only DB user (see "Several rproxy instances (a view per node)" below) |
 
 On existing environments, apply them in order starting from `002` (by hand or with `migrate.mjs` below). When you change `schema.sql`, also add a migration that makes the same change (`schema.sql` is the state with every migration applied: `migrate.mjs` runs it on a new database and records every migration as applied).
@@ -79,6 +80,8 @@ Columns of `schema_migrations`: `version` (the file name without `.sql`), `appli
 
 - `rproxy_global` (013): rproxy-api v0.4.19 stores here the `global` values set through the control API's `PATCH /config/global` (the UI's "Global settings" screen) (unique on `node`; `spec` is JSON in the shape of the settings file's `global` with only the items set through the API; `updated_by` is the token name). Only rproxy writes it (`INSERT ... ON DUPLICATE KEY UPDATE`; it never deletes the row). The UI reads and writes the values through the rproxy API and does not read this table (the UI's DB user needs no privilege on it, not even the SELECT in the example of rproxy-api's docs/API.md). At startup rproxy reads the row of its own `node` and puts it in force before the rules of `forward_rules` and `rproxy_rules`. Without the table, or when it cannot be written, the values are still in force but `persisted: false`, and are lost on restart.
 
+- `rproxy_rule_overlays` (014): rproxy-api v0.4.23 stores here what was added to a static rule (`origin: static`) through the control API's `PUT /rules/{protocol}/{addr}/{port}/overlay` (the "Overlay" of the UI's rule details) (unique on `(node, protocol, listen_addr, listen_port)`; `spec` is the `PUT` body; `created_by` and `updated_by` are token names). Only rproxy writes it, and only overlays created by a `persist: true` token (and ones already written). Removing an overlay deletes the row. The UI reads and writes overlays through the rproxy API and does not read this table (the UI's DB user needs no privilege on it). At startup rproxy restores the rows of its own `node` after the settings-file rules and before `rproxy_rules`. Without the table, or when it cannot be written, overlays are still in force but `persisted: false`, and are lost on restart.
+
 - `usage_counters`, `usage_hourly`, `usage_daily` (010): usage accounting. The UI reads rproxy's statistics, keeps the last values (and `counters_since`, `started_at`) in `usage_counters`, and adds the differences per rule and node to `usage_hourly` (`hour` is the start of the UTC hour) and `usage_daily` (`day` is the UTC date). `owner`, `target`, `labels` and `origin` of each row are the rule's owner and marks at that time; a different `attr` in the primary key (011; their SHA-256) makes a separate row (when the owner changes during a day, the earlier traffic keeps its owner). The UI deletes old rows (`RPROXY_UI_USAGE_HOURLY_DAYS`, `RPROXY_UI_USAGE_DAILY_DAYS`).
 
 ## DB users
@@ -113,6 +116,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rules TO 'rproxy'@'127.0.0
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rule_sets TO 'rproxy'@'127.0.0.1';
 -- when rproxy-api v0.4.19 stores the API's global values (013)
 GRANT SELECT, INSERT, UPDATE         ON rproxy.rproxy_global TO 'rproxy'@'127.0.0.1';
+-- when rproxy-api v0.4.23 stores overlays on static rules (014)
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.rproxy_rule_overlays TO 'rproxy'@'127.0.0.1';
 ```
 
 (The examples use `rproxy` as the database name. Adjust it to match `DB_DATABASE`.)
@@ -156,9 +161,15 @@ CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_global` 
    WHERE `node` = 'node1'
   WITH CHECK OPTION;
 GRANT SELECT, INSERT, UPDATE ON `rproxy_node_node1`.`rproxy_global` TO 'rproxy_node1'@'10.0.0.11';
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW `rproxy_node_node1`.`rproxy_rule_overlays` AS
+  SELECT `node`, `protocol`, `listen_addr`, `listen_port`, `spec`, `spec_version`, `created_by`, `created_at`, `updated_by`, `updated_at`
+    FROM `rproxy`.`rproxy_rule_overlays`
+   WHERE `node` = 'node1'
+  WITH CHECK OPTION;
+GRANT SELECT, INSERT, UPDATE, DELETE ON `rproxy_node_node1`.`rproxy_rule_overlays` TO 'rproxy_node1'@'10.0.0.11';
 ```
 
-`rproxy_rules` (009, where rproxy-api v0.4 stores API rules) becomes a view that can write only that node's rows (`WITH CHECK OPTION` refuses other nodes' rows; set that rproxy's `RPROXY_NODE_NAME` to the node name). Without 009 applied, pass `--without-rproxy-rules` to leave it out. `rproxy_rule_sets` (012, where rproxy-api v0.4.2 stores rule sets) also becomes a view of that node's rows only; without 012 applied, pass `--without-rproxy-rule-sets` (`--without-rproxy-rules` leaves it out too). **When you recreate views before applying 012, pass `--without-rproxy-rule-sets`** (otherwise it stops at the view of the missing table). `rproxy_global` (013, where rproxy-api v0.4.19 stores the API's global values) also becomes a view of that node's single row (privileges `SELECT, INSERT, UPDATE`); without 013 applied, pass `--without-rproxy-global` (`--without-rproxy-rules` leaves it out too). **When you recreate views before applying 013, pass `--without-rproxy-global`**.
+`rproxy_rules` (009, where rproxy-api v0.4 stores API rules) becomes a view that can write only that node's rows (`WITH CHECK OPTION` refuses other nodes' rows; set that rproxy's `RPROXY_NODE_NAME` to the node name). Without 009 applied, pass `--without-rproxy-rules` to leave it out. `rproxy_rule_sets` (012, where rproxy-api v0.4.2 stores rule sets) also becomes a view of that node's rows only; without 012 applied, pass `--without-rproxy-rule-sets` (`--without-rproxy-rules` leaves it out too). **When you recreate views before applying 012, pass `--without-rproxy-rule-sets`** (otherwise it stops at the view of the missing table). `rproxy_global` (013, where rproxy-api v0.4.19 stores the API's global values) also becomes a view of that node's single row (privileges `SELECT, INSERT, UPDATE`); without 013 applied, pass `--without-rproxy-global` (`--without-rproxy-rules` leaves it out too). **When you recreate views before applying 013, pass `--without-rproxy-global`**. `rproxy_rule_overlays` (014, where rproxy-api v0.4.23 stores overlays on static rules) also becomes a view of that node's rows only (privileges `SELECT, INSERT, UPDATE, DELETE`, since removing an overlay deletes the row); without 014 applied, pass `--without-rproxy-rule-overlays` (`--without-rproxy-rules` leaves it out too). **When you recreate views before applying 014, pass `--without-rproxy-rule-overlays`**. Static rules come from each node's own settings file, so overlays are per node too (never per group).
 
 Set that rproxy's `RPROXY_DATABASE_URL=mysql://rproxy_node1:<password>@<DB host>/rproxy_node_node1`.
 Changing groups needs no new view, since the UI updates `forward_rule_targets`. Run it only for a node you add.

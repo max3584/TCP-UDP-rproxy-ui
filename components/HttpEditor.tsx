@@ -3,6 +3,7 @@
 
 import React, { createContext, useContext, useState } from 'react';
 import { BALANCES, type Balance } from './lib';
+import { translate } from '@/i18n/core';
 import type { HttpOutlierSpec } from './v04';
 import { BALANCE_LABELS } from './dashboard';
 import { BALANCE_HELP } from './targets';
@@ -52,6 +53,20 @@ export interface HttpEditorProps {
   filesLocked?: boolean;
   // 利用者の cache の上限（filesLocked のとき、新しい cache の欄に max_memory・max_entries として入れる。#175）
   cacheCaps?: { maxMemory: number; maxEntries: number };
+  // 固定ルールに重ねる分（#193）を編集する：設定ファイルの http。そのサービス・ミドルウェアを名前で選べる（設定ファイルの印を付ける）。
+  // HTTP/3 と「どのルートにも一致しないとき」は設定ファイルのものなので出さない
+  overlayFile?: {
+    http: HttpRules;
+    // 秘密のファイルを持つ（か、それを使う）設定ファイルのサービス・ミドルウェア（管理者でない人は選べない）
+    secrets: { services: string[]; middlewares: string[] };
+    // 秘密のものを選べない（管理者でない人）
+    lockSecrets: boolean;
+    // 設定ファイルのサービスを選べない（管理者でない人。重ねる分のルートはファイルのルートのミドルウェアを通らずに届き、
+    // 転送先は利用者の許可リストの外のため）
+    lockServices: boolean;
+    // 選べない設定ファイルのミドルウェア（管理者でない人。ファイルのサービスへたどり着く mirror・errors など）
+    blockedMiddlewares?: string[];
+  };
 }
 
 // ファイルのパスの欄を読み取り専用にするか（HttpEditor の filesLocked）
@@ -618,12 +633,28 @@ export function newMiddlewareConfig(kind: string, filesLocked: boolean, cacheCap
   };
 }
 
-const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, targetCaps = false, streamLimits = false, filesLocked = false, cacheCaps }) => {
+const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, serviceOptions, httpOptions, http3, targetCaps = false, streamLimits = false, filesLocked = false, cacheCaps, overlayFile }) => {
   const template = (kind: string) => newMiddlewareConfig(kind, filesLocked, cacheCaps);
   const services = value.services ?? {};
-  const mws = value.middlewares ?? {};
-  const serviceNames = Object.keys(services);
-  const mwNames = Object.keys(mws);
+  const ownMws = value.middlewares ?? {};
+  // 重ねる分：設定ファイルのサービス・ミドルウェアも名前で使える（同じ名前は使えないので、重ねる分のものが先）
+  const fileServiceNames = overlayFile ? Object.keys(overlayFile.http.services ?? {}).filter((n) => !(n in services)) : [];
+  const fileMws = overlayFile ? Object.fromEntries(Object.entries(overlayFile.http.middlewares ?? {}).filter(([n]) => !(n in ownMws))) : {};
+  const mws = { ...fileMws, ...ownMws };
+  const serviceNames = [...Object.keys(services), ...fileServiceNames];
+  const mwNames = [...Object.keys(ownMws), ...Object.keys(fileMws)];
+  const isFileService = (n: string) => fileServiceNames.includes(n);
+  const isFileMw = (n: string) => n in fileMws;
+  const secretService = (n: string) => isFileService(n) && (overlayFile?.secrets.services.includes(n) ?? false);
+  const secretMw = (n: string) => isFileMw(n) && (overlayFile?.secrets.middlewares.includes(n) ?? false);
+  // 選択肢の名前に付ける設定ファイルの印
+  const fileMark = (secret: boolean) => translate(secret ? '（設定ファイル・秘密のファイルあり）' : '（設定ファイル）');
+  const serviceLabel = (n: string) => (isFileService(n) ? `${n}${fileMark(secretService(n))}` : n);
+  const mwLabel = (n: string) => (isFileMw(n) ? `${n}${fileMark(secretMw(n))}` : n);
+  const lockedSecretService = (n: string) => isFileService(n) && (overlayFile?.lockServices === true || (overlayFile?.lockSecrets === true && secretService(n)));
+  // 選べるサービス（新しいルート・mirror の写しの先）
+  const pickableServices = serviceNames.filter((n) => !lockedSecretService(n));
+  const lockedSecretMw = (n: string) => isFileMw(n) && ((overlayFile?.lockSecrets === true && secretMw(n)) || (overlayFile?.blockedMiddlewares ?? []).includes(n));
   // 選べるミドルウェアの種類（features.middlewares。使っている種類は残す）
   // cache（#340）は features.middlewares に書いてあるときだけ（features を取れないときも出さない）
   const kinds = Object.keys(MIDDLEWARE_KINDS).filter((k) => kindAvailable(middlewares, k));
@@ -638,7 +669,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
   const setMiddlewares = (m: Record<string, MiddlewareSpec>) => onChange({ ...value, middlewares: m });
 
   // ミラーの送り先のサービスの名前を付け替える
-  const mirrorsRenamed = (from: string, to: string): Record<string, MiddlewareSpec> => Object.fromEntries(Object.entries(mws).map(([n, m]) => (
+  const mirrorsRenamed = (from: string, to: string): Record<string, MiddlewareSpec> => Object.fromEntries(Object.entries(ownMws).map(([n, m]) => (
     middlewareKind(m) === 'mirror' && (m.mirror as Record<string, unknown>).service === from ? [n, { mirror: { ...m.mirror, service: to } }] : [n, m])));
   // 転送先ごとのミドルウェアの付け替え・外し
   const serversMapped = (f: (names: string[]) => string[]): Record<string, ServiceSpec> => Object.fromEntries(Object.entries(services).map(([n, svc]) => [n, {
@@ -673,13 +704,13 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
   const renameMiddleware = (from: string, to: string) => {
     onChange({
       ...value,
-      middlewares: renameKey(mws, from, to),
+      middlewares: renameKey(ownMws, from, to),
       services: serversMapped((names) => names.map((m) => (m === from ? to : m))),
       routes: value.routes.map((r) => ({ ...r, middlewares: r.middlewares?.map((m) => (m === from ? to : m)) })),
     });
   };
   const removeMiddleware = (name: string) => {
-    const rest = { ...mws };
+    const rest = { ...ownMws };
     delete rest[name];
     onChange({
       ...value,
@@ -698,7 +729,13 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
         優先度が大きいルールから順に試し、省略時は式の長さが優先度になります。
       </p>
 
-      {http3 && (
+      {overlayFile && (
+        <p className="mb-3 text-xs text-gray-700" data-testid="overlay-http-note">
+          重ねる分のルートは、設定ファイルのルートのどれにも当たらないリクエストだけを受けます（優先度をどれだけ大きくしても、設定ファイルのルートのリクエストは取れません）。
+          設定ファイルのサービス・ミドルウェアは名前で選べます（「設定ファイル」の印）。設定ファイルにある名前は、重ねる分のルート・サービス・ミドルウェアの名前に使えません。
+        </p>
+      )}
+      {http3 && !overlayFile && (
         <label className="flex items-center gap-2 text-sm text-gray-800 mb-3">
           <input type="checkbox" checked={value.http3 === true} onChange={(e) => onChange({ ...value, http3: e.target.checked })} />
           HTTP/3（QUIC）も同じポートの UDP で受ける
@@ -753,7 +790,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                       else updateRoute(i, { service: v.slice('service:'.length), to: undefined });
                     }}
                   >
-                    {serviceNames.map((s) => <option key={s} value={`service:${s}`}>サービス: {s}</option>)}
+                    {serviceNames.map((s) => <option key={s} value={`service:${s}`} disabled={lockedSecretService(s) && r.service !== s}>{`サービス: ${serviceLabel(s)}`}</option>)}
                     {r.service !== undefined && !serviceNames.includes(r.service) && <option value={`service:${r.service}`}>サービス: {r.service}（ありません）</option>}
                     <option value="to">URL を直接指定（to）</option>
                     <option value="none">なし（リダイレクト・固定の応答のミドルウェアが答える）</option>
@@ -786,6 +823,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                   {(r.middlewares ?? []).map((m, k) => (
                     <li key={`${m}-${k}`} className="flex flex-wrap items-center gap-2 text-sm">
                       <span className="font-mono text-gray-900">{k + 1}. {m}</span>
+                      {isFileMw(m) && <span className="badge bg-gray-100 text-gray-800 border border-gray-300" data-testid="file-item-mark">{secretMw(m) ? '設定ファイル・秘密あり' : '設定ファイル'}</span>}
                       <span className="text-xs text-gray-600">{MIDDLEWARE_KINDS[middlewareKind(mws[m] ?? {})] ?? '（ありません）'}</span>
                       <button type="button" className={smallButton} aria-label={`${m} を上へ`} onClick={() => updateRoute(i, { middlewares: move(r.middlewares ?? [], k, -1) })}>↑</button>
                       <button type="button" className={smallButton} aria-label={`${m} を下へ`} onClick={() => updateRoute(i, { middlewares: move(r.middlewares ?? [], k, 1) })}>↓</button>
@@ -801,7 +839,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     onChange={(e) => e.target.value && updateRoute(i, { middlewares: [...(r.middlewares ?? []), e.target.value] })}
                   >
                     <option value="">ミドルウェアを足す…</option>
-                    {mwNames.filter((m) => !(r.middlewares ?? []).includes(m)).map((m) => <option key={m} value={m}>{m}</option>)}
+                    {mwNames.filter((m) => !(r.middlewares ?? []).includes(m)).map((m) => <option key={m} value={m} disabled={lockedSecretMw(m)}>{mwLabel(m)}</option>)}
                   </select>
                 )}
               </div>
@@ -812,9 +850,9 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           type="button"
           className={smallButton}
           onClick={() => setRoutes([...value.routes, {
-            name: uniqueName('route', value.routes.map((r) => r.name)),
+            name: uniqueName('route', [...value.routes.map((r) => r.name), ...(overlayFile?.http.routes ?? []).map((r) => r.name)]),
             match: 'PathPrefix(`/`)',
-            ...(serviceNames[0] ? { service: serviceNames[0] } : {}),
+            ...(pickableServices[0] ? { service: pickableServices[0] } : {}),
           }])}
         >
           ルートを追加
@@ -971,14 +1009,14 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
             </div>
           );
         })}
-        <button type="button" className={smallButton} onClick={() => setServices({ ...services, [uniqueName('backend', services)]: { servers: [{ url: 'http://' }] } })}>
+        <button type="button" className={smallButton} onClick={() => setServices({ ...services, [uniqueName('backend', [...Object.keys(services), ...Object.keys(overlayFile?.http.services ?? {})])]: { servers: [{ url: 'http://' }] } })}>
           サービスを追加
         </button>
       </section>
 
       <section aria-labelledby="http-middlewares-heading" className="mb-4">
         <h3 id="http-middlewares-heading" className={headingClass}>ミドルウェア</h3>
-        {Object.entries(mws).map(([name, m], i) => {
+        {Object.entries(ownMws).map(([name, m], i) => {
           const id = `http-mw-${i}`;
           const kind = middlewareKind(m);
           const config = (m[kind] ?? {}) as Record<string, unknown>;
@@ -1004,7 +1042,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
                     id={`${id}-kind`}
                     className={inputClass}
                     value={kind}
-                    onChange={(e) => setMiddlewares({ ...mws, [name]: { [e.target.value]: template(e.target.value) } })}
+                    onChange={(e) => setMiddlewares({ ...ownMws, [name]: { [e.target.value]: template(e.target.value) } })}
                   >
                     {(kinds.includes(kind) ? kinds : [kind, ...kinds]).map((k) => <option key={k} value={k}>{MIDDLEWARE_KINDS[k] ?? k}（{k}）</option>)}
                   </select>
@@ -1015,12 +1053,12 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
               {kind === 'cache'
                 ? unavailable
                   ? <Preserved label="キャッシュの設定" value={config} note="（この rproxy では cache を使えないので編集できません。値は消さずに残しますが、このミドルウェアがある間は保存できません。保存するには、このミドルウェアを削除してください）" />
-                  : <CacheConfig id={id} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
+                  : <CacheConfig id={id} value={config} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />
                 : kind === 'mirror'
-                ? <MirrorConfig id={id} value={config} services={serviceNames} streamLimits={streamLimits} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
+                ? <MirrorConfig id={id} value={config} services={pickableServices} streamLimits={streamLimits} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />
                 : FIELDS[kind]
-                  ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} httpOptions={httpOptions} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />
-                  : <JsonConfig key={`${name}-${kind}`} id={`${id}-json`} value={config} onChange={(v) => setMiddlewares({ ...mws, [name]: { [kind]: v } })} />}
+                  ? <TypedConfig id={id} fields={FIELDS[kind]} value={config} httpOptions={httpOptions} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />
+                  : <JsonConfig key={`${name}-${kind}`} id={`${id}-json`} value={config} onChange={(v) => setMiddlewares({ ...ownMws, [name]: { [kind]: v } })} />}
               {kind === 'basic_auth' && <p className="text-xs text-gray-600 mt-1" data-testid="users-file-owner-note">{FILE_OWNER_NOTE}</p>}
               {kind === 'headers' && (
                 <p className="text-xs text-gray-600 mt-1">
@@ -1044,7 +1082,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
             onChange={(e) => {
               const kind = e.target.value;
               if (!kind) return;
-              setMiddlewares({ ...mws, [uniqueName(kind.replace(/_/g, '-'), mws)]: { [kind]: template(kind) } });
+              setMiddlewares({ ...ownMws, [uniqueName(kind.replace(/_/g, '-'), { ...(overlayFile?.http.middlewares ?? {}), ...mws })]: { [kind]: template(kind) } });
             }}
           >
             <option value="">ミドルウェアを追加…</option>
@@ -1053,6 +1091,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
         )}
       </section>
 
+      {!overlayFile && (
       <section aria-labelledby="http-default-heading">
         <h3 id="http-default-heading" className={headingClass}>どのルートにも一致しないとき</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1083,6 +1122,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
           )}
         </div>
       </section>
+      )}
     </div>
     </FilesLocked.Provider>
   );

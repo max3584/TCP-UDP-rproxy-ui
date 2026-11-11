@@ -98,7 +98,7 @@ const SOURCE_IP_LABELS: Record<SourceIp, string> = {
 };
 
 // サーバ名ごとの送信元 IP の渡し方（tls.routes[].source_ip）。空はルールと同じ
-const ROUTE_SOURCE_IP_LABELS: Record<RouteSourceIp, string> = {
+export const ROUTE_SOURCE_IP_LABELS: Record<RouteSourceIp, string> = {
   proxy: 'proxy（渡さない）',
   proxy_v1: 'proxy_v1（PROXY protocol v1）',
   proxy_v2: 'proxy_v2（PROXY protocol v2）',

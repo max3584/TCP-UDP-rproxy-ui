@@ -196,6 +196,7 @@ export function ruleFromStatus(status: RproxyRuleStatus, id: number): ForwardRul
     resolved: status.resolved ?? [],
     ...(Array.isArray(status.cert_status) ? { certStatus: status.cert_status } : {}),
     ...acmeStatusField(status.acme),
+    ...(status.overlay && typeof status.overlay === 'object' ? { overlay: status.overlay } : {}),
   };
 }
 

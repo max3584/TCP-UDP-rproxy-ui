@@ -126,7 +126,11 @@ const HistoryList: React.FC<{
                     <td className="whitespace-nowrap">{ACTION_LABELS[e.action] ?? e.action}{e.node !== undefined && <span className="ml-1 font-mono text-xs text-gray-700" title="送り直したノード">{e.node}</span>}</td>
                     <td className="font-mono break-all">{e.actor ?? '-'}</td>
                     <td>
-                      {e.rule === null ? (
+                      {e.action === 'OVERLAY' && e.overlay !== undefined ? (
+                        e.changes.length > 0
+                          ? <ul className="list-disc pl-5" data-testid="history-overlay-changes">{e.changes.map((c) => <li key={c}>{c}</li>)}</ul>
+                          : <span className="text-gray-700">（前の版との違いなし）</span>
+                      ) : e.rule === null ? (
                         <span className="text-gray-700">内容を読めません</span>
                       ) : e.changes.length > 0 ? (
                         <ul className="list-disc pl-5">{e.changes.map((c) => <li key={c}>{c}</li>)}</ul>
