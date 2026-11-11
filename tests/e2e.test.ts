@@ -151,7 +151,7 @@ describe.runIf(run)('e2e: UI API route + MariaDB + rproxy', () => {
     // 設定ファイルの固定ルール（CI の tests/ui/overlay.spec.ts 向け。UI_E2E_OVERLAY）は static の行で後ろに足される
     expect(dash.json.rules.filter((r: any) => r.origin !== 'static').map((r: any) => r.srcPort)).toEqual([listenPort]);
     if (process.env.UI_E2E_OVERLAY === '1') {
-      expect(dash.json.rules.filter((r: any) => r.origin === 'static').map((r: any) => r.srcPort)).toEqual(expect.arrayContaining([19490, 19492]));
+      expect(dash.json.rules.filter((r: any) => r.origin === 'static').map((r: any) => r.srcPort)).toEqual(expect.arrayContaining([19730, 19732]));
     }
   });
 

@@ -265,25 +265,25 @@ jobs:
           rules:
             - protocol: tcp
               listen_addr: 127.0.0.1
-              listen_port: 19490
+              listen_port: 19730
               http:
                 routes:
                   - {name: file-site, match: "Host(\`file.overlay-e2e.test\`)", service: file-web}
                   - {name: file-private, match: "Host(\`private.overlay-e2e.test\`)", service: file-web, middlewares: [file-auth]}
                 services:
-                  file-web: {servers: [{url: "http://127.0.0.1:19491"}]}
+                  file-web: {servers: [{url: "http://127.0.0.1:19731"}]}
                 middlewares:
                   file-auth: {basic_auth: {users_file: $dir/users}}
                   file-headers: {headers: {request: {set: {X-From-File: "1"}}}}
             - protocol: tcp
               listen_addr: 127.0.0.1
-              listen_port: 19492
+              listen_port: 19732
               remote_addr: 127.0.0.1
-              remote_port: 19491
+              remote_port: 19731
               tls:
                 mode: sni
                 routes:
-                  - {server_name: "*.files.overlay-e2e.test", remote_addr: 127.0.0.1, remote_port: 19491}
+                  - {server_name: "*.files.overlay-e2e.test", remote_addr: 127.0.0.1, remote_port: 19731}
           YAML
           cat "$config"
           echo "RPROXY_CONFIG=$config" >> "$GITHUB_ENV"

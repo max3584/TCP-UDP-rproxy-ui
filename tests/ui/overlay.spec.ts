@@ -1,7 +1,7 @@
 // 固定ルール（設定ファイルのルール）に API で重ねる分（rproxy-api v0.4.23 の #397、UI #193）。
 // CI の e2e ジョブが rproxy の設定ファイル（RPROXY_CONFIG）に固定ルールを 2 つ書いたときだけ動く（UI_E2E_OVERLAY=1。.github/workflows/ci.yml）：
-// - 127.0.0.1:19490 の http のルール（ルート file-site・file-private、サービス file-web、ミドルウェア file-auth（basic_auth。秘密のファイル）・file-headers）
-// - 127.0.0.1:19492 の sni のルール（*.files.overlay-e2e.test）
+// - 127.0.0.1:19730 の http のルール（ルート file-site・file-private、サービス file-web、ミドルウェア file-auth（basic_auth。秘密のファイル）・file-headers）
+// - 127.0.0.1:19732 の sni のルール（*.files.overlay-e2e.test）
 // 画面から重ねる分を足して実際に転送されること、ファイルの名前との重なり（409）・ETag（412）・利用者の秘密のファイル（409 file_in_use）、
 // 履歴、外すことを確かめる。rproxy が features.static_overlay を返さなければ飛ばす
 import http from 'node:http';
@@ -10,9 +10,9 @@ import fs from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { SAME_ORIGIN, USER_STATE } from './global-setup';
 
-const HTTP_PORT = 19490;
-const BACKEND = 19491;
-const SNI_PORT = 19492;
+const HTTP_PORT = 19730;
+const BACKEND = 19731;
+const SNI_PORT = 19732;
 const API = (process.env.RPROXY_API_URL ?? 'http://127.0.0.1:8080').replace(/\/+$/, '');
 const apiHeaders = { 'Content-Type': 'application/json', ...(process.env.RPROXY_API_TOKEN ? { Authorization: `Bearer ${process.env.RPROXY_API_TOKEN}` } : {}) };
 const overlayUrl = (port: number) => `${API}/rules/tcp/127.0.0.1/${port}/overlay`;
