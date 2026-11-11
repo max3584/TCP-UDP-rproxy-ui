@@ -233,27 +233,54 @@ export function fileSecretItems(fileHttp: unknown): SecretItems {
   };
 }
 
-// 重ねる分が名前で使うファイルのサービス・ミドルウェア（重ねる分の中で同じ名前を定義していれば重ねる分のもの）
-export function fileItemsUsed(spec: OverlaySpec, file: FileNames): SecretItems {
+// 重ねる分がたどり着くファイルのサービス・ミドルウェア（rproxy の OverlaySpec::file_items と同じたどり方）：
+// ルートの service・middlewares、重ねる分のミドルウェアの service、重ねる分のサービスの servers[].middlewares から始め、
+// ファイルのサービスの servers[].middlewares とファイルのミドルウェアの service（mirror・errors・forward_auth）を続けてたどる。
+// 重ねる分の中で同じ名前を定義していれば重ねる分のもの（ファイルのものとは数えない）。
+// skipFileForwardAuthService：ファイルの forward_auth の service はたどらない（利用者がファイルの認証を自分のルートに付けるのは認証を足すだけなので、
+// そのサービスを「使った」とは数えない。オーナーの決定）
+export function fileItemsReached(spec: OverlaySpec, fileHttp: unknown, opts: { skipFileForwardAuthService?: boolean } = {}): SecretItems {
   const s = overlaySpecOf(spec);
+  const file = isObject(fileHttp) ? fileHttp : {};
+  const fileServices = isObject(file.services) ? file.services : {};
+  const fileMiddlewares = isObject(file.middlewares) ? file.middlewares : {};
   const ownServices = s.http?.services ?? {};
   const ownMiddlewares = s.http?.middlewares ?? {};
-  const services = new Set<string>();
-  const middlewares = new Set<string>();
-  const addService = (n: string) => { if (!(n in ownServices) && file.services.includes(n)) services.add(n); };
-  const addMiddleware = (n: string) => { if (!(n in ownMiddlewares) && file.middlewares.includes(n)) middlewares.add(n); };
+  const services: string[] = [];
+  const middlewares: string[] = [];
   for (const r of s.http?.routes ?? []) {
-    if (r.service) addService(r.service);
-    for (const m of r.middlewares ?? []) addMiddleware(m);
+    if (r.service) services.push(r.service);
+    middlewares.push(...(r.middlewares ?? []));
   }
-  for (const v of Object.values(ownServices)) usesOf('service', v).middlewares.forEach(addMiddleware);
-  for (const v of Object.values(ownMiddlewares)) usesOf('middleware', v).services.forEach(addService);
-  return { services: [...services], middlewares: [...middlewares] };
+  for (const v of Object.values(ownMiddlewares)) services.push(...usesOf('middleware', v).services);
+  for (const v of Object.values(ownServices)) middlewares.push(...usesOf('service', v).middlewares);
+  const outServices: string[] = [];
+  const outMiddlewares: string[] = [];
+  while (services.length > 0 || middlewares.length > 0) {
+    for (const name of services.splice(0)) {
+      if (name in ownServices || outServices.includes(name) || !(name in fileServices)) continue;
+      outServices.push(name);
+      middlewares.push(...usesOf('service', fileServices[name]).middlewares);
+    }
+    for (const name of middlewares.splice(0)) {
+      if (name in ownMiddlewares || outMiddlewares.includes(name) || !(name in fileMiddlewares)) continue;
+      outMiddlewares.push(name);
+      const m = fileMiddlewares[name];
+      if (opts.skipFileForwardAuthService && middlewareKind(m as MiddlewareSpec) === 'forward_auth') continue;
+      services.push(...usesOf('middleware', m).services);
+    }
+  }
+  return { services: outServices, middlewares: outMiddlewares };
 }
 
-// 重ねる分が使うファイルの項目のうち秘密を持つもの（管理者でなければ 409 file_in_use）
-export function secretFileItemsUsed(spec: OverlaySpec, file: FileNames, secrets: SecretItems): SecretItems {
-  const used = fileItemsUsed(spec, file);
+// 管理者でない人が使えないファイルのサービス（たどり着くものすべて。ファイルの forward_auth の service だけは除く）
+export function fileServicesForbidden(spec: OverlaySpec, fileHttp: unknown): string[] {
+  return fileItemsReached(spec, fileHttp, { skipFileForwardAuthService: true }).services;
+}
+
+// 重ねる分がたどり着くファイルの項目のうち秘密を持つもの（管理者でなければ 409 file_in_use。forward_auth の先も含めてたどる）
+export function secretFileItemsUsed(spec: OverlaySpec, fileHttp: unknown, secrets: SecretItems = fileSecretItems(fileHttp)): SecretItems {
+  const used = fileItemsReached(spec, fileHttp);
   return {
     services: used.services.filter((n) => secrets.services.includes(n)),
     middlewares: used.middlewares.filter((n) => secrets.middlewares.includes(n)),

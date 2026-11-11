@@ -94,11 +94,22 @@ const view = (spec: Record<string, unknown>, over: Record<string, unknown> = {})
 const key = { protocol: 'tcp', addr: '0.0.0.0', port: '8443' };
 const notFound = () => new RproxyError('tcp/0.0.0.0/8443 has no overlay', 'not_found', 404);
 
-// 履歴の OVERLAY の行（作った人を探す overlayCreator が読む）
-function overlayRows(rows: { auth_id: string; created_at?: number; overlay?: unknown }[]) {
-  pool.query.mockImplementation(async (q: string) => (q.includes("update_action = 'OVERLAY' ORDER BY l.id") && q.includes('SELECT l.auth_id')
-    ? rows.map((r) => ({ auth_id: r.auth_id, options: JSON.stringify({ overlay: r.overlay ?? {}, ...(r.created_at !== undefined ? { created_at: r.created_at } : {}) }) }))
-    : []));
+// 履歴の OVERLAY の行（作った人を探す overlayCreator が読む）。deleted は外した行（overlay: null）
+function overlayRows(rows: { auth_id: string; created_at?: number; deleted?: boolean }[]) {
+  const withId = rows.map((r, i) => ({ ...r, id: i + 1 }));
+  pool.query.mockImplementation(async (q: string, params: unknown[] = []) => {
+    if (q.includes('SELECT MAX(l.id) AS id') && q.includes("update_action = 'OVERLAY'")) {
+      const ids = withId.filter((r) => r.deleted).map((r) => r.id);
+      return [{ id: ids.length > 0 ? Math.max(...ids) : null }];
+    }
+    if (q.includes('SELECT l.auth_id, l.options') && q.includes('LIMIT 1')) {
+      const createdAt = String(params[params.length - 1]);
+      const after = Number(params[params.length - 2]);
+      return withId.filter((r) => !r.deleted && r.id > after && String(r.created_at) === createdAt).slice(0, 1)
+        .map((r) => ({ auth_id: r.auth_id, options: JSON.stringify({ overlay: {}, created_at: r.created_at }) }));
+    }
+    return [];
+  });
 }
 
 function logInserts(): unknown[][] {
@@ -172,8 +183,13 @@ describe('PUT overlay (overlay-put)', () => {
     expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).body.code).toBe('overlay_not_owner');
     overlayRows([]);
     expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).body.code).toBe('overlay_not_owner');
-    // 自分で作ったもの
-    overlayRows([{ auth_id: 'user-1', created_at: 1790000000 }]);
+    // 管理者のものを外して同じ秒に作り直した：外した行より前の行は数えない
+    overlayRows([{ auth_id: 'user-1', created_at: 1790000000 }, { auth_id: 'admin-1', deleted: true }, { auth_id: 'admin-1', created_at: 1790000000 }]);
+    expect((await call('overlay', undefined, 'GET', key)).body.editCode).toBe('overlay_not_owner');
+    overlayRows([{ auth_id: 'admin-1', created_at: 1790000000 }, { auth_id: 'admin-1', deleted: true }]);
+    expect((await call('overlay', undefined, 'GET', key)).body.editCode).toBe('overlay_not_owner');
+    // 自分で作ったもの（前に外した行があっても、その後の自分の行）
+    overlayRows([{ auth_id: 'admin-1', created_at: 1790000000 }, { auth_id: 'admin-1', deleted: true }, { auth_id: 'user-1', created_at: 1790000000 }]);
     expect((await call('overlay', undefined, 'GET', key)).body.canEdit).toBe(true);
     expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).status).toBe(200);
     expect(mocks.deleteOverlay).toHaveBeenCalledTimes(1);
@@ -269,6 +285,28 @@ describe('PUT overlay (overlay-put)', () => {
     // 秘密のないファイルのミドルウェアは、自分のサービスと一緒なら使える
     const plain = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], middlewares: ['hdr'] }] } };
     expect((await call('overlay-put', { ...key, overlay: plain, etag: null })).status).toBe(200);
+  });
+
+  it('refuses file services reached through file middlewares, but allows a file forward_auth', async () => {
+    mocks.getRule.mockResolvedValue(staticRule({ http: {
+      ...fileHttp,
+      services: { ...fileHttp.services, authsvc: { servers: [{ url: 'http://10.0.0.20' }] } },
+      middlewares: { ...fileHttp.middlewares, shadow: { mirror: { service: 'web' } }, oops: { errors: { status: ['500-599'], service: 'web', query: '/' } }, sso: { forward_auth: { address: 'http://10.0.0.20/verify', service: 'authsvc' } } },
+    } }));
+    mocks.getServerSession.mockResolvedValue(user);
+    vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
+    const withMw = (mws: string[], services?: Record<string, unknown>) => ({ http: { ...wiki.http, ...(services ? { services: { ...wiki.http.services, ...services } } : {}), routes: [{ ...wiki.http.routes[0], middlewares: mws }] } });
+    for (const overlay of [withMw(['shadow']), withMw(['oops'])]) {
+      const { status, body } = await call('overlay-put', { ...key, overlay, etag: null });
+      expect(status, JSON.stringify(body)).toBe(403);
+      expect(body.code).toBe('file_service_not_allowed');
+    }
+    // 自分のサービスの servers[].middlewares がファイルの mirror
+    const viaServers = { http: { ...wiki.http, services: { wiki: { servers: [{ url: 'http://10.0.0.7:8080', middlewares: ['shadow'] }] } } } };
+    const vs = await call('overlay-put', { ...key, overlay: viaServers, etag: null });
+    expect(vs.body.code, JSON.stringify(vs.body)).toBe('file_service_not_allowed');
+    // ファイルの forward_auth（管理者の SSO）は付けてよい
+    expect((await call('overlay-put', { ...key, overlay: withMw(['sso']), etag: null })).status).toBe(200);
   });
 
   it('never lets users reference a file service, even one without secrets (403 file_service_not_allowed); admins may', async () => {

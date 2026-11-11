@@ -64,6 +64,8 @@ export interface HttpEditorProps {
     // 設定ファイルのサービスを選べない（管理者でない人。重ねる分のルートはファイルのルートのミドルウェアを通らずに届き、
     // 転送先は利用者の許可リストの外のため）
     lockServices: boolean;
+    // 選べない設定ファイルのミドルウェア（管理者でない人。ファイルのサービスへたどり着く mirror・errors など）
+    blockedMiddlewares?: string[];
   };
 }
 
@@ -652,7 +654,7 @@ const HttpEditor: React.FC<HttpEditorProps> = ({ value, onChange, middlewares, s
   const lockedSecretService = (n: string) => isFileService(n) && (overlayFile?.lockServices === true || (overlayFile?.lockSecrets === true && secretService(n)));
   // 選べるサービス（新しいルート・mirror の写しの先）
   const pickableServices = serviceNames.filter((n) => !lockedSecretService(n));
-  const lockedSecretMw = (n: string) => overlayFile?.lockSecrets === true && secretMw(n);
+  const lockedSecretMw = (n: string) => isFileMw(n) && ((overlayFile?.lockSecrets === true && secretMw(n)) || (overlayFile?.blockedMiddlewares ?? []).includes(n));
   // 選べるミドルウェアの種類（features.middlewares。使っている種類は残す）
   // cache（#340）は features.middlewares に書いてあるときだけ（features を取れないときも出さない）
   const kinds = Object.keys(MIDDLEWARE_KINDS).filter((k) => kindAvailable(middlewares, k));

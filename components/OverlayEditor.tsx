@@ -18,9 +18,8 @@ import {
   OverlaySpec,
   OverlayView,
   SecretItems,
-  fileItemsUsed,
   fileNames,
-  fileSecretItems,
+  fileServicesForbidden,
   forwardingIdentityProblems,
   secretFileItemsUsed,
   isEmptyOverlay,
@@ -72,13 +71,18 @@ function buildSpec(http: HttpRules | null, routes: RouteRow[] | null, ctx: Param
 // 管理者でない人が使えないファイルの項目（ファイルのサービスはどれも、ミドルウェアは秘密を持つもの）と理由。
 // secrets は API が伏せない形で数えたもの（画面のルールはパスを伏せてあるので、なければルールから数える）
 export function userRefusedItems(rule: ForwardRules, spec: OverlaySpec, secrets?: SecretItems): string[] {
-  const names = fileNames(rule);
   const out: string[] = [];
-  const services = fileItemsUsed(spec, names).services;
+  const services = fileServicesForbidden(spec, rule.http);
   if (services.length > 0) out.push(`設定ファイルのサービス ${services.join(', ')}: ${FILE_SERVICE_NOT_ALLOWED_MESSAGE}`);
-  const secret = secretFileItemsUsed(spec, names, secrets ?? fileSecretItems(rule.http)).middlewares;
+  const secret = secretFileItemsUsed(spec, rule.http, secrets).middlewares;
   if (secret.length > 0) out.push(`設定ファイルのミドルウェア ${secret.join(', ')}: 秘密のファイル（鍵・OIDC の秘密・users_file）を持つ（か、それを使う）ので、管理者だけが使えます。`);
   return out;
+}
+
+// 管理者でない人が選べない設定ファイルのミドルウェア：ファイルのサービスへたどり着くもの（mirror・errors・転送先ごとのミドルウェアの先など。forward_auth の先は除く）
+export function middlewaresReachingFileServices(fileHttp: unknown): string[] {
+  const mws = (fileHttp && typeof fileHttp === 'object' ? (fileHttp as { middlewares?: Record<string, unknown> }).middlewares : undefined) ?? {};
+  return Object.keys(mws).filter((m) => fileServicesForbidden({ http: { routes: [{ name: 'x', match: 'Path(`/`)', middlewares: [m] }] } }, fileHttp).length > 0);
 }
 
 // 画面で先に確かめる（rproxy と API route も確かめる）。admin でなければ使えないファイルの項目も
@@ -344,7 +348,7 @@ const OverlayEditor: React.FC<{
               streamLimits={features?.http_stream_limits === true}
               filesLocked={!admin}
               cacheCaps={cacheCaps}
-              overlayFile={{ http: toHttpRules(rule.http), secrets: info.secretItems, lockSecrets: !admin, lockServices: !admin }}
+              overlayFile={{ http: toHttpRules(rule.http), secrets: info.secretItems, lockSecrets: !admin, lockServices: !admin, blockedMiddlewares: admin ? [] : middlewaresReachingFileServices(rule.http) }}
             />
           )}
           {routes !== null && (

@@ -2,7 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   coversPattern,
-  fileItemsUsed,
+  fileItemsReached,
+  fileServicesForbidden,
   fileNames,
   fileSecretItems,
   forwardingIdentityProblems,
@@ -99,18 +100,53 @@ describe('file items holding secrets (409 file_in_use for non-admins)', () => {
     expect(fileSecretItems(fileHttp)).toEqual({ services: ['secure'], middlewares: ['auth', 'sso', 'copy'] });
   });
 
-  it('follows what the overlay uses by name (its own names first)', () => {
-    const names = fileNames(rule());
+  it('follows what the overlay reaches, through file items too (rproxy OverlaySpec::file_items)', () => {
     const spec = {
       http: {
         routes: [{ name: 'r1', match: 'Path(`/x`)', service: 'secure', middlewares: ['hdr', 'mine'] }, { name: 'r2', match: 'Path(`/y`)', service: 'web' }],
         middlewares: { mine: { mirror: { service: 'secure' } } },
       },
     };
-    expect(fileItemsUsed(spec, names)).toEqual({ services: ['secure', 'web'], middlewares: ['hdr'] });
-    expect(secretFileItemsUsed(spec, names, fileSecretItems(fileHttp))).toEqual({ services: ['secure'], middlewares: [] });
+    expect(fileItemsReached(spec, fileHttp)).toEqual({ services: ['secure', 'web'], middlewares: ['hdr'] });
+    expect(secretFileItemsUsed(spec, fileHttp, fileSecretItems(fileHttp))).toEqual({ services: ['secure'], middlewares: [] });
     // 重ねる分が同じ名前を定義していれば（PUT は断られる）、ファイルのものとは数えない
-    expect(fileItemsUsed({ http: { routes: [{ name: 'r', match: 'Path(`/`)', service: 'web' }], services: { web: { servers: [] } } } }, names).services).toEqual([]);
+    expect(fileItemsReached({ http: { routes: [{ name: 'r', match: 'Path(`/`)', service: 'web' }], services: { web: { servers: [] } } } }, fileHttp).services).toEqual([]);
+    // ファイルの mirror（copy → secure）は続けてたどる
+    expect(fileItemsReached({ http: { routes: [{ name: 'r', match: 'Path(`/`)', middlewares: ['copy'] }] } }, fileHttp)).toEqual({ services: ['secure'], middlewares: ['copy'] });
+  });
+});
+
+describe('file services a non-admin may not reach (403 file_service_not_allowed)', () => {
+  const file = {
+    services: {
+      web: { servers: [{ url: 'http://10.0.0.5' }] },
+      auth: { servers: [{ url: 'http://10.0.0.20' }] },
+      via: { servers: [{ url: 'http://10.0.0.8', middlewares: ['shadow'] }] },
+    },
+    middlewares: {
+      shadow: { mirror: { service: 'web' } },
+      oops: { errors: { status: ['500-599'], service: 'web', query: '/{status}' } },
+      sso: { forward_auth: { address: 'http://auth/verify', service: 'auth' } },
+      hdr: { headers: { request: { set: { 'X-A': '1' } } } },
+    },
+  };
+  const own = { mine: { servers: [{ url: 'http://10.0.0.9' }] } };
+  const route = (middlewares: string[]) => ({ http: { routes: [{ name: 'r', match: 'Path(`/`)', service: 'mine', middlewares }], services: own } });
+
+  it('refuses a file mirror, a file errors, and a file service behind servers[].middlewares', () => {
+    expect(fileServicesForbidden(route(['shadow']), file)).toEqual(['web']);
+    expect(fileServicesForbidden(route(['oops']), file)).toEqual(['web']);
+    // 自分のサービスの転送先ごとのミドルウェアがファイルの mirror
+    expect(fileServicesForbidden({ http: { routes: [{ name: 'r', match: 'Path(`/`)', service: 'mine2' }], services: { mine2: { servers: [{ url: 'http://10.0.0.9', middlewares: ['shadow'] }] } } } }, file)).toEqual(['web']);
+    // 自分の mirror がファイルのサービス、ファイルのサービスの転送先ごとのミドルウェアの先も
+    expect(fileServicesForbidden({ http: { routes: [{ name: 'r', match: 'Path(`/`)', service: 'mine', middlewares: ['m'] }], services: own, middlewares: { m: { mirror: { service: 'via' } } } } }, file)).toEqual(['via', 'web']);
+  });
+
+  it('allows the service of a file forward_auth (attaching the admin\'s auth only adds a check), and plain file middlewares', () => {
+    expect(fileServicesForbidden(route(['sso', 'hdr']), file)).toEqual([]);
+    expect(fileItemsReached(route(['sso']), file).services).toEqual(['auth']);
+    // 自分の forward_auth がファイルのサービスを指すのは断る
+    expect(fileServicesForbidden({ http: { ...route(['mfa']).http, middlewares: { mfa: { forward_auth: { address: 'http://auth/verify', service: 'auth' } } } } }, file)).toEqual(['auth']);
   });
 });
 

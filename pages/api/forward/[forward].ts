@@ -64,8 +64,8 @@ import {
 } from '@/components/rproxy';
 import type { CapabilityFeatures } from '@/components/rproxy';
 import {
-  fileItemsUsed,
   fileNames,
+  fileServicesForbidden,
   fileSecretItems,
   overlayCreatedAt,
   forwardingIdentityProblems,
@@ -1934,14 +1934,20 @@ function checkOverlayWritable(actor: Actor, t: OverlayPlace): void {
 async function overlayCreator(t: OverlayPlace, view: OverlayView): Promise<string | null> {
   if (typeof view.created_at !== 'number') return null;
   const where = t.node ? 'l.target = ? AND ' : '';
-  const rows = await pool.query(
-    `SELECT l.auth_id, l.options FROM forward_rules_log l WHERE ${where}l.protocol = ? AND l.src_addr = ? AND l.src_port = ? AND l.update_action = 'OVERLAY' ORDER BY l.id`,
-    [...(t.node ? [t.node.name] : []), t.key.protocol, t.key.listen_addr, t.key.listen_port]
+  const keyParams = [...(t.node ? [t.node.name] : []), t.key.protocol, t.key.listen_addr, t.key.listen_port];
+  // 最後に外した行より後だけを見る（外して同じ秒に作り直したとき、前の重ねる分の作った人を渡さない）
+  const deleted = await pool.query(
+    `SELECT MAX(l.id) AS id FROM forward_rules_log l WHERE ${where}l.protocol = ? AND l.src_addr = ? AND l.src_port = ? AND l.update_action = 'OVERLAY' AND JSON_TYPE(JSON_EXTRACT(l.options, '$.overlay')) = 'NULL'`,
+    keyParams
   );
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (overlayCreatedAt(row.options) === view.created_at) return row.auth_id === null || row.auth_id === undefined ? null : String(row.auth_id);
-  }
-  return null;
+  const after = Number((Array.isArray(deleted) ? deleted[0]?.id : undefined) ?? 0) || 0;
+  const rows = await pool.query(
+    `SELECT l.auth_id, l.options FROM forward_rules_log l WHERE ${where}l.protocol = ? AND l.src_addr = ? AND l.src_port = ? AND l.update_action = 'OVERLAY' AND l.id > ? AND JSON_VALUE(l.options, '$.created_at') = ? ORDER BY l.id LIMIT 1`,
+    [...keyParams, after, String(view.created_at)]
+  );
+  const row = Array.isArray(rows) ? rows[0] : undefined;
+  if (!row || overlayCreatedAt(row.options) !== view.created_at) return null;
+  return row.auth_id === null || row.auth_id === undefined ? null : String(row.auth_id);
 }
 
 // 管理者でない人は、自分が作った重ねる分だけを直す・外せる（管理者・ほかの人が作ったものは読むだけ）
@@ -2040,6 +2046,16 @@ async function checkOverlaySpec(actor: Actor, t: OverlayPlace, spec: OverlaySpec
   if (conflicts.length > 0) {
     throw new HttpError(409, `設定ファイルにある名前は使えません: ${conflicts.map((c) => `${c.kind} ${c.name}（${c.reason}）`).join(', ')}`, 'overlay_conflict');
   }
+  // 利用者がファイルのサービスへたどり着くか（形の検証より先に、理由をはっきり返す）
+  if (actor.access !== 'admin') {
+    // 重ねる分のルートはファイルのサービスにファイルのルートのミドルウェアを通らずに届き、その転送先は利用者の許可リストの外なので、
+    // 管理者でない人はファイルのサービスを使えない（自分のサービスを定義する。ファイルの秘密のないミドルウェアは使える）
+    // ファイルのミドルウェア（mirror・errors）やサービスの servers[].middlewares を通ってたどり着くものも。ファイルの forward_auth の先だけは除く
+    const services = fileServicesForbidden(spec, t.file.http);
+    if (services.length > 0) {
+      throw new HttpError(403, `設定ファイルのサービス（${services.join(', ')}）は管理者だけが重ねる分から使えます（重ねる分のルートはファイルのルートのミドルウェアを通らずにその転送先へ届き、転送先は利用者の許可リストの外のため）。重ねる分に自分のサービスを定義してください。`, 'file_service_not_allowed');
+    }
+  }
   const errors: string[] = [];
   if (spec.http) {
     const file = toHttpRules(t.file.http);
@@ -2069,13 +2085,7 @@ async function checkOverlaySpec(actor: Actor, t: OverlayPlace, spec: OverlaySpec
   if (errors.length > 0) throw invalid(errors.join('\n'));
   const out: OverlaySpec = { ...spec, ...(tlsRoutes !== undefined ? { tls: { routes: tlsRoutes } } : {}) };
   if (actor.access !== 'admin') {
-    // 重ねる分のルートはファイルのサービスにファイルのルートのミドルウェアを通らずに届き、その転送先は利用者の許可リストの外なので、
-    // 管理者でない人はファイルのサービスを使えない（自分のサービスを定義する。ファイルの秘密のないミドルウェアは使える）
-    const services = fileItemsUsed(out, fileNames(t.file)).services;
-    if (services.length > 0) {
-      throw new HttpError(403, `設定ファイルのサービス（${services.join(', ')}）は管理者だけが重ねる分から使えます（重ねる分のルートはファイルのルートのミドルウェアを通らずにその転送先へ届き、転送先は利用者の許可リストの外のため）。重ねる分に自分のサービスを定義してください。`, 'file_service_not_allowed');
-    }
-    const used = secretFileItemsUsed(out, fileNames(t.file), fileSecretItems(t.file.http));
+    const used = secretFileItemsUsed(out, t.file.http);
     const names = [...used.services.map((n) => `サービス ${n}`), ...used.middlewares.map((n) => `ミドルウェア ${n}`)];
     if (names.length > 0) {
       throw new HttpError(409, `設定ファイルの ${names.join('・')} は秘密のファイル（鍵・OIDC の秘密・users_file）を持つ（か、それを使う）ので、管理者だけが重ねる分から使えます。`, 'file_in_use');
