@@ -3,7 +3,7 @@
 //
 //   node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>]
 //                         [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules] [--without-rproxy-rule-sets]
-//                         [--without-rproxy-global]
+//                         [--without-rproxy-global] [--without-rproxy-rule-overlays]
 //
 // 出した SQL は、UI のテーブルを読める管理者（root など）で流す（ビューはその人の権限で元のテーブルを読む）:
 //   node db/node-view.mjs node1 --password 'secret' | mariadb -u root -p
@@ -22,6 +22,9 @@
 // rproxy-api v0.4.19 が API で入れた global の値を保存する rproxy_global（migration 013）も、そのノードの行だけの書けるビューにする
 // （rproxy は INSERT ... ON DUPLICATE KEY UPDATE だけで消さないので SELECT・INSERT・UPDATE）。
 // 013 を適用していなければ --without-rproxy-global で出さない（--without-rproxy-rules でも出さない）。
+// rproxy-api v0.4.23 が固定ルールに重ねる分を保存する rproxy_rule_overlays（migration 014）も同じく、そのノードの行だけの書けるビューにする
+// （重ねる分を外すと行を消すので SELECT・INSERT・UPDATE・DELETE）。
+// 014 を適用していなければ --without-rproxy-rule-overlays で出さない（--without-rproxy-rules でも出さない）。
 // 依存のない JavaScript（.deb の /usr/share/rproxy-ui/db/ からも node で動く）。テストは tests/nodeview.test.ts
 
 // components/nodes.ts の NAME_PATTERN と同じ（データベース名・ユーザー名に使うので英小文字・数字・_ だけ）
@@ -41,6 +44,9 @@ export const RPROXY_RULE_SETS_COLUMNS = ['node', 'name', 'generation', 'etag', '
 // rproxy_global の列（migration 013。rproxy-api の src/config/persist.rs）
 export const RPROXY_GLOBAL_COLUMNS = ['node', 'spec', 'spec_version', 'updated_by', 'updated_at'];
 
+// rproxy_rule_overlays の列（migration 014。rproxy-api の docs/API.md「固定ルールの待ち受けに重ねる分」）
+export const RPROXY_RULE_OVERLAYS_COLUMNS = ['node', 'protocol', 'listen_addr', 'listen_port', 'spec', 'spec_version', 'created_by', 'created_at', 'updated_by', 'updated_at'];
+
 // ' は '' にする（sql_mode の NO_BACKSLASH_ESCAPES に関係なく同じ意味になるように、\ は受け付けない）
 function quoteString(value) {
   const s = String(value);
@@ -49,7 +55,7 @@ function quoteString(value) {
 }
 
 /**
- * @param {{ node: string, database?: string, viewDatabase?: string, user?: string, host?: string, password?: string, withoutRproxyRules?: boolean, withoutRproxyRuleSets?: boolean, withoutRproxyGlobal?: boolean }} opts
+ * @param {{ node: string, database?: string, viewDatabase?: string, user?: string, host?: string, password?: string, withoutRproxyRules?: boolean, withoutRproxyRuleSets?: boolean, withoutRproxyGlobal?: boolean, withoutRproxyRuleOverlays?: boolean }} opts
  * @returns {string}
  */
 export function nodeViewSql(opts) {
@@ -123,6 +129,17 @@ export function nodeViewSql(opts) {
       `GRANT SELECT, INSERT, UPDATE ON \`${viewDatabase}\`.\`rproxy_global\` TO ${account};`,
     );
   }
+  if (!opts.withoutRproxyRules && !opts.withoutRproxyRuleOverlays) {
+    // rproxy が書く rproxy_rule_overlays（v0.4.23）：自分のノードの固定ルールに重ねる分だけを見せ、ほかのノードの行は書けない
+    lines.push(
+      `CREATE OR REPLACE SQL SECURITY DEFINER VIEW \`${viewDatabase}\`.\`rproxy_rule_overlays\` AS`,
+      `  SELECT ${RPROXY_RULE_OVERLAYS_COLUMNS.map((c) => `\`${c}\``).join(', ')}`,
+      `    FROM \`${database}\`.\`rproxy_rule_overlays\``,
+      `   WHERE \`node\` = ${quoteString(node)}`,
+      '  WITH CHECK OPTION;',
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON \`${viewDatabase}\`.\`rproxy_rule_overlays\` TO ${account};`,
+    );
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -144,6 +161,8 @@ export function parseArgs(argv) {
       opts.withoutRproxyRuleSets = true;
     } else if (a === '--without-rproxy-global') {
       opts.withoutRproxyGlobal = true;
+    } else if (a === '--without-rproxy-rule-overlays') {
+      opts.withoutRproxyRuleOverlays = true;
     } else if (a.startsWith('--')) {
       throw new Error(`知らないオプション: ${a}`);
     } else {
@@ -159,7 +178,7 @@ if (process.argv[1] && process.argv[1].endsWith('node-view.mjs')) {
     process.stdout.write(nodeViewSql(parseArgs(process.argv.slice(2))));
   } catch (err) {
     console.error(`node-view.mjs: ${err instanceof Error ? err.message : err}`);
-    console.error('使い方: node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>] [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules] [--without-rproxy-rule-sets] [--without-rproxy-global]');
+    console.error('使い方: node db/node-view.mjs <ノード名> [--database rproxy] [--view-database rproxy_node_<ノード名>] [--user rproxy_<ノード名>] [--host 127.0.0.1] [--password <パスワード>] [--without-rproxy-rules] [--without-rproxy-rule-sets] [--without-rproxy-global] [--without-rproxy-rule-overlays]');
     process.exit(2);
   }
 }

@@ -105,6 +105,22 @@ CREATE TABLE IF NOT EXISTS rproxy_global (
   PRIMARY KEY (node)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- rproxy-api が設定ファイルの固定ルールの待ち受けに API で重ねる分（rproxy-api v0.4.23 の #397。migration 014）。書くのは rproxy だけで、
+-- 固定ルールのキーごとに 1 行（spec は PUT /rules/{key}/overlay の本文）。列は rproxy-api の docs/API.md の「固定ルールの待ち受けに重ねる分」と同じ
+CREATE TABLE IF NOT EXISTS rproxy_rule_overlays (
+  node         VARCHAR(255) NOT NULL,   -- どの rproxy の重ねる分か（RPROXY_NODE_NAME、既定はホスト名）
+  protocol     VARCHAR(8)   NOT NULL,   -- 固定ルールのキー
+  listen_addr  VARCHAR(45)  NOT NULL,
+  listen_port  INT UNSIGNED NOT NULL,
+  spec         JSON         NOT NULL,   -- PUT /rules/{key}/overlay の本文
+  spec_version INT UNSIGNED NOT NULL DEFAULT 1,
+  created_by   VARCHAR(255) NOT NULL,   -- 最初に作ったトークンの名前
+  created_at   DATETIME(3)  NOT NULL,
+  updated_by   VARCHAR(255) NOT NULL,   -- 最後に直したトークンの名前
+  updated_at   DATETIME(3)  NOT NULL,
+  PRIMARY KEY (node, protocol, listen_addr, listen_port)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 利用量の集計（UI #101。migration 010）。UI が rproxy の統計の差分を貯める（時刻は UTC）
 -- ルール・ノードごとの最後に見た数（差分を取るため。counters_since・started_at が変われば数え直したとみなす）
 CREATE TABLE IF NOT EXISTS usage_counters (
