@@ -529,9 +529,11 @@ export async function getOverlay(key: RproxyRuleKey): Promise<{ view: OverlayVie
   return { view: out.data, etag: out.etag ?? out.data?.etag ?? null };
 }
 
-// 丸ごと置き換える。ifMatch は GET の ETag（変わっていれば 412 precondition_failed）。作るときは null（If-Match を付けない）
+// 丸ごと置き換える。ifMatch は GET の ETag（変わっていれば 412 precondition_failed）。作るときは null で、If-None-Match: * を付ける
+// （rproxy-api #399：すでにあれば 412。読んでから作るまでにほかの人が作ったものを上書きしない。両方は付けない（400）。
+// 知らない古い rproxy はヘッダを無視するので、付けても今までと同じ）
 export async function putOverlay(key: RproxyRuleKey, spec: OverlaySpec, ifMatch: string | null): Promise<{ view: OverlayView; etag: string | null }> {
-  const out = await requestWithHeaders<OverlayView>('PUT', overlayPath(key), spec, TIMEOUT_MS, ifMatch !== null ? { 'If-Match': ifMatch } : {});
+  const out = await requestWithHeaders<OverlayView>('PUT', overlayPath(key), spec, TIMEOUT_MS, ifMatch !== null ? { 'If-Match': ifMatch } : { 'If-None-Match': '*' });
   return { view: out.data, etag: out.etag ?? out.data?.etag ?? null };
 }
 

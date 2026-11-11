@@ -209,6 +209,16 @@ describe('PUT overlay (overlay-put)', () => {
     expect(mocks.putOverlay.mock.calls[0][2]).toBe('"o-1"');
   });
 
+  it('passes rproxy\'s 412 through when someone created one between the check and the PUT (If-None-Match: *)', async () => {
+    mocks.putOverlay.mockRejectedValue(new RproxyError('tcp/0.0.0.0/8443: an overlay exists (If-None-Match)', 'precondition_failed', 412));
+    const { status, body } = await call('overlay-put', { ...key, overlay: wiki, etag: null });
+    expect(status).toBe(412);
+    expect(body.code).toBe('precondition_failed');
+    // 作るときは If-Match を付けない（rproxy の putOverlay が If-None-Match: * にする）
+    expect(mocks.putOverlay.mock.calls[0][2]).toBeNull();
+    expect(logInserts()).toEqual([]);
+  });
+
   it('is 412 when the overlay changed since GET (or was created by someone else)', async () => {
     mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-9"' });
     expect((await call('overlay-put', { ...key, overlay: wiki, etag: '"o-1"' })).status).toBe(412);

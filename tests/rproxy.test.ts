@@ -42,9 +42,19 @@ describe('rproxy client', () => {
     expect(lastCall().init.method).toBe('PUT');
     expect(lastCall().init.headers['If-Match']).toBe('"o-1"');
 
+    expect(lastCall().init.headers).not.toHaveProperty('If-None-Match');
+
+    // 作るときは If-None-Match: *（rproxy-api #399）。If-Match とは一緒に送らない
     fetchMock.mockResolvedValueOnce(json({}, 201));
     await putOverlay(key, { http: { routes: [] } }, null);
     expect(lastCall().init.headers).not.toHaveProperty('If-Match');
+    expect(lastCall().init.headers['If-None-Match']).toBe('*');
+    // すでにあれば 412（ほかの人が先に作った）
+    fetchMock.mockResolvedValueOnce(json({ error: 'the overlay exists (If-None-Match)', code: 'precondition_failed' }, 412));
+    const raced = await putOverlay(key, { http: { routes: [] } }, null).catch((e) => e);
+    expect(raced).toBeInstanceOf(RproxyError);
+    expect(raced.status).toBe(412);
+    expect(raced.code).toBe('precondition_failed');
 
     fetchMock.mockResolvedValueOnce(json({ error: 'the overlay changed', code: 'precondition_failed' }, 412));
     const err = await deleteOverlay(key, '"o-1"').catch((e) => e);
