@@ -219,7 +219,7 @@ RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # filled in at install time (when it h
 
 `RPROXY_API_TOKEN_FILE` reads the first non-empty line not starting with `#` as the token and uses a changed file from the next request (no change to the UI's settings needed). A YAML token file (below) holds only SHA-256 values, so then put the UI's token in `RPROXY_API_TOKEN`, or on one line in a file only the UI reads (`root:rproxy-ui` 0640) and point `RPROXY_API_TOKEN_FILE` at it.
 
-If the rproxy token file has permissions (YAML), give the UI's token the scopes `rules:read` and `rules:write` (`metrics:read` is not used; `GET /capabilities` can be read with any token).
+If the rproxy token file has permissions (YAML), make the UI's token `admin` (a token in the one-per-line format is already `admin`). From rproxy-api v0.4.23 (rproxy-api #401), a token without `admin` may only change the rules, overlays and rule sets it created (others get `403 not_owner`). The UI's "API rules" screen and resending on several nodes change rules other tokens created with the UI's token, so they stop working without `admin`. Global settings need `admin` too. A setup that uses neither and only changes the rules the UI restored may use `rules:read`, `rules:write` and `allow_restored: true` instead (add `allow_restored` only on rproxy-api v0.4.23 or later. v0.4.22 and earlier do not read the token file at all when it has an unknown field, so every token stops working. Remove it before going back to an older version. [GUIDE.md, 3.3](GUIDE.md#33-connecting-to-rproxy-api-and-the-tokens-scopes)). `metrics:read` is not used (`GET /capabilities` can be read with any token). Normally do not give the UI's token `persist: true` (with it, the rules the UI creates become rproxy API rules, and the UI refuses to change them as `shadowed`. Without it, overlays on static rules made from the UI are lost when rproxy restarts. The trade-off: [GUIDE.md, 3.3](GUIDE.md#33-connecting-to-rproxy-api-and-the-tokens-scopes)).
 With `allow_listen_ports`, rules outside that range cannot be created, changed or deleted from the UI. If something is missing, rproxy returns 403 `forbidden`, and the screen asks you to check the scopes.
 
 ```yaml
@@ -227,7 +227,7 @@ With `allow_listen_ports`, rules outside that range cannot be created, changed o
 tokens:
   - name: rproxy-ui
     sha256: <value of printf %s "$TOKEN" | sha256sum>
-    scopes: [rules:read, rules:write]
+    scopes: [admin]
 ```
 
 `TOKEN` is the value put in the UI's `RPROXY_API_TOKEN` (generate it with e.g. `openssl rand -hex 32`). After changing the token file, run `sudo systemctl reload rproxy-api`.
