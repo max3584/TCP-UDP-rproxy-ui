@@ -245,14 +245,14 @@ First, the variables every setup needs.
 
 | Variable | What it decides | Default |
 |---|---|---|
-| `HOSTNAME`, `PORT` | The address and port the UI listens on | `127.0.0.1`, `3000` |
+| `HOSTNAME`, `PORT` | The address and port the UI listens on | `127.0.0.1`, `3000` with the .deb (the container image uses `0.0.0.0`; [2.4](#24-containers-docker-etc)) |
 | `NEXTAUTH_URL` | The URL users open in the browser | None (always set it) |
 | `NEXTAUTH_SECRET` | The key that encrypts sign-in sessions | The .deb generates it at install |
 | `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USER`, `DB_PASSWORD` | The MariaDB the UI connects to | `DB_PORT` is 3306 |
 | `RPROXY_API_URL` | Where rproxy-api's control API is | Filled in at install if rproxy-api is on the same host |
 | `RPROXY_API_TOKEN`, `RPROXY_API_TOKEN_FILE` | The token the UI sends to rproxy-api | Same as above (`RPROXY_API_TOKEN_FILE`) |
 
-- **`HOSTNAME`, `PORT`**: by default the UI can only be opened from that host. With a static rule of rproxy in front to expose it ([2.1](#21-debian--ubuntu-vm)), leave these as they are. Change them only when other hosts should open it directly, and even then a front end that terminates TLS is the norm ([7.5](#75-security-notes)).
+- **`HOSTNAME`, `PORT`**: with the .deb env file's default (`HOSTNAME=127.0.0.1`), the UI can only be opened from that host. With a static rule of rproxy in front to expose it ([2.1](#21-debian--ubuntu-vm)), leave these as they are. Change them only when other hosts should open it directly, and even then a front end that terminates TLS is the norm ([7.5](#75-security-notes)).
 - **`NEXTAUTH_URL`**: write exactly the URL users type into the browser's address bar (e.g. `https://dashboard.example.com`). The UI uses it for the check that recognises requests from other sites (CSRF), the HSTS header (for `https://`), and Keycloak's redirect. The CSRF check compares the `Origin` the browser sends with the request's `Host`, `X-Forwarded-Host` and `NEXTAUTH_URL`. If a proxy in front rewrites `Host` and `NEXTAUTH_URL` differs too, every save is refused with 403 `csrf`, so always set it to the URL users open.
 - **`NEXTAUTH_SECRET`**: the .deb writes a random value at install, so you normally leave it alone. Changing it makes all current sessions unreadable, and everyone has to sign in again. When several UIs run, use the same value on all of them (otherwise a request reaching another instance cannot read the session).
 - **`DB_*`**: the DB and UI user from [3.1](#31-the-db-mariadb-and-migrations). Match `DB_USER` to `DB_APP_USER` and `DB_PASSWORD` to `DB_APP_PASSWORD`.
@@ -285,7 +285,7 @@ Besides these, there are variables you set when you need them. Unset, they keep 
 |---|---|---|---|
 | `RPROXY_UI_SESSION_MAX_AGE` | Seconds from sign-in until the session ends | 28800 (8 hours) | [4.2](#42-keycloak) |
 | `RPROXY_UI_ROLE_REFRESH_SECS` | How often roles are checked again with Keycloak (seconds) | 300 | [4.2](#42-keycloak) |
-| `RPROXY_UI_USER_*`, `RPROXY_UI_PROTECTED_TARGETS` | What users may use | No limits | [4.5](#45-what-users-can-do) |
+| `RPROXY_UI_USER_*`, `RPROXY_UI_PROTECTED_TARGETS` | What users may use | No limits (except the response cache caps `RPROXY_UI_USER_CACHE_MAX_MEMORY` and `RPROXY_UI_USER_CACHE_MAX_ENTRIES`: 16 MiB and 1024) | [4.5](#45-what-users-can-do) |
 | `RPROXY_UI_USAGE_SECS` | How often usage is collected (seconds; 0 stops it) | 300 | [README, "Usage"](../../README.en.md#usage-traffic-accounting) |
 | `RPROXY_UI_USAGE_HOURLY_DAYS`, `RPROXY_UI_USAGE_DAILY_DAYS` | Days to keep hourly and daily usage | 32, 400 | Same |
 | `RPROXY_API_TLS_CERT`, `RPROXY_API_TLS_KEY`, `RPROXY_API_TLS_CA` | Connecting to the control API with a client certificate (mTLS) | None | [3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes) |
@@ -476,7 +476,7 @@ This section explains what users (people who are not administrators) can do and 
 
 Users create, see, change and delete only the rules they own. They do not see other people's rules. Static rules are shown to everyone, though, with server file paths hidden as `<hidden>`.
 
-The administrator sets what users may use in the env file. When none is set, nothing is limited.
+The administrator sets what users may use in the env file. When none of the variables in the table below is set, nothing is limited.
 
 | Variable | What it decides | Outside it |
 |---|---|---|
@@ -494,9 +494,10 @@ The administrator sets what users may use in the env file. When none is set, not
 
 Some rules apply regardless of these variables:
 
-- **Some targets are always refused.** Even with no limits set, loopback, link-local addresses (including the cloud metadata address), the control API, the UI and the DB cannot be used as targets. This stops users from reaching them through rproxy.
+- **Some targets are refused by default.** Even with no limits set, loopback, link-local (including the cloud metadata address), unspecified, multicast and broadcast addresses cannot be used as targets. If users really need one, put a CIDR inside that range (e.g. `127.0.0.1/32`) in `RPROXY_UI_USER_TARGETS` to allow it (a wide range such as `0.0.0.0/0` does not).
+- **Some targets are always refused.** The address and port pairs of the control API, the UI and the DB cannot be used even if they are in the allowlist. This stops users from reaching them through rproxy. Destinations in `RPROXY_UI_PROTECTED_TARGETS` are treated the same way.
 - **Users cannot write server file paths (`*_file` fields)** (403 `file_not_allowed`). rproxy can use any key it can read, so this keeps users from pointing at someone else's certificate key. For TLS certificates, users choose from those the administrator stored through rproxy's certificate API.
-- **They cannot add OIDC middlewares.** Response caches can only be used within set limits.
+- **They cannot add OIDC middlewares.** Response caches can only be used within limits (by default 16 MiB and 1024 entries per middleware; `RPROXY_UI_USER_CACHE_MAX_MEMORY`, `RPROXY_UI_USER_CACHE_MAX_ENTRIES`).
 - **Values that were already there can be saved again unchanged.** Even after limits are narrowed, a user can still change other fields of their own rules.
 
 All the rules: [README, "Limits for users (file paths and destinations)"](../../README.en.md#limits-for-users-file-paths-and-destinations).
@@ -553,7 +554,7 @@ Static rules themselves cannot be changed from the screens. With rproxy-api v0.4
 **What you can add**
 
 - When the rule has `http`: http routes, services and middlewares.
-- Otherwise: per-server-name destinations (`tls.routes`).
+- Without `http`: per-server-name destinations (`tls.routes`), when the TLS mode is sni, or terminate without client certificate verification.
 
 **How it takes effect**
 
@@ -571,7 +572,12 @@ Static rules themselves cannot be changed from the screens. With rproxy-api v0.4
 The UI keeps the desired state of overlays in its own database (`forward_rule_overlays`, migration `015`). With a normal UI token (no `persist`), an overlay disappears from rproxy when rproxy restarts, but the UI shows it as drift ("The overlay in the UI database is missing on rproxy") and can resend it ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)).
 
 - **Who can resend**: whoever may change the overlay, that is, administrators and its creator. Only administrators can resend several at once.
-- **The check before resending**: an overlay a user wrote last is checked again with its creator's permissions before it is resent. If the allow list was narrowed since, it is not sent. Bulk and automatic resends check with no previous content, so values a user could only keep "because they were already there" (such as ones an administrator added) are refused too. An administrator then changes and saves it in the details (one an administrator wrote last is not checked). With an empty `RPROXY_UI_USER_ROLE` (administrators only), nothing is checked. The check runs only right before sending, so `ha/ready`, which keepalived polls, does no name resolution.
+- **The check before resending**: it depends on who resends and how. There are three cases.
+  - **An administrator resends one overlay from the details page**: it is sent without a check.
+  - **A user resends one of their own overlays from the details page**: it is checked against the current limits of the person resending (the user). rproxy's current overlay is used as the previous content, so values still on rproxy pass if unchanged. If the allow list was narrowed since and a value no longer fits, it is not sent.
+  - **Bulk resends (administrators) and the automatic act / stb resend**: if a user wrote it last, it is checked again as its creator with no previous content. So values a user could only keep "because they were already there" (such as ones an administrator added) are refused too; an administrator then changes and saves it in the details. If an administrator wrote it last, it is not checked. One whose creator is unknown is not sent.
+
+  With an empty `RPROXY_UI_USER_ROLE` (administrators only), the check as creator is skipped. The check runs only right before sending, so `ha/ready`, which keepalived polls, does no name resolution.
 - **A save whose answer never came**: a save whose answer from rproxy never came (timeout, 5xx) stays in the UI database and the history, and is resent as drift.
 - **Removing**: removing an overlay also deletes its row in the UI database.
 
@@ -595,12 +601,12 @@ The steps:
 
 1. The screen shows, per item, the value in force, where it comes from (settings file / environment / API / default) and how it can be changed. Items set in the settings file or environment take precedence and cannot be changed from the screen.
 2. Enter the values to change and use "Check the changes" (dry run) to see what would change. Nothing changes yet.
-3. "Apply" puts it into effect. If you chose a group, it is sent to all its nodes, and if one refuses, all are rolled back. "Clear the API value (back to the default)" removes the value set from the screen and returns to the default.
+3. "Apply" puts it into effect. If you chose a group, it is sent to all its nodes, and if one refuses, all are rolled back. Choosing "Clear the API value (back to the default)" for an item and applying removes the value set from the screen and returns it to the default.
 
 Things to know about the items:
 
 - **Items that take effect at once can be changed.** Examples are `http.timeouts` (timeouts) and `udp_max_sessions`.
-- **`geoip` and `acme` have conditions.** They need rproxy-api v0.4.22 or later (`features.global_api_geoip`, `global_api_acme`) and can only be changed on nodes connected over the Unix socket. Files must be directly under rproxy-api's `RPROXY_API_GEOIP_DIR` / `RPROXY_API_ACME_DIR`.
+- **`geoip` and `acme` have conditions.** They need rproxy-api v0.4.22 or later (`features.global_api_geoip`, `global_api_acme`) and can only be changed on nodes connected over the Unix socket. The files the GeoIP and ACME settings point at must be directly under rproxy-api's `RPROXY_API_GEOIP_DIR` and `RPROXY_API_ACME_DIR` respectively. ACME's `storage` stays at the default location or is a directory under `RPROXY_API_ACME_DIR`.
 - **Secret values come back as `***`.** When you change `acme`, enter the secret fields again.
 - **rproxy stores the values.** Values changed on screen are stored by rproxy in the DB table `rproxy_global` (migration 013) and restored after a restart.
 
@@ -758,7 +764,7 @@ This section covers what to watch in particular when making the UI usable from o
 - **Requests from other sites (CSRF)**: APIs that change state refuse requests sent from other sites with 403 `csrf`. This keeps pages on other sites from using a signed-in person's browser to change rules. If you put a reverse proxy in front of the UI, pass `Host` or `X-Forwarded-Host` to the UI and do not drop the `Origin`, `Referer` or `Sec-Fetch-*` headers. Set `NEXTAUTH_URL` to the URL users open.
 - **Token lockout**: after more than 5 wrong tokens in 15 minutes from one source, wrong tokens from that source are refused with 429 for 15 minutes (the count and times are `RPROXY_UI_TOKEN_LOCKOUT_ATTEMPTS` and `RPROXY_UI_TOKEN_LOCKOUT_SECS`). Correct tokens still pass during the lockout, so that someone sending wrong tokens cannot lock out other people who appear to come from the same source. As a result it does not limit the number of guesses; the only protection is the token's strength. Always make tokens with `rproxy-ui-token`.
 - **Behind an HTTP proxy**: behind nginx, an Ingress and the like, put only that proxy's addresses in `RPROXY_UI_TRUSTED_PROXIES`. The UI trusts the `X-Forwarded-For` arriving from there to identify the source, so a wide range lets others fake the source. With rproxy (L4) in front it is not needed, since it does not add `X-Forwarded-For`.
-- **Exposing it**: by default the UI listens only on `127.0.0.1`. To expose it, terminate TLS with a static rule of rproxy and narrow it to the users' address range with `allow_from`.
+- **Exposing it**: a UI installed from the .deb listens only on `127.0.0.1` by default. To expose it, terminate TLS with a static rule of rproxy and narrow it to the users' address range with `allow_from`.
 - **File owners**: rproxy-api only reads certificates, keys and secret files it owns (`rproxy-api:rproxy`, mode 0640; [PRODUCTION.md, "File owners"](PRODUCTION.md#file-owners-os-users-and-groups)).
 
 Response headers, sessions and user limits as a whole: [README, "Security"](../../README.en.md#security).
@@ -813,7 +819,7 @@ The codes in this table are fixed in the settings of the UI's token ([3.3](#33-c
 | 403 `global_unix_only` | A security-related global item was changed through a node connected over TCP | Set that node's url to the `unix:/…` socket ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)) |
 | 409 `static` | Same key as a static rule. Static rules cannot be changed from the screens | Edit rproxy's settings file, or use an overlay ([5.2](#52-overlays-on-static-rules)) |
 | 409 `shadowed` | rproxy uses the same key for an API rule or a rule set's rule | Delete one of them or change the key |
-| 409 `file_in_use` | A user used a settings-file service or middleware with secret files in an overlay. Or rproxy refused a key or secret file of another owner | Ask an administrator, or use your own service or another file |
+| 409 `file_in_use` | A user used a settings-file service or middleware with secret files in an overlay. Or rproxy refused because it points at a key or secret file used by a rule of another token (or of the settings file) | Ask an administrator, or use your own service or another file |
 | `tls_config`, file owner refusals | Wrong certificate or key path or contents, or wrong owner or mode | Make the files `rproxy-api:rproxy` with mode 0640. The screen shows how to fix it |
 
 **400 `unsupported`** appears when a combination rproxy does not accept was sent: switching L4 / L7, changing client IP handling or the port range, `connect_timeout` on an old rproxy, UDP sni on an old rproxy, and so on. If it is a field that cannot change after creation, create the rule again as a new one. If rproxy is too old, upgrade rproxy-api. The text after the error says which it is.
