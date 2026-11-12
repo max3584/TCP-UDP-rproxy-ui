@@ -58,9 +58,15 @@ export function explainAcme(detail: string): string | null {
   return null;
 }
 
-// rproxy が UI のトークンを 403 forbidden で断ったとき（トークンのスコープか、変更できる待ち受けポートの範囲の外）
+// rproxy が UI のトークンを 403 forbidden で断ったとき（トークンのスコープか、変更できる待ち受けポート・証明書の範囲の外）。
+// UI のトークンは admin にする（docs/GUIDE.md の 3.3）
 export const FORBIDDEN_MESSAGE =
-  'UI が使う rproxy のトークンに、この操作の権限がありません。rproxy のトークンファイルで、UI のトークンに rules:read と rules:write のスコープがあるか、allow_listen_ports にこの待ち受けポートが含まれるかを確認してください。';
+  'UI が使う rproxy のトークンに、この操作の権限がありません。rproxy のトークンファイルで UI のトークンを admin にしてください。allow_listen_ports・allow_certs は admin でも効くので、この待ち受けポート・証明書が含まれるように広げるか外してください。';
+
+// rproxy が 403 not_owner で断ったとき（rproxy-api v0.4.23、#401）：admin でない UI のトークンで、ほかのトークンが作ったルール・重ねる分・
+// ルールの組（持ち主の分からない戻したルールは allow_restored がなければ）を変えようとした
+export const NOT_OWNER_MESSAGE =
+  'このルール（重ねる分・ルールの組）はほかのトークンが作ったため、UI が使う rproxy のトークンでは変えられません（rproxy-api v0.4.23 から、admin でないトークンは自分が作ったものしか変えられません）。rproxy のトークンファイルで UI のトークンを admin にしてください。API のルールの画面・送り直しを使わず、rproxy の再起動で戻したルールだけを変えるなら、admin の代わりに allow_restored: true でも足ります（rproxy-api v0.4.23 以上でだけ足してください。古い rproxy-api は知らない項目があるとトークンファイル全体を読みません）。';
 
 // rproxy-user / rproxy-admin のロールがない利用者（API は 403 no_role、画面は RequireAuth が出す）
 export const NO_ROLE_MESSAGE =
@@ -128,6 +134,7 @@ const EXPLAIN: Record<string, string> = {
   unauthorized: 'ログインし直してください。',
   static: STATIC_RULE_MESSAGE,
   forbidden: FORBIDDEN_MESSAGE,
+  not_owner: NOT_OWNER_MESSAGE,
   rproxy_unauthorized: RPROXY_UNAUTHORIZED_MESSAGE,
   no_role: NO_ROLE_MESSAGE,
   port_not_allowed: 'この待ち受けポートは管理者だけが使えます。',

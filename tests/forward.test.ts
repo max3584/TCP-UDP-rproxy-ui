@@ -149,7 +149,7 @@ describe('/api/forward/[forward]', () => {
     const { status, body } = await call('dashboard', undefined, 'GET');
     expect(status).toBe(200);
     expect(body.reachable).toBe(false);
-    expect(body.rproxyError).toContain('rules:read と rules:write');
+    expect(body.rproxyError).toContain('UI のトークンを admin にしてください');
     expect(body.rproxyError).toContain('this token lacks the rules:read scope');
   });
 
