@@ -80,12 +80,20 @@ test.describe('token sign-in', () => {
     await page.goto('/signin');
     await signIn(page, E2E_TOKENS.revoke);
     await page.waitForURL((url) => url.pathname === '/');
+    // wait until the dashboard has finished its own session check (RequireAuth shows the page only after
+    // useSession's GET /api/auth/session). Removing the token before that makes the dashboard itself go to
+    // /signin, and that navigation aborts the goto below (net::ERR_ABORTED)
+    await expect(page.getByText('サインインを確認しています…')).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 1, name: 'ダッシュボード' })).toBeVisible();
     expect((await session(page)).user?.name).toBe('e2e-revoke');
     writeTokens(['admin', 'user']);
     expect(await session(page)).toEqual({});
     expect((await page.request.get('/api/forward/nodes')).status()).toBe(401);
-    await page.goto('/history');
+    // /history's own check sends it to /signin: wait for that URL instead of the load of /history,
+    // and make sure it is /history (not the dashboard) that went there
+    await page.goto('/history', { waitUntil: 'commit' });
     await page.waitForURL((url) => url.pathname === '/signin');
+    expect(new URL(page.url()).searchParams.get('callbackUrl')).toBe(`${TOKEN_BASE_URL}/history`);
     // the removed token no longer signs in
     await signIn(page, E2E_TOKENS.revoke);
     await expect(page.locator('main').getByRole('alert')).toHaveText('トークンが違います。');
