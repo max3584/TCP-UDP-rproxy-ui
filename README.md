@@ -11,6 +11,8 @@ English: [README.en.md](README.en.md)
 [rproxy-api](https://github.com/max3584/rproxy-api) の転送ルールを管理する Web UI（Next.js、Keycloak かトークンでサインイン、ルールは MariaDB に保存）。
 バージョンは rproxy-api と別々に進める（UI が動くのに必要な rproxy-api の最小の版はリリースノートに書く。docs/RELEASING.md）。
 
+はじめての方は [docs/GUIDE.md](docs/GUIDE.md)（入れ方・最初の設定・サインイン・毎日の使い方・運用・困ったときの道順）。
+
 ## 画面
 
 ![ダッシュボード（TCP / UDP の件数と状態、要確認のルール、全ルールの表）](docs/images/dashboard.ja.png)

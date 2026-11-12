@@ -11,6 +11,8 @@
 A web UI for managing the forwarding rules of [rproxy-api](https://github.com/max3584/rproxy-api) (Next.js, sign-in with Keycloak or tokens, rules stored in MariaDB).
 Versions are numbered independently of rproxy-api (the release notes state the minimum rproxy-api version the UI needs; see [docs/en/RELEASING.md](docs/en/RELEASING.md)).
 
+New here? Start with [docs/en/GUIDE.md](docs/en/GUIDE.md) (a path through installing, first setup, sign-in, daily use, operations and troubleshooting).
+
 ## Screenshots
 
 ![Dashboard (TCP / UDP counts and states, rules needing attention, the table of all rules)](docs/images/dashboard.en.png)
