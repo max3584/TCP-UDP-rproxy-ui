@@ -470,7 +470,7 @@ sudo apt update && sudo apt upgrade
 | 出るもの | わけ | すること |
 |---|---|---|
 | 403 `no_role`（「権限がありません」） | 管理者のロールがなく、`RPROXY_UI_USER_ROLE` が空か、そのロールがない | ロールを付けるか、`RPROXY_UI_USER_ROLE` を書く。トークンなら `role` を見る |
-| 502 `forbidden`（「UI が使う rproxy のトークンに、この操作の権限がありません」） | UI のトークンのスコープが足りないか、トークンの `allow_listen_ports`・`allow_certs` の外 | UI のトークンを `admin` にする（[3.3](#33-rproxy-api-への接続とトークンのスコープ)）。`allow_listen_ports`・`allow_certs` は `admin` でも効くので、広げるか外す。画面の文は「rules:read と rules:write」と言うが、文が古い。`admin` が正しい |
+| 502 `forbidden`（「UI が使う rproxy のトークンに、この操作の権限がありません」） | UI のトークンのスコープが足りないか、トークンの `allow_listen_ports`・`allow_certs` の外 | UI のトークンを `admin` にする（[3.3](#33-rproxy-api-への接続とトークンのスコープ)）。`allow_listen_ports`・`allow_certs` は `admin` でも効くので、広げるか外す |
 | 502 `not_owner` | rproxy-api v0.4.23 以上で、UI のトークンが `admin` でない。API のルールの編集・削除、送り直し、rproxy の再起動で戻したルールの変更で出る | UI のトークンを `admin` にする（それらを使わないなら `allow_restored: true`。rproxy-api v0.4.23 以上でだけ足す（v0.4.22 以前の rproxy-api は知らない項目があるとトークンファイル全体を読まず、すべてのトークンが通らなくなる）。版を戻す前に外す）。`reload rproxy-api` |
 | 502 `global_forbidden` | global の設定に要る `admin` が UI のトークンにない | UI のトークンを `admin` にする |
 | 403 `global_unix_only` | 守りに関わる項目を TCP のノードから変えようとした | そのノードの url を `unix:/…` のソケットにする |

@@ -2652,10 +2652,14 @@ function sendError(res: NextApiResponse, err: unknown, logger: AppLogger) {
   }
   if (err instanceof RproxyError) {
     logger.error(`rproxy error: ${err.code} ${err.message}`);
-    if (err.status === 403) {
-      // rproxy のトークンのスコープ（rules:read / rules:write）か allow_listen_ports が足りない。
+    if (err.status === 403 && err.code === 'not_owner') {
+      // admin でない UI のトークンで、ほかのトークンが作ったルールを変えようとした（rproxy-api v0.4.23、#401）。
+      // 画面では code: not_owner から説明（NOT_OWNER_MESSAGE）を出す
+      logger.error('rproxy がほかのトークンのルールの変更を断りました（403 not_owner）。RPROXY_API_TOKEN を admin にしてください');
+    } else if (err.status === 403) {
+      // rproxy のトークンのスコープか allow_listen_ports・allow_certs が足りない。
       // 画面では code: forbidden から説明（FORBIDDEN_MESSAGE）を出す
-      logger.error('rproxy が UI のトークンを拒否しました（403 forbidden）。RPROXY_API_TOKEN のスコープと allow_listen_ports を確認してください');
+      logger.error('rproxy が UI のトークンを拒否しました（403 forbidden）。RPROXY_API_TOKEN が admin か、allow_listen_ports・allow_certs を確認してください');
     }
     if (err.status === 401) {
       // UI サーバの RPROXY_API_TOKEN が違うか期限切れ。利用者のサインインとは関係ないので code を変える

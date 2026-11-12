@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listenOptions, reservedClash, type InterfacesInfo } from '@/components/listen';
-import { CERT_EXPIRED_MESSAGE, FILE_OWNER_MESSAGE, FORBIDDEN_MESSAGE, SHADOWED_RULE_MESSAGE, STATIC_RULE_MESSAGE, explainError, isFileOwnerRefusal, ruleErrorText } from '@/components/messages';
+import { CERT_EXPIRED_MESSAGE, FILE_OWNER_MESSAGE, FORBIDDEN_MESSAGE, NOT_OWNER_MESSAGE, SHADOWED_RULE_MESSAGE, STATIC_RULE_MESSAGE, explainError, isFileOwnerRefusal, ruleErrorText } from '@/components/messages';
 
 const info: InterfacesInfo = {
   interfaces: [
@@ -115,5 +115,17 @@ describe('explainError: forbidden', () => {
     const text = explainError('forbidden', 'this token lacks the rules:write scope');
     expect(text).toBe(`${FORBIDDEN_MESSAGE}（詳細: this token lacks the rules:write scope）`);
     expect(text).toContain('allow_listen_ports');
+    expect(text).toContain('admin');
+    expect(text).not.toContain('rules:read');
+  });
+});
+
+describe('explainError: not_owner', () => {
+  it('tells that another token created the rule and the UI token needs admin', () => {
+    const text = explainError('not_owner', 'tcp/0.0.0.0/8080: created by token "ci"');
+    expect(text).toBe(`${NOT_OWNER_MESSAGE}（詳細: tcp/0.0.0.0/8080: created by token "ci"）`);
+    expect(text).toContain('ほかのトークンが作った');
+    expect(text).toContain('admin');
+    expect(text).toContain('allow_restored');
   });
 });
