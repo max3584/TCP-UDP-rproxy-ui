@@ -483,34 +483,47 @@ describe('nodes: overlays are per node (static rules come from each node\'s file
 
 // UI の DB の正しい形（forward_rule_overlays。migration 015、#197）
 describe('desired state of overlays in the UI database (#197)', () => {
-  type Row = { node: string; protocol: string; listen_addr: string; listen_port: number; spec: string; created_by: string | null; created_by_admin?: number };
+  type Row = { node: string; protocol: string; listen_addr: string; listen_port: number; spec: string; created_by: string | null; created_by_admin?: number; updated_by?: string | null };
   const desired = (spec: Record<string, unknown>, createdBy: string | null = 'admin-1', node = 'default'): Row =>
-    ({ node, protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8443, spec: JSON.stringify(spec), created_by: createdBy, created_by_admin: createdBy === 'admin-1' ? 1 : 0 });
+    ({ node, protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8443, spec: JSON.stringify(spec), created_by: createdBy, created_by_admin: createdBy === 'admin-1' ? 1 : 0, updated_by: createdBy });
 
   // forward_rule_overlays の行を持つ DB（missing なら表がない：errno 1146。denied なら書けない：errno 1142）
   function overlayTable(rows: Row[], opts: { missing?: boolean; denyWrite?: boolean } = {}) {
+    const at = (node: unknown, port: unknown) => rows.findIndex((r) => r.node === node && r.listen_port === port);
     pool.query.mockImplementation(async (q: string, params: unknown[] = []) => {
       if (q.includes('forward_rule_overlays')) {
         if (opts.missing) throw Object.assign(new Error("Table 'rproxy.forward_rule_overlays' doesn't exist"), { errno: 1146 });
         if (opts.denyWrite && !q.startsWith('SELECT')) throw Object.assign(new Error('INSERT command denied'), { errno: 1142 });
-        if (q.startsWith('UPDATE')) {
-          const [spec, node, , , port] = params as [string, string, string, string, number];
-          const i = rows.findIndex((r) => r.node === node && r.listen_port === port);
-          if (i >= 0) rows[i] = { ...rows[i], spec };
-          return { affectedRows: 1 };
-        }
         if (q.startsWith('SELECT')) {
           return q.includes('WHERE node = ?') ? rows.filter((r) => r.node === params[0] && r.listen_port === params[3]) : rows;
         }
-        if (q.startsWith('INSERT')) {
-          const [node, protocol, addr, port, spec, createdBy, createdByAdmin] = params as [string, string, string, number, string, string | null, number];
-          const i = rows.findIndex((r) => r.node === node && r.listen_port === port);
+        // 戻す（この要求の書いた行のままのときだけ）
+        if (q.startsWith('UPDATE forward_rule_overlays SET spec = ?, created_by_admin')) {
+          const [spec, admin, by, node, , , port, wSpec, wBy] = params as [string, number, string | null, string, string, string, number, string, string];
+          const i = at(node, port);
+          if (i >= 0 && rows[i].spec === wSpec && rows[i].updated_by === wBy) rows[i] = { ...rows[i], spec, created_by_admin: admin, updated_by: by };
+          return { affectedRows: 1 };
+        }
+        if (q.startsWith('UPDATE')) {
+          const [spec, node, , , port] = params as [string, string, string, string, number];
+          const i = at(node, port);
           if (i >= 0) rows[i] = { ...rows[i], spec };
-          else rows.push({ node, protocol, listen_addr: addr, listen_port: port, spec, created_by: createdBy, created_by_admin: createdByAdmin });
+          return { affectedRows: 1 };
+        }
+        if (q.startsWith('INSERT')) {
+          const [node, protocol, addr, port, spec, createdBy, createdByAdmin, by] = params as [string, string, string, number, string, string | null, number, string | null];
+          const i = at(node, port);
+          if (i >= 0) {
+            if (!q.startsWith('INSERT IGNORE')) rows[i] = { ...rows[i], spec, created_by_admin: createdByAdmin, updated_by: by };
+          } else {
+            rows.push({ node, protocol, listen_addr: addr, listen_port: port, spec, created_by: createdBy, created_by_admin: createdByAdmin, updated_by: by });
+          }
         }
         if (q.startsWith('DELETE')) {
-          const i = rows.findIndex((r) => r.node === params[0] && r.listen_port === params[3]);
-          if (i >= 0) rows.splice(i, 1);
+          const i = at(params[0], params[3]);
+          // 戻すときの DELETE は、この要求の書いた行のままのときだけ
+          const guarded = q.includes('AND spec = ?');
+          if (i >= 0 && (!guarded || (rows[i].spec === params[4] && rows[i].updated_by === params[5]))) rows.splice(i, 1);
         }
         return { affectedRows: 1 };
       }
@@ -739,6 +752,51 @@ describe('desired state of overlays in the UI database (#197)', () => {
     expect(rows).toHaveLength(0);
     expect(mocks.putOverlay).not.toHaveBeenCalled();
     expect(mocks.deleteOverlay).not.toHaveBeenCalled();
+  });
+
+  it('created_by_admin says whether the last writer was an admin: 1 for an admin, 0 for a user, flipped by an admin edit', async () => {
+    const rows = overlayTable([]);
+    vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
+    mocks.getServerSession.mockResolvedValue(user);
+    expect((await call('overlay-put', { ...key, overlay: wiki, etag: null })).status).toBe(200);
+    expect(rows[0]).toMatchObject({ created_by: 'user-1', created_by_admin: 0, updated_by: 'user-1' });
+    // 管理者が直す：作った人は利用者のまま、created_by_admin は 1
+    mocks.getServerSession.mockResolvedValue(admin);
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-1"' });
+    const next = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], match: 'Host(`w.example.com`)' }] } };
+    expect((await call('overlay-put', { ...key, overlay: next, etag: '"o-1"' })).status).toBe(200);
+    expect(rows[0]).toMatchObject({ created_by: 'user-1', created_by_admin: 1, updated_by: 'admin-1' });
+    // 利用者がまた直すと 0 に戻る
+    mocks.getServerSession.mockResolvedValue(user);
+    expect((await call('overlay-put', { ...key, overlay: wiki, etag: '"o-1"' })).status).toBe(200);
+    expect(rows[0]).toMatchObject({ created_by: 'user-1', created_by_admin: 0, updated_by: 'user-1' });
+  });
+
+  it('a rollback puts back the previous updated_by, and leaves a row someone else wrote meanwhile alone', async () => {
+    const rows = overlayTable([{ ...desired(wiki, 'user-1'), updated_by: 'admin-1', created_by_admin: 1 }]);
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-1"' });
+    const next = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], match: 'Host(`w.example.com`)' }] } };
+    mocks.putOverlay.mockRejectedValueOnce(new RproxyError('changed', 'precondition_failed', 412));
+    expect((await call('overlay-put', { ...key, overlay: next, etag: '"o-1"' })).status).toBe(412);
+    expect(rows[0]).toMatchObject({ spec: JSON.stringify(wiki), created_by_admin: 1, updated_by: 'admin-1' });
+    // rproxy の答えを待つ間に、ほかの人が行を書いた：戻さない
+    const other = JSON.stringify({ http: { routes: [] } });
+    mocks.putOverlay.mockImplementationOnce(async () => {
+      rows[0] = { ...rows[0], spec: other, updated_by: 'user-1' };
+      throw new RproxyError('changed', 'precondition_failed', 412);
+    });
+    expect((await call('overlay-put', { ...key, overlay: next, etag: '"o-1"' })).status).toBe(412);
+    expect(rows[0].spec).toBe(other);
+  });
+
+  it('on a timeout or 5xx the change stays in the UI database, is recorded in the history, and the error says it will be resent', async () => {
+    const rows = overlayTable([]);
+    mocks.putOverlay.mockRejectedValueOnce(new RproxyError('internal', 'internal', 503));
+    const out = await call('overlay-put', { ...key, overlay: wiki, etag: null });
+    expect(out.status).toBe(502);
+    expect(out.body.error).toContain('送り直されます');
+    expect(rows).toHaveLength(1);
+    expect(logInserts().at(-1)).toContain(JSON.stringify({ overlay: wiki }));
   });
 });
 

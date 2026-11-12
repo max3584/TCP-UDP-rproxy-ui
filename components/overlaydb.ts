@@ -21,11 +21,13 @@ export interface DesiredOverlay {
   spec: OverlaySpec;
   // 作った UI の利用者（auth_id）。管理者でない人が直せるのはこれが自分のものだけ
   createdBy: string | null;
-  // 作った人が管理者だったか（送り直しで持ち主として確かめ直すか。#197）
+  // 中身を確かめて最後に書いた人が管理者だったか（違えば送り直す前に作った人として確かめ直す。#197）
   createdByAdmin: boolean;
+  // 最後に書いた UI の利用者（戻すときにそのまま戻す）
+  updatedBy: string | null;
 }
 
-const COLUMNS = 'node, protocol, listen_addr, listen_port, spec, created_by, created_by_admin';
+const COLUMNS = 'node, protocol, listen_addr, listen_port, spec, created_by, created_by_admin, updated_by';
 
 function fromRow(row: any): DesiredOverlay | null {
   let spec: unknown = row?.spec;
@@ -44,6 +46,7 @@ function fromRow(row: any): DesiredOverlay | null {
     spec: overlaySpecOf(spec),
     createdBy: row.created_by === null || row.created_by === undefined ? null : String(row.created_by),
     createdByAdmin: Number(row.created_by_admin) === 1 || row.created_by_admin === true,
+    updatedBy: row.updated_by === null || row.updated_by === undefined ? null : String(row.updated_by),
   };
 }
 
@@ -75,12 +78,33 @@ export async function loadDesiredOverlays(db: Db, nodes: string[] | null): Promi
   }
 }
 
-// 足す・置き換える（作った人は最初の行のまま）
-export async function saveDesiredOverlay(db: Db, node: string, key: RproxyRuleKey, spec: OverlaySpec, owner: { createdBy: string | null; createdByAdmin: boolean }, by: string): Promise<void> {
+// 足す・置き換える。作った人（created_by）は最初の行のまま。created_by_admin は書くたびに、中身を確かめて書いた人（by）が管理者か
+export async function saveDesiredOverlay(db: Db, node: string, key: RproxyRuleKey, spec: OverlaySpec, write: { createdBy: string | null; byAdmin: boolean }, by: string | null): Promise<void> {
   await db.query(
-    'INSERT INTO forward_rule_overlays (node, protocol, listen_addr, listen_port, spec, created_by, created_by_admin, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE spec = VALUES(spec), updated_by = VALUES(updated_by)',
-    [node, key.protocol, key.listen_addr, key.listen_port, JSON.stringify(spec), owner.createdBy, owner.createdByAdmin ? 1 : 0, by]
+    'INSERT INTO forward_rule_overlays (node, protocol, listen_addr, listen_port, spec, created_by, created_by_admin, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE spec = VALUES(spec), created_by_admin = VALUES(created_by_admin), updated_by = VALUES(updated_by)',
+    [node, key.protocol, key.listen_addr, key.listen_port, JSON.stringify(spec), write.createdBy, write.byAdmin ? 1 : 0, by]
   );
+}
+
+// 消した行を戻す（外すのを rproxy が断ったとき）。その間にほかの人が書いた行があれば上書きしない（INSERT IGNORE）
+export async function reinsertDesiredOverlay(db: Db, row: DesiredOverlay): Promise<void> {
+  await db.query(
+    'INSERT IGNORE INTO forward_rule_overlays (node, protocol, listen_addr, listen_port, spec, created_by, created_by_admin, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [row.node, row.key.protocol, row.key.listen_addr, row.key.listen_port, JSON.stringify(row.spec), row.createdBy, row.createdByAdmin ? 1 : 0, row.updatedBy]
+  );
+}
+
+// 書いた行を前の行に戻す（rproxy が断ったとき）。行がまだこの要求の書いたもの（同じ spec と updated_by）のときだけ戻し、
+// その間にほかの人が書いた行は上書きしない。前の行がなければ消す。前の行は created_by_admin・updated_by もそのまま戻す
+export async function restoreDesiredOverlay(db: Db, node: string, key: RproxyRuleKey, written: { spec: OverlaySpec; by: string }, previous: DesiredOverlay | null): Promise<void> {
+  const where = 'node = ? AND protocol = ? AND listen_addr = ? AND listen_port = ? AND spec = ? AND updated_by = ?';
+  const params = [node, key.protocol, key.listen_addr, key.listen_port, JSON.stringify(written.spec), written.by];
+  if (previous === null) {
+    await db.query(`DELETE FROM forward_rule_overlays WHERE ${where}`, params);
+  } else {
+    await db.query(`UPDATE forward_rule_overlays SET spec = ?, created_by_admin = ?, updated_by = ? WHERE ${where}`,
+      [JSON.stringify(previous.spec), previous.createdByAdmin ? 1 : 0, previous.updatedBy, ...params]);
+  }
 }
 
 // 形だけを置き換える（rproxy が答えた形に揃える。作った人・直した人は変えない）

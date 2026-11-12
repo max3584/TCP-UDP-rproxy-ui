@@ -63,7 +63,11 @@ export const isOverlayIssue = (i: NodeReadiness['issues'][number]) => (i.fields 
 
 const overlayKeyOf = (d: DesiredOverlay) => `${d.key.protocol}|${d.key.listen_addr.toLowerCase()}|${d.key.listen_port}`;
 
-// 送り直す前に、作った人として確かめ直す（管理者が作ったものは確かめない）。断る理由を返す（送ってよければ null）
+// 作った人として確かめ直して断った（送らない）
+class OverlayRefused extends Error {}
+
+// 送り直す直前に、作った人として確かめ直す（管理者が最後に書いたものは確かめない）。断る理由を返す（送ってよければ null）。
+// 名前解決と GET /interfaces をするので、keepalived が聞く揃い具合（nodeReadiness・ha/ready）では呼ばない
 async function overlayRefusal(cfg: NodesConfig, node: string, desired: DesiredOverlay, file: ForwardRules, logger: AppLogger): Promise<string | null> {
   const cfgNode = cfg.nodes.find((n) => n.name === node)!;
   try {
@@ -118,17 +122,12 @@ async function inspectNode(cfg: NodesConfig, node: string, groups: GroupConfig[]
     ];
     return { readiness: readiness, todo: [] };
   }
-  // 重ねる分：rproxy にない・違うものを、作った人として確かめ直してから送り直す（固定ルールが設定ファイルから消えたものは比べない）。
-  // 確かめで断られたものは送らずに refused で知らせる。比べられなければ unknown（ルールは止めない）
+  // 重ねる分：rproxy にない・違うものを送り直す（固定ルールが設定ファイルから消えたものは比べない）。作った人としての確かめは
+  // 送る直前（resendOverlay）だけ。比べられなければ unknown（ルールは止めない）
   try {
     for (const c of overlays.length > 0 ? await withNode(toRproxyNode(cfgNode), () => checkOverlaysOnNode(overlays, statuses)) : []) {
       if (c.drift === null) continue;
       const key = overlayKeyOf(c.desired);
-      const refusal = await overlayRefusal(cfg, node, c.desired, c.file, logger);
-      if (refusal !== null) {
-        overlayIssues.push({ target: node, key: key, state: 'refused', fields: ['overlay'], error: refusal });
-        continue;
-      }
       overlayIssues.push({ target: node, key: key, state: c.drift === 'missing' ? 'missing' : 'drift', fields: ['overlay'] });
       todo.push({ id: 0, target: node, key: key, overlay: { desired: c.desired, file: c.file } });
     }
@@ -187,7 +186,7 @@ async function resendOverlay(cfg: NodesConfig, cand: Candidate & { overlay: NonN
   if (desired === null) return 'unchanged';
   // 読み直した形で、作った人としてもう一度確かめる（見回りの後に変わったかもしれない）
   const refusal = await overlayRefusal(cfg, node, desired, cand.overlay.file, logger);
-  if (refusal !== null) throw new Error(refusal);
+  if (refusal !== null) throw new OverlayRefused(refusal);
   const cfgNode = cfg.nodes.find((n) => n.name === node)!;
   return withNode(toRproxyNode(cfgNode), () => resendOverlayWithLog(getPool(), actor, node, { desired, file: cand.overlay.file },
     (err) => logger.warn(`ノード ${node} の重ねる分 ${cand.key} の送り直しを履歴に書けませんでした: ${err}`)));
@@ -249,6 +248,11 @@ export async function syncNode(cfg: NodesConfig, node: string, opts: { onlyAuto:
       else if (result !== 'unchanged') logger.info(`ノード ${node} に ${cand.key}（${cand.target}）を送り直しました（${result}）`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // 作った人として確かめ直して断った：送らずに、揃い具合の issue を refused にして知らせる
+      if (err instanceof OverlayRefused) {
+        const issue = readiness.issues.find((i) => isOverlayIssue(i) && i.key === cand.key);
+        if (issue) Object.assign(issue, { state: 'refused', error: message });
+      }
       const prev = failures.get(fkey);
       failures.set(fkey, { node: node, target: cand.target, key: cand.key, count: (prev?.count ?? 0) + 1, error: message, since: prev?.since ?? new Date().toISOString() });
       logger.warn(`ノード ${node} に ${cand.key}（${cand.target}）を送り直せませんでした: ${message}`);

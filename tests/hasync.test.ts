@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const mocks = vi.hoisted(() => {
   const conn = { beginTransaction: vi.fn(), commit: vi.fn(), rollback: vi.fn(), release: vi.fn(), destroy: vi.fn(), query: vi.fn() };
   const pool = { getConnection: vi.fn(), query: vi.fn() };
-  return { conn, pool, addRule: vi.fn(), modifyRule: vi.fn(), deleteRule: vi.fn(), listRules: vi.fn(), getRule: vi.fn(), getInterfaces: vi.fn(), getOverlay: vi.fn(), putOverlay: vi.fn(), overlays: [] as unknown[] };
+  return { conn, pool, addRule: vi.fn(), modifyRule: vi.fn(), deleteRule: vi.fn(), listRules: vi.fn(), getRule: vi.fn(), getInterfaces: vi.fn(), getOverlay: vi.fn(), putOverlay: vi.fn(), overlays: [] as unknown[], resolveHost: vi.fn() };
 });
 
 vi.mock('mariadb', () => ({ default: { createPool: () => mocks.pool } }));
@@ -16,6 +16,12 @@ vi.mock('@/components/lib', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/components/lib')>()),
   Logger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
+// 名前解決（重ねる分を作った人として確かめ直すとき。揃い具合では呼ばない）
+vi.mock('@/components/usertargets', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/components/usertargets')>();
+  mocks.resolveHost.mockImplementation(real.resolveHost);
+  return { ...real, resolveHost: (...a: Parameters<typeof real.resolveHost>) => mocks.resolveHost(...a) };
+});
 vi.mock('@/components/rproxy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/components/rproxy')>()),
   addRule: mocks.addRule, modifyRule: mocks.modifyRule, deleteRule: mocks.deleteRule,
@@ -343,22 +349,40 @@ describe('overlays on static rules of HA nodes (#197)', () => {
     expect(pool.query.mock.calls.some((c) => String(c[0]).startsWith('UPDATE forward_rule_overlays SET spec'))).toBe(true);
   });
 
-  it('checks a user\'s overlay again as that user: a tightened allow list or an unknown owner is refused and never sent', async () => {
+  it('checks a user\'s overlay again as that user only right before sending: a tightened allow list or an unknown owner is refused', async () => {
     mocks.getInterfaces.mockResolvedValue({ interfaces: [], reserved: [] });
     mocks.listRules.mockResolvedValue([status(8001), status(8002), staticStatus()]);
     mocks.getOverlay.mockRejectedValue(new RproxyError('no overlay', 'not_found', 404));
     vi.stubEnv('RPROXY_UI_USER_TARGETS', '192.168.0.0/16');
-    mocks.overlays.push({ node: 'a', protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9443, spec: JSON.stringify(wiki), created_by: 'user-1', created_by_admin: 0 });
+    const named = { http: { ...wiki.http, services: { wiki: { servers: [{ url: 'http://wiki.internal.example:8080' }] } } } };
+    mocks.overlays.push({ node: 'a', protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9443, spec: JSON.stringify(named), created_by: 'user-1', created_by_admin: 0 });
+    // keepalived が聞く揃い具合では確かめ直さない（名前解決も GET /interfaces もしない）
     const r = await nodeReadiness(loadNodes(), 'a');
-    expect(r.ready).toBe(true);
-    expect(r.issues).toEqual([{ target: 'a', key: 'tcp|0.0.0.0|9443', state: 'refused', fields: ['overlay'], error: expect.stringContaining('target_not_allowed') }]);
-    expect((await syncNode(loadNodes(), 'a', { onlyAuto: true })).results).toEqual([]);
+    expect(r).toMatchObject({ ready: true, issues: [{ target: 'a', key: 'tcp|0.0.0.0|9443', state: 'missing', fields: ['overlay'] }] });
+    expect(mocks.resolveHost).not.toHaveBeenCalled();
+    expect(mocks.getInterfaces).not.toHaveBeenCalled();
+    // 送る直前に確かめ直し、断れば送らずに refused
+    const out = await syncNode(loadNodes(), 'a', { onlyAuto: true });
+    expect(mocks.resolveHost).toHaveBeenCalledWith('wiki.internal.example');
+    expect(out.results).toEqual([{ target: 'a', key: 'tcp|0.0.0.0|9443', result: 'error', error: expect.stringContaining('target_not_allowed'), overlay: true }]);
+    expect(out.readiness.issues).toEqual([{ target: 'a', key: 'tcp|0.0.0.0|9443', state: 'refused', fields: ['overlay'], error: expect.stringContaining('target_not_allowed') }]);
+    expect(out.readiness.ready).toBe(true);
     expect(mocks.putOverlay).not.toHaveBeenCalled();
     // 作った人が分からない
     mocks.overlays[0] = { ...(mocks.overlays[0] as object), created_by: null };
-    expect((await nodeReadiness(loadNodes(), 'a')).issues[0]).toMatchObject({ state: 'refused', error: expect.stringContaining('overlay_owner_unknown') });
-    // 管理者が作ったものは確かめ直さずに送る
-    mocks.overlays[0] = { ...(mocks.overlays[0] as object), created_by: 'admin-1', created_by_admin: 1 };
+    expect((await syncNode(loadNodes(), 'a', { onlyAuto: true })).results[0]).toMatchObject({ result: 'error', error: expect.stringContaining('overlay_owner_unknown') });
+    // 最後に管理者が書いたもの（created_by_admin）は確かめ直さずに送る
+    mocks.overlays[0] = { ...(mocks.overlays[0] as object), created_by: 'user-1', created_by_admin: 1 };
+    mocks.putOverlay.mockImplementation(async (_k: unknown, spec: unknown) => ({ view: { ...(spec as object), created_at: 1 }, etag: '"o-2"' }));
+    expect((await syncNode(loadNodes(), 'a', { onlyAuto: true })).results).toEqual([{ target: 'a', key: 'tcp|0.0.0.0|9443', result: 'added', overlay: true }]);
+  });
+
+  it('with no user role (administrators only), any overlay is resent, even one from before 015 without a creator', async () => {
+    vi.stubEnv('RPROXY_UI_USER_ROLE', '');
+    vi.stubEnv('RPROXY_UI_USER_TARGETS', '192.168.0.0/16');
+    mocks.overlays.push({ node: 'a', protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9443, spec: JSON.stringify(wiki), created_by: null, created_by_admin: 0 });
+    mocks.listRules.mockResolvedValue([status(8001), status(8002), staticStatus()]);
+    mocks.getOverlay.mockRejectedValue(new RproxyError('no overlay', 'not_found', 404));
     mocks.putOverlay.mockImplementation(async (_k: unknown, spec: unknown) => ({ view: { ...(spec as object), created_at: 1 }, etag: '"o-2"' }));
     expect((await syncNode(loadNodes(), 'a', { onlyAuto: true })).results).toEqual([{ target: 'a', key: 'tcp|0.0.0.0|9443', result: 'added', overlay: true }]);
   });

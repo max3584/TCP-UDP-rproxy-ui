@@ -164,12 +164,15 @@ export interface OverlayTarget {
 
 // 重ねる分を送り直す前に、持ち主（作った人）としてもう一度確かめる（#197）。保存した後で、許可リスト（名前は解決し直す）・
 // 守る相手・使えるノードとポート・ファイルのサービス・秘密のファイル・送り元のヘッダの決まりが変わっていれば断る（HttpError）。
-// 管理者が作ったものは確かめない。持ち主が分からない（created_by がない）・利用者のロールがもうない（RPROXY_UI_USER_ROLE が空）なら断る
+// 前の内容（before）なしで確かめるので、前からあって残せただけの値も断る。owner.admin は中身を最後に書いた人が管理者だったか
+// （created_by_admin）で、そうなら確かめない。RPROXY_UI_USER_ROLE が空（利用者がいない）なら確かめない。持ち主が分からなければ断る
 export async function checkOverlayAsOwner(owner: { id: string | null; admin: boolean }, cfg: NodesConfig, t: OverlayTarget, spec: OverlaySpec, before: OverlaySpec | null, logger: AppLogger): Promise<void> {
   if (owner.admin) return;
   const roles = roleConfig();
-  if (owner.id === null || roles.userRole === '') {
-    throw new HttpError(403, 'この重ねる分を作った利用者が分からない（か、利用者のロールがない）ので、送り直せません（管理者が直すか外してください）。', 'overlay_owner_unknown');
+  // RPROXY_UI_USER_ROLE が空なら利用者はいない（管理者だけ）ので、だれが書いたものも管理者のものとして確かめない
+  if (roles.userRole === '') return;
+  if (owner.id === null) {
+    throw new HttpError(403, 'この重ねる分を作った利用者が分からないので、送り直せません（管理者が直すか外してください）。', 'overlay_owner_unknown');
   }
   const actor: UserActor = { id: owner.id, access: 'user', roles: roles, cfg: cfg, certPrefixes: certPrefixesFor('user', roles, owner.id, []) };
   if (t.place.target !== null && !nodesAllowed('user', roles, t.place.nodes.map((n) => n.name))) {

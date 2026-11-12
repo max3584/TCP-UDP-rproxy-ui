@@ -2143,7 +2143,6 @@ export const en: Record<string, string> = {
   "重ねる分を {done} 件送り直しました（失敗 {failed} 件）。": "Resent {done} overlays ({failed} failed).",
   "重ねる分をまとめて送り直せませんでした: {0}": "Could not resend the overlays: {0}",
   "重ねる分のずれ {count} 件をまとめて送り直す": "Resend all {count} drifted overlays",
-  "この重ねる分を作った利用者が分からない（か、利用者のロールがない）ので、送り直せません（管理者が直すか外してください）。": "The user who created this overlay is unknown (or there is no user role), so it cannot be resent (an administrator should change or remove it).",
   "待ち受けポート {0} は管理者だけが使えます。": "Only administrators can use listening port {0}.",
   "重ねる分を UI の DB からは外しましたが、rproxy から外せたか分かりません（時間切れ・つながらない）。読み直して、残っていればもう一度外してください。": "Removed the overlay from the UI database, but it is unknown whether rproxy removed it (timeout or no connection). Reload, and remove it again if it is still there.",
   "UI の DB からだけ外せるのは管理者だけです。": "Only administrators can remove rows from the UI database alone.",
@@ -2154,4 +2153,7 @@ export const en: Record<string, string> = {
   "UI の DB から外せませんでした: {0}": "Could not remove it from the UI database: {0}",
   "UI の DB にだけ残っている重ねる分（ノードか固定ルールがなくなりました）:": "Overlays left only in the UI database (their node or static rule is gone):",
   "UI の DB からだけ外す": "Remove from the UI database only",
+  "この重ねる分を作った利用者が分からないので、送り直せません（管理者が直すか外してください）。": "The user who created this overlay is unknown, so it cannot be resent (an administrator should change or remove it).",
+  "{0} の名前解決が {1}ms で終わりません": "Resolving {0} did not finish within {1}ms",
+  "rproxy の答えを受け取れませんでした（{0}）。変更は UI の DB に保存したので、ずれの画面から（act / stb のノードでは自動の送り直しで）送り直されます。": "No answer from rproxy ({0}). The change is saved in the UI database and will be resent from the drift screen (or by the automatic resend on act / stb nodes).",
 };

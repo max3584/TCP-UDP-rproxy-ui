@@ -80,7 +80,7 @@ import type { OverlayDrift, ShadowedBy, StaleOverlay } from '@/components/lib';
 import { acmeStatusField } from '@/components/acme';
 import { NodesConfig, NodesConfigError, groupOf, isReadonlyTarget, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode, visibleNodes } from '@/components/nodes';
 import { needsRecreateOnNode, overlayDrift, ruleDrift } from '@/components/drift';
-import { DEFAULT_OVERLAY_NODE, DesiredOverlay, OverlayResendResult, checkOverlaysOnNode, desiredOverlay, isDefiniteRefusal, isMissingTable, loadDesiredOverlays, overlayKeyString, removeDesiredOverlay, resendOverlayWithLog, saveDesiredOverlay, updateDesiredSpec } from '@/components/overlaydb';
+import { DEFAULT_OVERLAY_NODE, DesiredOverlay, OverlayResendResult, checkOverlaysOnNode, desiredOverlay, isDefiniteRefusal, isMissingTable, loadDesiredOverlays, overlayKeyString, reinsertDesiredOverlay, removeDesiredOverlay, resendOverlayWithLog, restoreDesiredOverlay, saveDesiredOverlay, updateDesiredSpec } from '@/components/overlaydb';
 import { NodeOverride, Overrides, effectiveRule, normalizeOverride, overrideFromRow, overrideRow, sameOverrides, settingsOverridesToBody } from '@/components/overrides';
 import { haStatus, interfaceAddrs, vipAddrs } from '@/components/ha';
 import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout';
@@ -2069,20 +2069,24 @@ async function putStaticOverlay(actor: Actor, body: any, logger: AppLogger) {
   spec = await checkOverlaySpec(actor, t, spec, before, logger);
   // 作った人：UI の DB の行があればそのまま、なければ今の重ねる分を作った人（履歴）、それもなければこの人
   const creator = desired !== null ? desired.createdBy : (current ? await overlayCreator(t, current.view, null) : null) ?? actor.id;
-  const owner = desired !== null ? desired : { createdBy: creator, createdByAdmin: creator === actor.id && actor.access === 'admin' };
-  // UI の DB の正しい形を先に書く（書けなければ rproxy に送らない。#197）。rproxy がはっきり断れば前の行に戻す。
-  // 時間切れ・つながらないときは、rproxy が変えたかもしれないので新しい行のまま（戻すと、自動の送り直しがこの変更を取り消す）
+  // UI の DB の正しい形を先に書く（書けなければ rproxy に送らない。#197）。created_by_admin はこの人が管理者か（中身をこの人の決まりで確かめた）。
+  // rproxy がはっきり断れば前の行に戻す（この要求の書いた行のままのときだけ）。時間切れ・つながらない・5xx は、rproxy が変えたかもしれないので
+  // 新しい行のまま（戻すと、自動の送り直しがこの変更を取り消す）にして、履歴にも残し、送り直されることを知らせる
   const node = overlayNodeName(t);
-  await saveDesiredOverlay(pool, node, t.key, spec, owner, actor.id);
+  await saveDesiredOverlay(pool, node, t.key, spec, { createdBy: creator, byAdmin: actor.access === 'admin' }, actor.id);
   let out: Awaited<ReturnType<typeof putOverlay>>;
   try {
     out = await onOverlayNode(t, () => putOverlay(t.key, spec, ifMatch));
   } catch (err) {
     if (isDefiniteRefusal(err)) {
-      await (desired !== null ? saveDesiredOverlay(pool, node, t.key, desired.spec, desired, desired.createdBy ?? actor.id) : removeDesiredOverlay(pool, node, t.key))
+      await restoreDesiredOverlay(pool, node, t.key, { spec, by: actor.id }, desired)
         .catch((e) => logger.error(`重ねる分の UI の DB の行を戻せませんでした: ${e}`));
+      throw err;
     }
-    throw err;
+    await insertOverlayLog(actor, t, spec, logger);
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new HttpError(502, `rproxy の答えを受け取れませんでした（${reason}）。変更は UI の DB に保存したので、ずれの画面から（act / stb のノードでは自動の送り直しで）送り直されます。`,
+      err instanceof RproxyError ? err.code : 'unreachable');
   }
   await insertOverlayLog(actor, t, spec, logger, out.view?.created_at);
   // rproxy が答えた形に揃える（同じ形の GET と比べてずれを出す）。書けなくても UI が送った形が残る（送り直せる）
@@ -2122,7 +2126,7 @@ async function deleteStaticOverlay(actor: Actor, body: any, logger: AppLogger) {
     } catch (err) {
       if (desired === null) throw err;
       if (isDefiniteRefusal(err)) {
-        await saveDesiredOverlay(pool, node, t.key, desired.spec, desired, desired.createdBy ?? actor.id)
+        await reinsertDesiredOverlay(pool, desired)
           .catch((e) => logger.error(`重ねる分の UI の DB の行を戻せませんでした: ${e}`));
         throw err;
       }

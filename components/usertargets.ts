@@ -143,11 +143,22 @@ export function refusalText(refusals: Refusal[]): string {
 
 // ---- 守る相手（制御 API・UI・DB）を集める ----
 
-export async function resolveHost(host: string): Promise<string[]> {
+// 名前解決を待つ上限（#197。応答のない DNS で確かめが止まらないように。超えたら解決できない名前として断る）
+export const RESOLVE_TIMEOUT_MS = 5000;
+
+export async function resolveHost(host: string, timeoutMs = RESOLVE_TIMEOUT_MS): Promise<string[]> {
   const ip = toIp(host);
   if (ip !== null) return [ip];
-  const found = await lookup(host, { all: true, verbatim: true });
-  return found.map((f) => f.address);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${host} の名前解決が ${timeoutMs}ms で終わりません`)), timeoutMs);
+  });
+  try {
+    const found = await Promise.race([lookup(host, { all: true, verbatim: true }), timeout]);
+    return found.map((f) => f.address);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function localAddrs(): string[] {
