@@ -2,11 +2,11 @@
 // rproxy は UI のトークン（persist: false）の重ねる分を保存しないので、再起動で消える。UI はこの表を正として、rproxy にない・違う
 // 重ねる分を「ずれ」に出し、送り直す（API route の overlay-resend・overlay-resend-all と、act / stb の自動の送り直し（hasync.ts））
 import type { PoolConnection } from 'mariadb';
-import type { ForwardRule, OverlayDrift, Protocol } from './lib';
+import type { ForwardRule, ForwardRules, OverlayDrift, Protocol } from './lib';
 import type { OverlaySpec, OverlayView } from './overlay';
 import { overlaySpecOf } from './overlay';
 import { overlayDrift } from './drift';
-import { RproxyRuleKey, RproxyRuleStatus, getOverlay, putOverlay } from './rproxy';
+import { RproxyError, RproxyRuleKey, RproxyRuleStatus, getOverlay, putOverlay } from './rproxy';
 import { isNotFound } from './ruledb';
 import { ruleFromStatus } from './dashboard';
 
@@ -21,9 +21,11 @@ export interface DesiredOverlay {
   spec: OverlaySpec;
   // 作った UI の利用者（auth_id）。管理者でない人が直せるのはこれが自分のものだけ
   createdBy: string | null;
+  // 作った人が管理者だったか（送り直しで持ち主として確かめ直すか。#197）
+  createdByAdmin: boolean;
 }
 
-const COLUMNS = 'node, protocol, listen_addr, listen_port, spec, created_by';
+const COLUMNS = 'node, protocol, listen_addr, listen_port, spec, created_by, created_by_admin';
 
 function fromRow(row: any): DesiredOverlay | null {
   let spec: unknown = row?.spec;
@@ -41,6 +43,7 @@ function fromRow(row: any): DesiredOverlay | null {
     key: { protocol: String(row.protocol).toLowerCase() as Protocol, listen_addr: row.listen_addr, listen_port: port },
     spec: overlaySpecOf(spec),
     createdBy: row.created_by === null || row.created_by === undefined ? null : String(row.created_by),
+    createdByAdmin: Number(row.created_by_admin) === 1 || row.created_by_admin === true,
   };
 }
 
@@ -73,11 +76,22 @@ export async function loadDesiredOverlays(db: Db, nodes: string[] | null): Promi
 }
 
 // 足す・置き換える（作った人は最初の行のまま）
-export async function saveDesiredOverlay(db: Db, node: string, key: RproxyRuleKey, spec: OverlaySpec, createdBy: string | null, by: string): Promise<void> {
+export async function saveDesiredOverlay(db: Db, node: string, key: RproxyRuleKey, spec: OverlaySpec, owner: { createdBy: string | null; createdByAdmin: boolean }, by: string): Promise<void> {
   await db.query(
-    'INSERT INTO forward_rule_overlays (node, protocol, listen_addr, listen_port, spec, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE spec = VALUES(spec), updated_by = VALUES(updated_by)',
-    [node, key.protocol, key.listen_addr, key.listen_port, JSON.stringify(spec), createdBy, by]
+    'INSERT INTO forward_rule_overlays (node, protocol, listen_addr, listen_port, spec, created_by, created_by_admin, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE spec = VALUES(spec), updated_by = VALUES(updated_by)',
+    [node, key.protocol, key.listen_addr, key.listen_port, JSON.stringify(spec), owner.createdBy, owner.createdByAdmin ? 1 : 0, by]
   );
+}
+
+// 形だけを置き換える（rproxy が答えた形に揃える。作った人・直した人は変えない）
+export async function updateDesiredSpec(db: Db, node: string, key: RproxyRuleKey, spec: OverlaySpec): Promise<void> {
+  await db.query('UPDATE forward_rule_overlays SET spec = ? WHERE node = ? AND protocol = ? AND listen_addr = ? AND listen_port = ?',
+    [JSON.stringify(spec), node, key.protocol, key.listen_addr, key.listen_port]);
+}
+
+// rproxy がはっきり断った（4xx の答え）。時間切れ・つながらない・5xx は、rproxy が変えたかどうか分からない
+export function isDefiniteRefusal(err: unknown): boolean {
+  return err instanceof RproxyError && err.status >= 400 && err.status < 500;
 }
 
 export async function removeDesiredOverlay(db: Db, node: string, key: RproxyRuleKey): Promise<void> {
@@ -133,8 +147,8 @@ export async function insertOverlayResendLog(db: Db, actor: string, node: string
 
 export interface OverlayCheck {
   desired: DesiredOverlay;
-  // その待ち受けの固定ルール（履歴の行に使う）
-  file: ForwardRule;
+  // その待ち受けの固定ルール（履歴の行・持ち主としての確かめに使う）
+  file: ForwardRules;
   drift: OverlayDrift | null;
 }
 
@@ -157,6 +171,11 @@ export async function resendOverlayWithLog(db: Db, actor: string, logNode: strin
   const { result, view } = await resendOverlayOne(check.desired);
   if (result !== 'unchanged') {
     await insertOverlayResendLog(db, actor, logNode, check.file, check.desired.spec, view?.created_at).catch(onLogError);
+    // UI の DB の形を rproxy が答えた形に揃える（次の比べ方がずれない）
+    const answered = view ? overlaySpecOf(view) : null;
+    if (answered !== null && (answered.http !== undefined || answered.tls !== undefined)) {
+      await updateDesiredSpec(db, check.desired.node, check.desired.key, answered).catch(onLogError);
+    }
   }
   return result;
 }

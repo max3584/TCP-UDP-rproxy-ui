@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS forward_rule_overlays (
   listen_port INT UNSIGNED NOT NULL,
   spec        JSON         NOT NULL COMMENT 'PUT /rules/{key}/overlay の本文（rproxy が答えた形）',
   created_by  VARCHAR(255) NULL COMMENT '作った UI の利用者（auth_id）。直せる人を決める',
+  created_by_admin TINYINT(1) NOT NULL DEFAULT 0 COMMENT '作った人が管理者だったか（送り直す前に持ち主として確かめ直すか）',
   created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_by  VARCHAR(255) NULL COMMENT '最後に直した UI の利用者（auth_id）',
   updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),

@@ -64,29 +64,23 @@ import {
 } from '@/components/rproxy';
 import type { CapabilityFeatures } from '@/components/rproxy';
 import {
-  fileNames,
-  fileServicesForbidden,
   fileSecretItems,
   overlayCreatedAt,
-  forwardingIdentityProblems,
   isEmptyOverlay,
-  overlayAsRule,
   overlayChanges,
-  overlayConflicts,
   overlayFromLogOptions,
   overlayShape,
   overlaySpecOf,
   restoreHidden,
-  secretFileItemsUsed,
 } from '@/components/overlay';
 import type { OverlaySpec, OverlayView, SecretItems } from '@/components/overlay';
 import { aggregateNodeStates, ruleFromStatus } from '@/components/dashboard';
 import { StoredApiRule, apiRuleFromRow, apiRuleFromStatus, mergeExternalRules, shadowedBy } from '@/components/apirules';
-import type { OverlayDrift, ShadowedBy } from '@/components/lib';
+import type { OverlayDrift, ShadowedBy, StaleOverlay } from '@/components/lib';
 import { acmeStatusField } from '@/components/acme';
 import { NodesConfig, NodesConfigError, groupOf, isReadonlyTarget, loadNodes, membership, nodesInfo, targetNodes, targetsOverlap, toRproxyNode, visibleNodes } from '@/components/nodes';
 import { needsRecreateOnNode, overlayDrift, ruleDrift } from '@/components/drift';
-import { DEFAULT_OVERLAY_NODE, DesiredOverlay, OverlayResendResult, checkOverlaysOnNode, desiredOverlay, isMissingTable, loadDesiredOverlays, overlayKeyString, removeDesiredOverlay, resendOverlayWithLog, saveDesiredOverlay } from '@/components/overlaydb';
+import { DEFAULT_OVERLAY_NODE, DesiredOverlay, OverlayResendResult, checkOverlaysOnNode, desiredOverlay, isDefiniteRefusal, isMissingTable, loadDesiredOverlays, overlayKeyString, removeDesiredOverlay, resendOverlayWithLog, saveDesiredOverlay, updateDesiredSpec } from '@/components/overlaydb';
 import { NodeOverride, Overrides, effectiveRule, normalizeOverride, overrideFromRow, overrideRow, sameOverrides, settingsOverridesToBody } from '@/components/overrides';
 import { haStatus, interfaceAddrs, vipAddrs } from '@/components/ha';
 import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout';
@@ -104,10 +98,8 @@ import { ResendResult, fromRow, getPool, ruleOptions, isNotFound, isPaused, isSh
 import { V04_FIELD, V04_KEYS, normalizeV04, v04Of } from '@/components/v04';
 import { connectTimeoutRestore } from '@/components/restorable';
 import type { RulePlan, V04Key, V04Settings } from '@/components/v04';
-import { HIDDEN_FILE, addedRefs, certAllowed, certNames, destKey, fileKey, fileRefs, locatedDests, oidcConfigs, redactFiles, userCacheProblem } from '@/components/userlimits';
-import type { DestRef } from '@/components/userlimits';
-import { checkDestinations, protectedAddrs, refusalText, resolveHost } from '@/components/usertargets';
-import type { InterfacesInfo } from '@/components/listen';
+import { HIDDEN_FILE, redactFiles } from '@/components/userlimits';
+import { Before, HttpError, checkOverlayAsOwner, checkOverlaySpec, checkUserDests, userRuleSync } from '@/components/overlaycheck';
 
 const pool = getPool();
 
@@ -116,12 +108,6 @@ const pool = getPool();
 // OVERLAY：固定ルールに重ねる分を変えた・外した（#193。insertOverlayLog。options は {"overlay": 重ねる分 | null}）
 type Action = 'ADD' | 'UPDATE' | 'DELETE' | 'RESEND' | 'OVERRIDE' | 'OVERLAY';
 type AppLogger = ReturnType<typeof Logger>;
-
-class HttpError extends Error {
-  constructor(public readonly status: number, message: string, public readonly code: string) {
-    super(message);
-  }
-}
 
 // 操作する利用者。admin はすべての利用者のルールを扱える（WHERE に auth_id を付けない）
 interface Actor {
@@ -267,66 +253,6 @@ function fromTlsError(err: unknown): unknown {
 }
 
 // ---- 利用者（admin でない人）の制限（#155。components/userlimits.ts・usertargets.ts） ----
-
-// 前の内容（変更・置き換えでは今のルール）。ここにある値は、変えなければそのまま残せる
-interface Before {
-  rule: ForwardRule;
-  overrides?: Overrides;
-}
-
-// 守る相手（rproxy の制御 API・UI・DB）。置き場所のノードの GET /interfaces の予約済みのアドレスも使う（取れなければそのノードは飛ばす）
-async function protectedFor(actor: Actor, place: Place, logger: AppLogger) {
-  const interfaces: InterfacesInfo[] = [];
-  for (const node of place.nodes) {
-    try {
-      const info = await withNode(node, () => getInterfaces());
-      if (info && typeof info === 'object') interfaces.push(info);
-    } catch (err) {
-      logger.warn(`rproxy（${node.name}）のインターフェースを取得できません（制御 API のアドレスは設定の URL だけで確かめます）: ${err}`);
-    }
-  }
-  const apiUrls = [process.env.RPROXY_API_URL ?? '', ...actor.cfg.nodes.map((n) => n.url)].filter((u) => /^https?:\/\//.test(u));
-  return protectedAddrs({ env: process.env, apiUrls: apiUrls, interfaces: interfaces });
-}
-
-// 利用者のルールのうち、その場で決まるものを確かめる（admin は何もしない）。確かめる転送先（前の内容にないものと、読めない URL）を返す：
-// - サーバのファイルを指す項目は、前の内容にない値を断る（403 file_not_allowed）
-// - 登録済みの証明書の名前は、前の内容になく利用者の先頭（RPROXY_UI_USER_CERTS・割り当て。certPrefixesFor）の外なら断る（403 cert_not_allowed）
-// - oidc のミドルウェアは、前の内容と同じ設定でなければ断る（403 middleware_not_allowed。discovery の先を確かめられないため）
-// - cache のミドルウェアは、前の内容と同じ設定でなければ share_after_auth・share_credentials を断り（403 middleware_not_allowed）、
-//   max_memory・max_entries（省けば rproxy の既定）が RPROXY_UI_USER_CACHE_MAX_* を超えれば断る（403 cache_limit。#175）
-function userRuleSync(actor: Actor, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null): DestRef[] {
-  if (actor.access === 'admin') return [];
-  const files = addedRefs(fileRefs(rule), fileRefs(before?.rule), fileKey);
-  if (files.length > 0) {
-    const where = [...new Set(files.map((f) => f.where))].join(', ');
-    throw new HttpError(403, `ファイルのパス（${where}）は管理者だけが指定できます。証明書は登録済みの証明書の名前（tls.certificates[].cert）から選んでください。`, 'file_not_allowed');
-  }
-  const oldCerts = new Set(certNames(before?.rule));
-  const certs = certNames(rule).filter((n) => !oldCerts.has(n) && !certAllowed(n, actor.certPrefixes));
-  if (certs.length > 0) {
-    throw new HttpError(403, `登録済みの証明書 ${certs.join(', ')} はこの利用者には使えません（RPROXY_UI_USER_CERTS・RPROXY_UI_USER_CERTS_BY_SUB・RPROXY_UI_USER_CERTS_BY_ROLE）。`, 'cert_not_allowed');
-  }
-  const oldOidc = new Set(oidcConfigs(before?.rule));
-  if (oidcConfigs(rule).some((c) => !oldOidc.has(c))) {
-    throw new HttpError(403, 'OIDC のミドルウェアは管理者だけが足したり変えたりできます（rproxy がつなぐ先を UI が確かめられないため）。', 'middleware_not_allowed');
-  }
-  const cache = userCacheProblem(rule, before?.rule, { maxMemory: actor.roles.userCacheMaxMemory, maxEntries: actor.roles.userCacheMaxEntries });
-  if (cache) throw new HttpError(403, cache.message, cache.code);
-  const next = locatedDests(rule, overrides);
-  const old = before ? locatedDests(before.rule, before.overrides) : [];
-  // 読めない URL は前からあっても確かめる（断る）
-  return [...addedRefs(next.filter((d) => !d.invalid), old, destKey), ...next.filter((d) => d.invalid)];
-}
-
-// 転送先を確かめる（403 target_not_allowed）
-async function checkUserDests(actor: Actor, place: Place, dests: DestRef[], logger: AppLogger): Promise<void> {
-  if (actor.access === 'admin' || dests.length === 0) return;
-  const refused = await checkDestinations(dests, actor.roles.userTargets, { resolve: resolveHost, protectedAddrs: await protectedFor(actor, place, logger), protectedCidrs: actor.roles.protectedTargets });
-  if (refused.length > 0) {
-    throw new HttpError(403, `利用者はこの転送先を使えません: ${refusalText(refused)}`, 'target_not_allowed');
-  }
-}
 
 // 利用者のルールを確かめる（admin は何もしない）
 async function checkUserRule(actor: Actor, place: Place, rule: ForwardRule, overrides: Overrides | undefined, before: Before | null, logger: AppLogger): Promise<void> {
@@ -855,12 +781,13 @@ async function listForwardingRules(actor: Actor, logger: AppLogger, withStatic: 
   });
   const out = withStatic ? mergeExternalRules(rules, statuses, { api: admin, stored: stored, live: live !== null }).map((r) => forViewer(actor, r)) : rules;
   // 固定ルールに重ねる分のずれ（#197）
-  if (withStatic) await markOverlayDrift(actor, out, [{ node: null, live, statuses }], logger);
+  const stale = withStatic ? (await markOverlayDrift(actor, out, [{ node: null, live, statuses }], logger)).stale : [];
   return {
     reachable: live !== null,
     rproxyError: rproxyError,
     rules: out,
     ...(admin ? { admin: true } : {}),
+    ...(stale.length > 0 ? { staleOverlays: stale } : {}),
   };
 }
 
@@ -916,6 +843,7 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
   });
 
   let out = rules;
+  let staleOverlays: StaleOverlay[] = [];
   if (withStatic) {
     // 固定ルール（だれにでも）と API のルール（管理者だけ。rproxy v0.4）はノードごと（target がそのノード）
     const stored = admin ? await loadStoredApiRules(logger) : [];
@@ -932,7 +860,9 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
     }
     out = [...rules, ...external];
     // 固定ルールに重ねる分のずれ（#197）。ノードの一覧のずれの数にも足す
-    for (const [name, n] of await markOverlayDrift(actor, external, lives, logger)) {
+    const marked = await markOverlayDrift(actor, external, lives, logger);
+    staleOverlays = marked.stale;
+    for (const [name, n] of marked.counts) {
       const sum = summaries.get(name);
       if (sum) sum.drifted += n;
     }
@@ -946,6 +876,7 @@ async function listOnNodes(actor: Actor, logger: AppLogger, withStatic: boolean)
     reachable: down.length < lives.length,
     rproxyError: down.length === 0 ? null : down.map((l) => `ノード ${l.node.name}: ${l.error}`).join(' / '),
     rules: out,
+    ...(staleOverlays.length > 0 ? { staleOverlays } : {}),
     ...(admin ? { admin: true } : {}),
     nodes: [...summaries.values()],
     ...(groups.length > 0 ? { groups: groups } : {}),
@@ -2042,10 +1973,10 @@ async function overlayInfo(actor: Actor, query: NextApiRequest['query'], logger:
   const features = await overlayFeatures(t, logger);
   const available = features?.static_overlay === true;
   const current = available ? await currentOverlay(t) : null;
-  // 表がなければ（015 を当てていない）ずれは出さない（変えるときに断る）
+  // 読めなければ（015 を当てていない・権限がない）ずれは出さない（変えるときに断る）
   const desired = available ? await desiredOverlay(pool, overlayNodeName(t), t.key).catch((err) => {
-    if (isMissingTable(err)) return null;
-    throw err;
+    if (!isMissingTable(err)) logger.warn(`UI の DB の重ねる分（forward_rule_overlays）を読めません: ${err}`);
+    return null;
   }) : null;
   let canEdit = true;
   let editReason: string | undefined;
@@ -2073,67 +2004,6 @@ async function overlayInfo(actor: Actor, query: NextApiRequest['query'], logger:
     ...(t.node ? { node: t.node.name } : {}),
     ...(drift ? { drift, canResend: canEdit } : {}),
   };
-}
-
-// 重ねる分を確かめる（rproxy の前に、画面の言葉で断る。細かい検証は rproxy）
-async function checkOverlaySpec(actor: Actor, t: OverlayPlace, spec: OverlaySpec, before: OverlaySpec | null, logger: AppLogger): Promise<OverlaySpec> {
-  const shape = overlayShape(t.file);
-  if (spec.http && !shape.http) throw invalid('このルールには http がないので、http のルート・サービス・ミドルウェアは重ねられません。');
-  if (spec.tls && !shape.tlsRoutes) {
-    throw invalid('サーバ名ごとの転送先（tls.routes）を重ねられるのは、TLS のモードが sni のルールか、http もクライアント認証もない terminate のルールだけです。');
-  }
-  const conflicts = overlayConflicts(fileNames(t.file), spec);
-  if (conflicts.length > 0) {
-    throw new HttpError(409, `設定ファイルにある名前は使えません: ${conflicts.map((c) => `${c.kind} ${c.name}（${c.reason}）`).join(', ')}`, 'overlay_conflict');
-  }
-  // 利用者がファイルのサービスへたどり着くか（形の検証より先に、理由をはっきり返す）
-  if (actor.access !== 'admin') {
-    // 重ねる分のルートはファイルのサービスにファイルのルートのミドルウェアを通らずに届き、その転送先は利用者の許可リストの外なので、
-    // 管理者でない人はファイルのサービスを使えない（自分のサービスを定義する。ファイルの秘密のないミドルウェアは使える）
-    // ファイルのミドルウェア（mirror・errors）やサービスの servers[].middlewares を通ってたどり着くものも。ファイルの forward_auth の先だけは除く
-    const services = fileServicesForbidden(spec, t.file.http);
-    if (services.length > 0) {
-      throw new HttpError(403, `設定ファイルのサービス（${services.join(', ')}）は管理者だけが重ねる分から使えます（重ねる分のルートはファイルのルートのミドルウェアを通らずにその転送先へ届き、転送先は利用者の許可リストの外のため）。重ねる分に自分のサービスを定義してください。`, 'file_service_not_allowed');
-    }
-  }
-  const errors: string[] = [];
-  if (spec.http) {
-    const file = toHttpRules(t.file.http);
-    const merged = {
-      ...file,
-      routes: [...file.routes, ...(spec.http.routes ?? [])],
-      services: { ...(file.services ?? {}), ...(spec.http.services ?? {}) },
-      middlewares: { ...(file.middlewares ?? {}), ...(spec.http.middlewares ?? {}) },
-    };
-    // 設定ファイルの分だけで出る誤りは重ねる分のせいではないので除く
-    const own = new Set(validateHttp(file));
-    errors.push(...validateHttp(merged).filter((e) => !own.has(e)));
-    errors.push(...forwardingIdentityProblems(spec.http.middlewares));
-  }
-  let tlsRoutes = spec.tls?.routes;
-  if (tlsRoutes !== undefined) {
-    if (tlsRoutes.some((r) => r && typeof r === 'object' && 'upstream' in r)) errors.push('重ねる分のサーバ名ごとの転送先には、転送先への TLS（upstream）を書けません（ルールのものを使います）。');
-    try {
-      const tls = normalizeTls({ ...t.file.tls, routes: tlsRoutes });
-      checkTls(t.file.protocol, tls, null, (t.file.srcPortEnd ?? t.file.srcPort) - t.file.srcPort + 1, false);
-      tlsRoutes = tls.routes;
-    } catch (err) {
-      if (err instanceof TlsError) errors.push(err.message);
-      else throw err;
-    }
-  }
-  if (errors.length > 0) throw invalid(errors.join('\n'));
-  const out: OverlaySpec = { ...spec, ...(tlsRoutes !== undefined ? { tls: { routes: tlsRoutes } } : {}) };
-  if (actor.access !== 'admin') {
-    const used = secretFileItemsUsed(out, t.file.http);
-    const names = [...used.services.map((n) => `サービス ${n}`), ...used.middlewares.map((n) => `ミドルウェア ${n}`)];
-    if (names.length > 0) {
-      throw new HttpError(409, `設定ファイルの ${names.join('・')} は秘密のファイル（鍵・OIDC の秘密・users_file）を持つ（か、それを使う）ので、管理者だけが重ねる分から使えます。`, 'file_in_use');
-    }
-    const dests = userRuleSync(actor, overlayAsRule(t.file, out), undefined, before ? { rule: overlayAsRule(t.file, before) } : null);
-    await checkUserDests(actor, t.place, dests, logger);
-  }
-  return out;
 }
 
 // 履歴（OVERLAY）。重ねる分の正は rproxy なので、書けなくても変更は取り消さない（ログに残す）
@@ -2199,26 +2069,34 @@ async function putStaticOverlay(actor: Actor, body: any, logger: AppLogger) {
   spec = await checkOverlaySpec(actor, t, spec, before, logger);
   // 作った人：UI の DB の行があればそのまま、なければ今の重ねる分を作った人（履歴）、それもなければこの人
   const creator = desired !== null ? desired.createdBy : (current ? await overlayCreator(t, current.view, null) : null) ?? actor.id;
-  const out = await onOverlayNode(t, () => putOverlay(t.key, spec, ifMatch));
-  await insertOverlayLog(actor, t, spec, logger, out.view?.created_at);
-  // UI の DB に正しい形を残す（rproxy が答えた形。同じ形の GET と比べてずれを出す。#197）
-  let saved = true;
+  const owner = desired !== null ? desired : { createdBy: creator, createdByAdmin: creator === actor.id && actor.access === 'admin' };
+  // UI の DB の正しい形を先に書く（書けなければ rproxy に送らない。#197）。rproxy がはっきり断れば前の行に戻す。
+  // 時間切れ・つながらないときは、rproxy が変えたかもしれないので新しい行のまま（戻すと、自動の送り直しがこの変更を取り消す）
+  const node = overlayNodeName(t);
+  await saveDesiredOverlay(pool, node, t.key, spec, owner, actor.id);
+  let out: Awaited<ReturnType<typeof putOverlay>>;
   try {
-    const answered = out.view ? overlaySpecOf(out.view) : spec;
-    await saveDesiredOverlay(pool, overlayNodeName(t), t.key, isEmptyOverlay(answered) ? spec : answered, creator, actor.id);
+    out = await onOverlayNode(t, () => putOverlay(t.key, spec, ifMatch));
   } catch (err) {
-    saved = false;
-    logger.error(`重ねる分を UI の DB（forward_rule_overlays）に書けませんでした（rproxy には反映済み）: ${err}`);
+    if (isDefiniteRefusal(err)) {
+      await (desired !== null ? saveDesiredOverlay(pool, node, t.key, desired.spec, desired, desired.createdBy ?? actor.id) : removeDesiredOverlay(pool, node, t.key))
+        .catch((e) => logger.error(`重ねる分の UI の DB の行を戻せませんでした: ${e}`));
+    }
+    throw err;
+  }
+  await insertOverlayLog(actor, t, spec, logger, out.view?.created_at);
+  // rproxy が答えた形に揃える（同じ形の GET と比べてずれを出す）。書けなくても UI が送った形が残る（送り直せる）
+  const answered = out.view ? overlaySpecOf(out.view) : spec;
+  if (!isEmptyOverlay(answered)) {
+    await updateDesiredSpec(pool, node, t.key, answered).catch((err) => logger.warn(`重ねる分の UI の DB の形を rproxy の答えに揃えられませんでした: ${err}`));
   }
   return {
     rule: `${t.key.protocol}/${t.key.listen_addr}/${t.key.listen_port}`,
     created: current === null,
     overlay: overlayForViewer(actor, out.view),
     etag: out.etag,
-    // UI の DB（forward_rule_overlays）に書けなかった：rproxy を再起動して消えたとき、ずれに出ず送り直せない
-    ...(!saved ? { warning: '重ねる分は効いていますが、UI の DB（forward_rule_overlays）に保存できませんでした。rproxy を再起動して消えたとき、ずれに出ず送り直せません。もう一度保存してください。' }
-      // rproxy の DB（rproxy_rule_overlays）に書けなかった。DB がない・persist: false のトークンでは付かない（UI の DB から送り直せる）
-      : out.view?.persisted === false ? { warning: '重ねる分は効いていますが、rproxy が DB（rproxy_rule_overlays）に保存できませんでした（migration 014 を当てたか確かめてください）。rproxy を再起動すると消えるので、ずれから送り直してください。' } : {}),
+    // rproxy の DB（rproxy_rule_overlays）に書けなかった。DB がない・persist: false のトークンでは付かない（UI の DB から送り直せる）
+    ...(out.view?.persisted === false ? { warning: '重ねる分は効いていますが、rproxy が DB（rproxy_rule_overlays）に保存できませんでした（migration 014 を当てたか確かめてください）。rproxy を再起動すると消えるので、ずれから送り直してください。' } : {}),
     ...(t.node ? { node: t.node.name } : {}),
   };
 }
@@ -2233,22 +2111,30 @@ async function deleteStaticOverlay(actor: Actor, body: any, logger: AppLogger) {
   if (current === null && desired === null) throw new HttpError(404, 'このルールに重ねる分はありません。', 'not_found');
   const ifMatch = checkEtag(body?.etag, current);
   await checkOverlayOwner(actor, t, current, desired);
-  // UI の DB の正しい形を先に消す（rproxy から外せなければ戻す。消し損ねた正しい形を送り直して、外したものを戻さない）
+  // UI の DB の正しい形を先に消す（消し損ねた正しい形を送り直して、外したものを戻さない）。rproxy がはっきり断れば（4xx）行を戻す。
+  // 時間切れ・つながらないときは、rproxy が外したかもしれないので行は消したまま（戻すと自動の送り直しが外したものを戻す）にして知らせる
   const node = overlayNodeName(t);
+  const rule = `${t.key.protocol}/${t.key.listen_addr}/${t.key.listen_port}`;
   if (desired !== null) await removeDesiredOverlay(pool, node, t.key);
   if (current !== null) {
     try {
       await onOverlayNode(t, () => deleteOverlay(t.key, ifMatch));
     } catch (err) {
-      if (desired !== null) {
-        await saveDesiredOverlay(pool, node, t.key, desired.spec, desired.createdBy, actor.id)
+      if (desired === null) throw err;
+      if (isDefiniteRefusal(err)) {
+        await saveDesiredOverlay(pool, node, t.key, desired.spec, desired, desired.createdBy ?? actor.id)
           .catch((e) => logger.error(`重ねる分の UI の DB の行を戻せませんでした: ${e}`));
+        throw err;
       }
-      throw err;
+      logger.warn(`rproxy から重ねる分を外せたか分かりません（UI の DB からは外しました）: ${err}`);
+      return {
+        rule, ...(t.node ? { node: t.node.name } : {}),
+        warning: '重ねる分を UI の DB からは外しましたが、rproxy から外せたか分かりません（時間切れ・つながらない）。読み直して、残っていればもう一度外してください。',
+      };
     }
   }
   await insertOverlayLog(actor, t, null, logger);
-  return { rule: `${t.key.protocol}/${t.key.listen_addr}/${t.key.listen_port}`, ...(t.node ? { node: t.node.name } : {}) };
+  return { rule, ...(t.node ? { node: t.node.name } : {}) };
 }
 
 // 履歴の 1 行（OVERLAY）：同じキー・置き場所の前の OVERLAY との違い
@@ -2305,7 +2191,10 @@ async function resendStaticOverlay(actor: Actor, body: any, logger: AppLogger): 
   await requireOverlayFeature(t, logger);
   const desired = await readDesired(t);
   if (desired === null) throw new HttpError(404, 'UI の DB にこのルールの重ねる分はありません（送り直すものがありません）。', 'not_found');
-  await checkOverlayOwner(actor, t, await currentOverlay(t), desired);
+  const current = await currentOverlay(t);
+  await checkOverlayOwner(actor, t, current, desired);
+  // 管理者でない人は、保存した後で変わった決まり（許可リスト・守る相手・ファイルのサービス・秘密のファイル・送り元のヘッダ）で確かめ直す
+  if (actor.access !== 'admin') await checkOverlaySpec(actor, t, desired.spec, current ? overlaySpecOf(current.view) : null, logger);
   const result = await onOverlayNode(t, () => resendOverlayWithLog(pool, actor.id, t.node ? t.node.name : null, { desired, file: t.file },
     (err) => logger.error(`重ねる分の送り直しを履歴に書けませんでした（rproxy には反映済み）: ${err}`)));
   return { rule: `${t.key.protocol}/${t.key.listen_addr}/${t.key.listen_port}`, result, ...(t.node ? { node: t.node.name } : {}) };
@@ -2338,6 +2227,9 @@ async function resendAllOverlays(actor: Actor, body: any, logger: AppLogger): Pr
           if (c.drift === null) continue;
           const rule = `${c.desired.key.protocol}/${c.desired.key.listen_addr}/${c.desired.key.listen_port}`;
           try {
+            // 利用者が作ったものは、その人として確かめ直す（自動の送り直しと同じ。保存した後で決まりが変わっていれば送らない）
+            await checkOverlayAsOwner({ id: c.desired.createdBy, admin: c.desired.createdByAdmin }, cfg,
+              { place: { target: node ? node.name : null, nodes: node ? [node] : cfg.nodes.map(toRproxyNode) }, file: c.file }, c.desired.spec, null, logger);
             const result = await resendOverlayWithLog(pool, actor.id, node ? node.name : null, c, (err) => logger.error(`重ねる分の送り直しを履歴に書けませんでした: ${err}`));
             results.push({ ...at, rule, result });
           } catch (err) {
@@ -2355,17 +2247,29 @@ async function resendAllOverlays(actor: Actor, body: any, logger: AppLogger): Pr
 // ダッシュボードの固定ルールの行に、UI の DB の重ねる分のずれ（overlayDrift）を付ける（#197）。
 // 管理者はすべて、ほかの人は自分が作った重ねる分だけ。lives はノードごとの GET /rules（聞けなかったノードは live が null）。
 // 返り値はノードごとのずれの数（ノードの一覧の drifted に足す）
-async function markOverlayDrift(actor: Actor, rows: ForwardRules[], lives: { node: RproxyNode | null; live: unknown; statuses: RproxyRuleStatus[] }[], logger: AppLogger): Promise<Map<string, number>> {
+// 管理者には、UI の DB にだけ残った行（ノードが設定から消えた・固定ルールが設定ファイルから消えた）も返す（stale。「UI の DB からだけ外す」）
+async function markOverlayDrift(actor: Actor, rows: ForwardRules[], lives: { node: RproxyNode | null; live: unknown; statuses: RproxyRuleStatus[] }[], logger: AppLogger): Promise<{ counts: Map<string, number>; stale: StaleOverlay[] }> {
   const counts = new Map<string, number>();
+  const stale: StaleOverlay[] = [];
   const reachable = lives.filter((l) => l.live !== null);
+  const admin = actor.access === 'admin';
   let desired: DesiredOverlay[];
   try {
-    desired = await loadDesiredOverlays(pool, reachable.map((l) => overlayNodeName(l)));
+    desired = await loadDesiredOverlays(pool, admin ? null : reachable.map((l) => overlayNodeName(l)));
   } catch (err) {
     logger.warn(`UI の DB の重ねる分（forward_rule_overlays）を読めません: ${err}`);
-    return counts;
+    return { counts, stale };
   }
-  if (actor.access !== 'admin') desired = desired.filter((d) => d.createdBy === actor.id);
+  if (!admin) desired = desired.filter((d) => d.createdBy === actor.id);
+  if (admin) {
+    const known = new Set(actor.cfg.configured ? actor.cfg.nodes.map((n) => n.name) : [DEFAULT_OVERLAY_NODE]);
+    for (const d of desired) {
+      const l = reachable.find((x) => overlayNodeName(x) === d.node);
+      const gone = !known.has(d.node)
+        || (l !== undefined && !l.statuses.some((st) => st.origin === 'static' && overlayKeyString({ protocol: String(st.protocol).toLowerCase() as Protocol, listen_addr: st.listen_addr, listen_port: st.listen_port }) === overlayKeyString(d.key)));
+      if (gone) stale.push({ node: d.node, protocol: d.key.protocol, addr: d.key.listen_addr, port: d.key.listen_port });
+    }
+  }
   for (const l of reachable) {
     const name = overlayNodeName(l);
     const mine = desired.filter((d) => d.node === name);
@@ -2384,7 +2288,32 @@ async function markOverlayDrift(actor: Actor, rows: ForwardRules[], lives: { nod
       logger.warn(`rproxy${l.node ? `（${l.node.name}）` : ''} の重ねる分を比べられません: ${err}`);
     }
   }
-  return counts;
+  return { counts, stale };
+}
+
+// POST /api/forward/overlay-forget {node, protocol, addr, port}：UI の DB にだけ残った重ねる分の行を消す（#197。管理者だけ）。
+// ノードが設定にない・その固定ルールがもうないときだけ（あれば「重ねる分を外す」を使う）。rproxy には何も送らない
+async function forgetStaleOverlay(actor: Actor, body: any): Promise<{ node: string; rule: string }> {
+  if (actor.access !== 'admin') throw new HttpError(403, 'UI の DB からだけ外せるのは管理者だけです。', 'forbidden_admin');
+  const key = overlayKey(body);
+  const node = typeof body?.node === 'string' && body.node !== '' ? body.node : DEFAULT_OVERLAY_NODE;
+  const cfg = actor.cfg;
+  const cfgNode = cfg.configured ? cfg.nodes.find((n) => n.name === node) : node === DEFAULT_OVERLAY_NODE ? null : undefined;
+  if (cfgNode !== undefined) {
+    let status: RproxyRuleStatus | null = null;
+    try {
+      status = await onOverlayNode({ node: cfgNode ? toRproxyNode(cfgNode) : null }, () => getRule(key));
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+    if (status?.origin === 'static') {
+      throw new HttpError(409, 'この固定ルールはまだあります。重ねる分は詳細画面の「重ねる分を外す」で外してください。', 'overlay_not_stale');
+    }
+  }
+  const rule = `${key.protocol}/${key.listen_addr}/${key.listen_port}`;
+  if ((await desiredOverlay(pool, node, key)) === null) throw new HttpError(404, 'UI の DB にこの重ねる分はありません。', 'not_found');
+  await removeDesiredOverlay(pool, node, key);
+  return { node, rule };
 }
 
 // ---- 1 つのノードへの送り直し（#98 の「ずれ」） ----
@@ -2921,6 +2850,10 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       } else if (query === 'overlay-resend') {
         const out = await resendStaticOverlay(actor, req.body, logger);
         logger.info(`Overlay resent to ${out.rule}${out.node ? ` on ${out.node}` : ''} (${out.result})`);
+        return res.status(200).json(out);
+      } else if (query === 'overlay-forget') {
+        const out = await forgetStaleOverlay(actor, req.body);
+        logger.info(`Stale overlay row removed: ${out.rule} on ${out.node}`);
         return res.status(200).json(out);
       } else if (query === 'overlay-resend-all') {
         const out = await resendAllOverlays(actor, req.body, logger);
