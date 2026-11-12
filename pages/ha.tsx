@@ -17,7 +17,10 @@ interface GroupView extends Partial<HaStatus> {
   readiness: NodeReadiness[];
 }
 
-const STATE_TEXT: Record<string, string> = { missing: '未登録', drift: 'ずれ', unknown: '問い合わせできない', shadowed: '同じキーを API のルール・ルールの組が使っている（送り直さない）' };
+const STATE_TEXT: Record<string, string> = { missing: '未登録', drift: 'ずれ', unknown: '問い合わせできない', shadowed: '同じキーを API のルール・ルールの組が使っている（送り直さない）', refused: '作った人として確かめ直して断った（送り直さない）' };
+
+// 送り直せる重ねる分のずれ（#197。昇格の判定には入れないが、「このノードを揃える」で送り直せる）
+const overlayToSync = (r: NodeReadiness) => r.issues.some((i) => (i.fields ?? []).includes('overlay') && (i.state === 'missing' || i.state === 'drift'));
 
 function formatAt(iso: string | null): string {
   if (!iso) return '-';
@@ -32,7 +35,7 @@ const ReadyCell: React.FC<{ r: NodeReadiness }> = ({ r }) => (
       <details>
         <summary className="cursor-pointer">
           {r.ready
-            ? <span className="badge bg-green-100 text-green-900 border border-green-300">{t('揃っています（API のルールと重なるもの {n} 件）', { n: r.issues.length })}</span>
+            ? <span className="badge bg-green-100 text-green-900 border border-green-300">{t('揃っています（知らせるだけのもの {n} 件：API のルールと重なるもの・固定ルールに重ねる分）', { n: r.issues.length })}</span>
             : <span className="badge bg-amber-100 text-amber-900 border border-amber-300">{t('{n} 件が揃っていません', { n: r.issues.length })}</span>}
         </summary>
         <ul className="mt-1 space-y-0.5 text-xs text-gray-800">
@@ -151,7 +154,7 @@ const HaPage: React.FC = () => {
                     <td>{g.roles[r.node] ? <RoleBadge role={g.roles[r.node]} /> : '-'}</td>
                     <td><ReadyCell r={r} /><div className="text-xs text-gray-600">{t('ルール {n} 件を確かめました', { n: r.checked })}</div></td>
                     <td className="whitespace-nowrap">
-                      <button type="button" className="btn-secondary text-xs px-2 py-1 max-lg:min-h-11" disabled={busy !== null || r.ready}
+                      <button type="button" className="btn-secondary text-xs px-2 py-1 max-lg:min-h-11" disabled={busy !== null || (r.ready && !overlayToSync(r))}
                         onClick={() => void syncNode(r.node)}>{busy === r.node ? '揃えています…' : 'このノードを揃える'}</button>
                     </td>
                   </tr>

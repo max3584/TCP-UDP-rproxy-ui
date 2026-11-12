@@ -3,7 +3,7 @@ import UsagePanel from '@/components/UsageChart';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { DashboardData, ForwardRules, GroupHa, NodeSummary, Protocol, RuleState } from '@/components/lib';
+import { DashboardData, ForwardRules, GroupHa, NodeSummary, Protocol, RuleState, StaleOverlay } from '@/components/lib';
 import Tabs, { tabPanelProps } from '@/components/Tabs';
 import {
   EMPTY_FILTER,
@@ -33,7 +33,7 @@ import {
   summarize,
   targetLabel,
   tlsBreakdown,
-  uptimeSecs, ConfigStatusView, driftedNodes, haSyncWarnings, nodeTotals, projectToNode, targetChoices } from '@/components/dashboard';
+  uptimeSecs, ConfigStatusView, driftedNodes, haSyncWarnings, nodeTotals, overlayDriftText, projectToNode, targetChoices } from '@/components/dashboard';
 import { READONLY_NODE_MESSAGE, ruleErrorText } from '@/components/messages';
 import { acmeProblem, worstAcmeState } from '@/components/acme';
 import { NodeVersionCell, VersionNotice, VersionsCard } from '@/components/VersionInfo';
@@ -47,6 +47,8 @@ function formatAt(iso: string): string {
 
 // 要確認のルールの説明（複数のノード：ずれ・act の判定の警告）
 function nodeIssueText(r: ForwardRules): string {
+  const overlay = overlayDriftText(r);
+  if (overlay !== null) return overlay;
   const drifted = driftedNodes(r);
   if (drifted.length > 0) return translate(`UI の定義とずれているノードがあります: ${drifted.join(', ')}`);
   if (r.ha?.warning === 'none') return translate('VIP を持つノードがありません');
@@ -264,9 +266,95 @@ const certIssueText = (r: ForwardRules): string | null => {
   return parts.length === 0 ? null : joinSentences(parts);
 };
 
-const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean }> = ({ rules, showTarget }) => (
+// 重ねる分のずれをまとめて送り直す（#197。管理者だけ）。target はノードのタブのノード（全体なら undefined）
+const OverlayResendAll: React.FC<{ count: number; target?: string; onDone: () => void }> = ({ count, target, onDone }) => {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [failed, setFailed] = useState('');
+  const run = async () => {
+    setBusy(true);
+    setMessage('');
+    setFailed('');
+    try {
+      const res = await fetch('/api/forward/overlay-resend-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(target !== undefined ? { target } : {}),
+      });
+      if (!res.ok) throw new Error(await errorDetail(res));
+      const out = await res.json() as { results: { node?: string; rule: string; result: string; error?: string }[] };
+      const errors = out.results.filter((r) => r.result === 'error');
+      setMessage(t('重ねる分を {done} 件送り直しました（失敗 {failed} 件）。', { done: out.results.length - errors.length, failed: errors.length }));
+      if (errors.length > 0) setFailed(errors.map((r) => `${r.node ? `${r.node} ` : ''}${r.rule}: ${r.error ?? ''}`).join(' / '));
+      onDone();
+    } catch (err) {
+      setFailed(`重ねる分をまとめて送り直せませんでした: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  // 送り直してずれがなくなっても、結果の文は残す
+  if (count === 0 && !message && !failed) return null;
+  return (
+    <div className="mb-3 text-sm text-gray-900" data-testid="overlay-resend-all">
+      {count > 0 && (
+        <button type="button" className="btn-secondary" disabled={busy} onClick={() => void run()}>
+          {t('重ねる分のずれ {count} 件をまとめて送り直す', { count })}
+        </button>
+      )}
+      {message && <p role="status" className="mt-1 text-green-800">{message}</p>}
+      {failed && <p role="alert" className="mt-1 text-red-800 break-all">{failed}</p>}
+    </div>
+  );
+};
+
+// UI の DB にだけ残った重ねる分の行（ノード・固定ルールが消えた。#197。管理者だけ）を消す
+const StaleOverlays: React.FC<{ stale: StaleOverlay[]; showNode: boolean; onDone: () => void }> = ({ stale, showNode, onDone }) => {
+  const [busy, setBusy] = useState('');
+  const [failed, setFailed] = useState('');
+  if (stale.length === 0 && !failed) return null;
+  const forget = async (o: StaleOverlay) => {
+    const id = `${o.node}|${o.protocol}|${o.addr}|${o.port}`;
+    setBusy(id);
+    setFailed('');
+    try {
+      const res = await fetch('/api/forward/overlay-forget', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(o),
+      });
+      if (!res.ok) throw new Error(await errorDetail(res));
+      onDone();
+    } catch (err) {
+      setFailed(`UI の DB から外せませんでした: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusy('');
+    }
+  };
+  return (
+    <div className="mb-3 text-sm text-gray-900" data-testid="overlay-stale">
+      <p>UI の DB にだけ残っている重ねる分（ノードか固定ルールがなくなりました）:</p>
+      <ul className="mt-1 space-y-1">
+        {stale.map((o) => {
+          const id = `${o.node}|${o.protocol}|${o.addr}|${o.port}`;
+          return (
+            <li key={id} className="flex flex-wrap items-center gap-2">
+              <span className="font-mono break-all">{showNode ? `${o.node} ` : ''}{o.protocol}/{o.addr}/{o.port}</span>
+              <button type="button" className="btn-secondary text-xs px-2 py-1 max-lg:min-h-11" disabled={busy !== ''} onClick={() => void forget(o)}>UI の DB からだけ外す</button>
+            </li>
+          );
+        })}
+      </ul>
+      {failed && <p role="alert" className="mt-1 text-red-800 break-all">{failed}</p>}
+    </div>
+  );
+};
+
+const AttentionCard: React.FC<{ rules: ForwardRules[]; showTarget: boolean; admin?: boolean; target?: string; stale?: StaleOverlay[]; onChanged?: () => void }> = ({ rules, showTarget, admin, target, stale, onChanged }) => (
   <section className="card p-4" aria-labelledby="card-attention">
     <h2 id="card-attention" className="card-title mb-3">要確認のルール</h2>
+    {admin && <OverlayResendAll count={rules.filter((r) => r.overlayDrift !== undefined).length} target={target} onDone={() => onChanged?.()} />}
+    {admin && <StaleOverlays stale={(stale ?? []).filter((o) => target === undefined || o.node === target)} showNode={showTarget} onDone={() => onChanged?.()} />}
     {rules.length === 0 ? (
       <p className="text-sm text-gray-700">失敗・未登録・証明書に問題のあるルールはありません。</p>
     ) : (
@@ -677,7 +765,7 @@ const DashboardPage: React.FC = () => {
 
           {manyNodes && tab === 'all' && <NodesCard nodes={nodes} groups={data.groups ?? []} rules={allRules} haLink={data.haSync !== undefined} />}
 
-          <AttentionCard rules={attention} showTarget={manyNodes} />
+          <AttentionCard rules={attention} showTarget={manyNodes} admin={data.admin === true} target={nodeView ? nodeView.name : undefined} stale={data.staleOverlays} onChanged={() => void load()} />
 
           {tab === 'all' && <UsagePanel id="card-usage" title={data.admin ? '通信量（すべてのルール）' : '通信量（自分のルール）'} />}
 

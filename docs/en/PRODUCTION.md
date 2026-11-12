@@ -66,6 +66,8 @@ mariadb -h db.example.com -u admin -p rproxy < /usr/share/rproxy-ui/db/schema.sq
 CREATE USER 'rproxy_ui'@'10.0.0.10' IDENTIFIED BY '<password>';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rules     TO 'rproxy_ui'@'10.0.0.10';
 GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@'10.0.0.10';
+-- desired state of overlays on static rules (migration 015)
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overlays TO 'rproxy_ui'@'10.0.0.10';
 
 -- for rproxy-api (only reads the rules at startup)
 CREATE USER 'rproxy'@'10.0.0.10' IDENTIFIED BY '<password>';

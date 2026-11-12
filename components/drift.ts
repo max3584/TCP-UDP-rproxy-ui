@@ -1,8 +1,10 @@
 // UI の定義（DB）と、ノードで実際に動いているルール（rproxy の GET /rules）の違い（#98 の「ずれ」）。React に依存しない。
 // どちらも画面の形（ForwardRule）に揃えてから項目ごとに比べる。稼働情報（state・stats・resolved など）は比べない。
 // 既定値・空の値の違い（null と省略、[] と省略、false と省略）はずれにしない
-import type { DriftField, ForwardRule } from './lib';
+import type { DriftField, ForwardRule, OverlayDrift } from './lib';
 import type { RproxyRuleStatus } from './rproxy';
+import { overlaySpecOf } from './overlay';
+import type { OverlaySpec } from './overlay';
 import { ruleFromStatus } from './dashboard';
 import { V04_KEYS, v04Fields } from './v04';
 import { targetCapsOf, withoutTargetCaps } from './targets';
@@ -30,6 +32,7 @@ export const DRIFT_LABELS: Record<DriftField, string> = {
   half_close_timeout: '片側が送り終えた後の時間切れ',
   connect_timeout: '宛先への接続の時間',
   target_max_connections: '宛先ごとの上限',
+  overlay: '固定ルールに重ねる分',
 };
 
 // 比べるための形：null / undefined / false / 空の配列・オブジェクトを省き、キーを並べ替える
@@ -101,4 +104,11 @@ export function needsRecreateOnNode(stored: ForwardRule, live: RproxyRuleStatus)
   return stored.sourceIp !== actual.sourceIp
     || (stored.srcPortEnd ?? null) !== (actual.srcPortEnd ?? null)
     || (stored.http === null) !== (actual.http === null);
+}
+
+// UI の DB の重ねる分（desired）と rproxy の今の重ねる分（live。なければ null）の違い（#197）。
+// DB には rproxy が PUT に答えた形を入れるので、同じ形の GET と比べられる（既定値・空の値の違いはルールと同じく見ない）
+export function overlayDrift(desired: OverlaySpec, live: OverlaySpec | null): OverlayDrift | null {
+  if (live === null) return 'missing';
+  return same(overlaySpecOf(desired), overlaySpecOf(live)) ? null : 'different';
 }

@@ -66,6 +66,8 @@ mariadb -h db.example.com -u admin -p rproxy < /usr/share/rproxy-ui/db/schema.sq
 CREATE USER 'rproxy_ui'@'10.0.0.10' IDENTIFIED BY '<password>';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rules     TO 'rproxy_ui'@'10.0.0.10';
 GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@'10.0.0.10';
+-- 固定ルールに重ねる分の正しい形（migration 015）
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overlays TO 'rproxy_ui'@'10.0.0.10';
 
 -- rproxy-api 用（起動時にルールを読むだけ）
 CREATE USER 'rproxy'@'10.0.0.10' IDENTIFIED BY '<password>';

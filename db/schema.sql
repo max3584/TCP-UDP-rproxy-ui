@@ -121,6 +121,22 @@ CREATE TABLE IF NOT EXISTS rproxy_rule_overlays (
   PRIMARY KEY (node, protocol, listen_addr, listen_port)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- UI が固定ルールに重ねた分の正しい形（UI #197。migration 015）。書くのも読むのも UI だけで、rproxy にない・違う重ねる分を「ずれ」に出して送り直す。
+-- node は UI のノードの名前（RPROXY_UI_NODES を使わない 1 台は default）
+CREATE TABLE IF NOT EXISTS forward_rule_overlays (
+  node        VARCHAR(32)  NOT NULL DEFAULT 'default' COMMENT 'ノードの名前（1 台なら default）',
+  protocol    VARCHAR(3)   NOT NULL COMMENT '固定ルールのキー',
+  listen_addr VARCHAR(45)  NOT NULL,
+  listen_port INT UNSIGNED NOT NULL,
+  spec        JSON         NOT NULL COMMENT 'PUT /rules/{key}/overlay の本文（rproxy が答えた形）',
+  created_by  VARCHAR(255) NULL COMMENT '作った UI の利用者（auth_id）。直せる人を決める',
+  created_by_admin TINYINT(1) NOT NULL DEFAULT 0 COMMENT '中身を確かめて最後に書いた人が管理者だったか（書くたびに付け直す。0 なら送り直す前に作った人として確かめ直す）',
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_by  VARCHAR(255) NULL COMMENT '最後に直した UI の利用者（auth_id）',
+  updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (node, protocol, listen_addr, listen_port)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 利用量の集計（UI #101。migration 010）。UI が rproxy の統計の差分を貯める（時刻は UTC）
 -- ルール・ノードごとの最後に見た数（差分を取るため。counters_since・started_at が変われば数え直したとみなす）
 CREATE TABLE IF NOT EXISTS usage_counters (

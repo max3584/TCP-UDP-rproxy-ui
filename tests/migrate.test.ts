@@ -11,6 +11,7 @@ describe('db/migrate.mjs', () => {
     expect(files.some((f: { version: string }) => f.version === '012_rproxy_rule_sets')).toBe(true);
     expect(files.some((f: { version: string }) => f.version === '013_rproxy_global')).toBe(true);
     expect(files.some((f: { version: string }) => f.version === '014_rproxy_rule_overlays')).toBe(true);
+    expect(files.some((f: { version: string }) => f.version === '015_forward_rule_overlays')).toBe(true);
     const first = files[0];
     expect(first.checksum).toBe(sha256(readFileSync('db/migrations/001_initial.sql', 'utf8')));
   });
@@ -38,6 +39,7 @@ describe('db/migrate.mjs', () => {
     expect(by['012_rproxy_rule_sets']).toBe('applied');
     expect(by['013_rproxy_global']).toBe('applied');
     expect(by['014_rproxy_rule_overlays']).toBe('applied');
+    expect(by['015_forward_rule_overlays']).toBe('applied');
     expect(plan.schema).toBe(false);
   });
 

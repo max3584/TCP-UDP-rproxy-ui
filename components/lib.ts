@@ -361,7 +361,20 @@ export interface ForwardRules extends ForwardRule {
   shadowedBy?: ShadowedBy;
   // 固定ルールに API で重ねる分の様子（rproxy-api v0.4.23 の overlay。重ねる分のある固定ルールだけ。UI #193）
   overlay?: OverlaySummary;
+  // UI の DB（forward_rule_overlays）の重ねる分が rproxy にない・違う（#197。管理者と、その重ねる分を作った人にだけ付く）
+  overlayDrift?: OverlayDrift;
 }
+
+// UI の DB にだけ残った重ねる分の行（#197。POST overlay-forget で消す）
+export interface StaleOverlay {
+  node: string;
+  protocol: string;
+  addr: string;
+  port: number;
+}
+
+// UI の DB の重ねる分と rproxy の今の重ねる分の違い（#197。components/drift.ts の overlayDrift）
+export type OverlayDrift = 'missing' | 'different';
 
 // ルールの 1 ノードでの稼働情報
 export interface NodeLiveState {
@@ -385,7 +398,9 @@ export interface NodeLiveState {
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
 export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled'
-  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'idle_timeout' | 'half_close_timeout' | 'connect_timeout' | 'target_max_connections';
+  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'idle_timeout' | 'half_close_timeout' | 'connect_timeout' | 'target_max_connections'
+  // 固定ルールに重ねる分（#197。ruleDrift は返さない。act / stb の揃い具合の issues で使う）
+  | 'overlay';
 
 export type NodeRole = 'active' | 'standby';
 
@@ -447,6 +462,8 @@ export interface DashboardData {
   rules: ForwardRules[];
   // 管理者（rproxy-admin）として見ているか（所有者の列を出す）
   admin?: boolean;
+  // UI の DB にだけ残った重ねる分の行（ノードが設定から消えた・固定ルールが設定ファイルから消えた。管理者だけ。#197）
+  staleOverlays?: StaleOverlay[];
   // ノードごとの状態（RPROXY_UI_NODES でノードを設定したときだけ）
   nodes?: NodeSummary[];
   // vip を設定した active_standby のグループの act
@@ -482,7 +499,8 @@ export interface NodeReadiness {
   // 調べたルールの数（そのノードを含む active_standby のグループのルール）
   checked: number;
   // 揃っていないもの（state は missing / drift / unknown（ノードに問い合わせできない））
-  issues: { target: string; key: string; state: 'missing' | 'drift' | 'unknown' | 'shadowed'; fields?: string[]; error?: string }[];
+  // refused は固定ルールに重ねる分を作った人として確かめ直して断ったもの（送り直さない。#197）。重ねる分（fields に overlay）は ready に入れない
+  issues: { target: string; key: string; state: 'missing' | 'drift' | 'unknown' | 'shadowed' | 'refused'; fields?: string[]; error?: string }[];
 }
 
 export interface PageAuthrized {

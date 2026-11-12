@@ -3,7 +3,7 @@
 // rproxy が features.static_overlay を返すノードでだけ出す。保存は GET の ETag を付けた丸ごとの置き換え（412 は読み直し）
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ForwardRules, TlsRoute } from './lib';
+import type { ForwardRules, OverlayDrift, TlsRoute } from './lib';
 import { DEFAULT_BALANCE, routeNames } from './lib';
 import type { CapabilityFeatures } from './rproxy';
 import HttpEditor from './HttpEditor';
@@ -41,6 +41,9 @@ interface OverlayInfo {
   secretItems: SecretItems;
   shape: { http: boolean; tlsRoutes: boolean };
   node?: string;
+  // UI の DB の重ねる分が rproxy にない・違う（#197）。送り直せるか
+  drift?: OverlayDrift;
+  canResend?: boolean;
 }
 
 const inputClass = 'border border-gray-300 rounded-sm px-2 py-1 w-full bg-white text-gray-900 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500';
@@ -155,7 +158,7 @@ const OverlayEditor: React.FC<{
 
   if (loadError) return <ErrorBanner message={loadError} onClose={() => setLoadError('')} />;
   // rproxy が重ねる分を使えない（features.static_overlay がない）ノードでは出さない
-  if (info === null || !info.available || (!info.shape.http && !info.shape.tlsRoutes && info.overlay === null)) return null;
+  if (info === null || !info.available || (!info.shape.http && !info.shape.tlsRoutes && info.overlay === null && !info.drift)) return null;
 
   const view = info.overlay;
   const spec = view ? overlaySpecOf(view) : {};
@@ -242,6 +245,32 @@ const OverlayEditor: React.FC<{
     }
   };
 
+  // UI の DB の重ねる分を rproxy に送り直す（#197。rproxy を再起動して消えた・API で直接変えられたとき）
+  const resend = async () => {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const res = await fetch('/api/forward/overlay-resend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocol: rule.protocol, addr: rule.srcAddr, port: rule.srcPort, ...(target !== undefined ? { target } : {}) }),
+      });
+      if (!res.ok) {
+        await fail(res, '重ねる分を送り直せませんでした');
+        return;
+      }
+      setNotice('UI の DB の重ねる分を送り直しました。');
+      setEditing(false);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      setError(`重ねる分を送り直せませんでした: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const reload = async () => {
     setStale(false);
     setError('');
@@ -266,6 +295,18 @@ const OverlayEditor: React.FC<{
         </div>
       )}
       {notice && <p role="status" className="mb-3 rounded-sm border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-900" data-testid="overlay-notice">{notice}</p>}
+      {info.drift && (
+        <div role="status" className="mb-3 rounded-sm border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="overlay-drift">
+          <p>
+            {info.drift === 'missing'
+              ? 'UI の DB にある重ねる分が rproxy にありません（rproxy を再起動したときなど）。'
+              : 'rproxy の重ねる分が UI の DB の内容と違います（rproxy の API で直接変えたときなど）。'}
+          </p>
+          {info.canResend && !editing && (
+            <button type="button" className="btn-secondary mt-2" disabled={busy} onClick={() => void resend()} data-testid="overlay-resend">UI の DB の内容を送り直す</button>
+          )}
+        </div>
+      )}
 
       {view === null ? (
         !editing && <p className="text-sm text-gray-700" data-testid="overlay-none">重ねる分はありません。</p>
@@ -318,7 +359,7 @@ const OverlayEditor: React.FC<{
           {(info.shape.http || info.shape.tlsRoutes) && (
             <button type="button" className="btn-primary" onClick={startEdit} data-testid="overlay-edit">{view === null ? '重ねる分を足す' : '重ねる分を直す'}</button>
           )}
-          {view !== null && <button type="button" className="btn-danger" onClick={() => setConfirmRemove(true)} data-testid="overlay-remove">重ねる分を外す</button>}
+          {(view !== null || info.drift === 'missing') && <button type="button" className="btn-danger" onClick={() => setConfirmRemove(true)} data-testid="overlay-remove">重ねる分を外す</button>}
         </div>
       )}
 

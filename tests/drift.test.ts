@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canon, needsRecreateOnNode, ruleDrift } from '@/components/drift';
+import { canon, needsRecreateOnNode, overlayDrift, ruleDrift } from '@/components/drift';
 import { haStatus, interfaceAddrs, isSpecificAddr, vipAddrs } from '@/components/ha';
 import { toRproxyRule } from '@/components/settingsdoc';
 import type { ForwardRule } from '@/components/lib';
@@ -103,5 +103,22 @@ describe('active / standby', () => {
   it('reads addresses from GET /interfaces', () => {
     expect([...interfaceAddrs({ interfaces: [{ addr: '192.0.2.10' }, { addr: 'FE80::1' }] })]).toEqual(['192.0.2.10', 'fe80::1']);
     expect(interfaceAddrs(null).size).toBe(0);
+  });
+});
+
+describe('overlayDrift (#197)', () => {
+  const spec = { http: { routes: [{ name: 'wiki', match: 'Host(`wiki.example.com`)', service: 'wiki' }], services: { wiki: { servers: [{ url: 'http://10.0.0.7:8080' }] } } } };
+
+  it('is missing when rproxy has none, and nothing when they match (view fields and empty values aside)', () => {
+    expect(overlayDrift(spec, null)).toBe('missing');
+    expect(overlayDrift(spec, { ...spec, http: { ...spec.http, middlewares: {} } })).toBeNull();
+    expect(overlayDrift(spec, { ...spec, rule: 'tcp/0.0.0.0/443', state: 'applied', etag: '"o-1"' } as never)).toBeNull();
+  });
+
+  it('is different when an item or the route order differs', () => {
+    expect(overlayDrift(spec, { http: { ...spec.http, services: { wiki: { servers: [{ url: 'http://10.0.0.8:8080' }] } } } })).toBe('different');
+    const two = { http: { ...spec.http, routes: [...spec.http.routes, { name: 'b', match: 'Host(`b.example.com`)', service: 'wiki' }] } };
+    expect(overlayDrift(two, { http: { ...two.http, routes: [...two.http.routes].reverse() } })).toBe('different');
+    expect(overlayDrift({ tls: { routes: [{ server_name: 'a.example.com', remote_addr: '10.0.0.6', remote_port: 443 }] } }, {})).toBe('different');
   });
 });
