@@ -68,11 +68,12 @@ node --version      # v24.x.x
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/rproxy-archive-keyring.gpg] https://max3584.github.io/rproxy-api stable main" \
   | sudo tee /etc/apt/sources.list.d/rproxy-api.list
-sudo apt update && sudo apt install rproxy-api rproxy-ui
+sudo apt update && sudo apt install rproxy-api   # 同じホストに置くなら先に入れる
+sudo apt install rproxy-ui
 ```
 
 - 入れただけでは起動しない。[3. 最初の設定](#3-最初の設定)を済ませてから `sudo systemctl enable --now rproxy-ui`。
-- rproxy-api を先に入れておくと、UI の env ファイルに制御 API の URL とトークンファイル（`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`）が入る。
+- rproxy-api を先に入れておくと、UI のインストールのときに env ファイルへ制御 API の URL とトークンファイル（`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`）が入る。rproxy-ui は rproxy-api を Suggests にしているだけなので、入れる順は apt が決めない。入らなかったときは `RPROXY_API_URL` と `RPROXY_API_TOKEN_FILE`（か `RPROXY_API_TOKEN`）を手で書く。
 - `rproxy-ui` ユーザーは rproxy-api と共有するグループ `rproxy` に入る。rproxy-api のトークンファイル・Unix ソケットをコピーせずに読める。
 - 既定の待ち受けは `127.0.0.1:3000`。外に見せるときは rproxy の固定ルールで TLS を終端して前に置く（[PRODUCTION.md の「ダッシュボードの公開（固定ルール）」](PRODUCTION.md#ダッシュボードの公開固定ルール)）。
 - NodeSource の nodejs のメジャー版の上げ方と pin の意味は [README の「インストール」](../README.md#インストールdebian--ubuntu)。
@@ -163,7 +164,7 @@ sudo sh -c 'set -a; . /etc/rproxy-ui/rproxy-ui.env; \
 | `KEYCLOAK_ISSUER`・`KEYCLOAK_CLIENT_ID`・`KEYCLOAK_CLIENT_SECRET` | Keycloak を使うとき |
 | `RPROXY_UI_TOKENS_FILE` | トークンでサインインするときのファイル |
 | `RPROXY_UI_USER_ROLE` | 利用者のロール。空（既定）なら管理者しか使えない |
-| `RPROXY_UI_NODES` | 複数の rproxy を使うときの `nodes.yaml`（[6.](#6-複数のノードとグループ)）。書くと `RPROXY_API_URL`・`RPROXY_API_TOKEN` は使わない |
+| `RPROXY_UI_NODES` | 複数の rproxy を使うときの `nodes.yaml`（[6.](#6-複数のノードとグループ)）。書くと `RPROXY_API_URL`・`RPROXY_API_TOKEN`・`RPROXY_API_TOKEN_FILE` は使わない |
 
 ほかの変数（セッションの長さ・利用量・利用者の制限・mTLS・act / stb）はファイルの中のコメントと [README の「開発」の環境変数の一覧](../README.md#開発)。
 
@@ -195,12 +196,17 @@ tokens:
 
 rproxy-api v0.4.23（rproxy-api #401）から、`admin` でないトークンは自分が作ったルール・重ねる分・組しか直せない（ほかは `403 not_owner`）。
 API のルールの画面と送り直しは、ほかのトークンが作ったルールを UI のトークンで変えるので、`admin` でないと止まる。
-それらを使わず、UI が戻したルールだけを直せばよい構成なら、`rules:read`・`rules:write` に `allow_restored: true` でもよい（rproxy-api の docs/API.md）。
-UI のトークンに `persist: true` は付けない（UI は自分の DB に保存するので二重になる）。
+それらを使わず、UI が戻したルールだけを直せばよい構成なら、`rules:read`・`rules:write` に `allow_restored: true` でもよい（rproxy-api の docs/API.md）。`allow_restored` は rproxy-api v0.4.23 以上でだけ足す（v0.4.22 以前の rproxy-api は知らない項目があるとトークンファイル全体を読まず、すべてのトークンが通らなくなる）。版を戻す前に外す。
+
+UI のトークンに `persist: true` を付けるかは、次の引き換えで決める（ふつうは付けない）。
+
+- 付けないと：UI から作った固定ルールに重ねる分は rproxy のメモリにだけあり、rproxy を再起動すると消える（再起動しない更新では引き継ぐ）。UI は重ねる分を送り直さない（ずれ・送り直しはルールだけ）。消えたら、履歴（`OVERLAY` の行）の内容を見て作り直す。1 行に 1 トークンの書き方のトークンも `persist` はない。
+- 付けると：UI が作るルールまで rproxy の API のルール（`origin: api`）になり、rproxy の `rproxy_rules` にも入る（UI の DB と二重）。UI はそれを「API のルールが同じキーを使っている」と見て、変更・再開・送り直しを 409 `shadowed` で断る。UI のルールの管理が止まるので勧めない。
+- 残したい重ねる分は、管理者が `persist: true` の別のトークンで rproxy の API から作る手もある（一度保存された重ねる分は、その後どのトークンで直しても保存される。rproxy-api の docs/API.md の「固定ルールに重ねる分」）。そのときは UI の履歴に作った人が残らないので、UI では管理者だけが直せる。
 
 - トークンファイルを変えたら `sudo systemctl reload rproxy-api`。
 - UI 側は `RPROXY_API_TOKEN` に平文で書くか、UI だけが読むファイル（`root:rproxy-ui` 0640）に 1 行で書いて `RPROXY_API_TOKEN_FILE` で指す。YAML のトークンファイルは SHA-256 しかないので、UI からは指せない。
-- Unix ソケットにするなら、rproxy 側で `RPROXY_API_SOCKET=/run/rproxy/api.sock` と `RPROXY_API_SOCKET_GROUP=rproxy`、UI 側で `RPROXY_API_URL=unix:/run/rproxy/api.sock`（トークンは TCP と同じく要る）。global の設定のうち守りに関わる項目（`trusted_proxies`・`access_log`・`crowdsec`・`geoip`・`acme`）は Unix ソケットからしか変えられない。
+- Unix ソケットにするなら、rproxy 側で `RPROXY_API_SOCKET=/run/rproxy/api.sock` と `RPROXY_API_SOCKET_GROUP=rproxy`、UI 側で `RPROXY_API_URL=unix:/run/rproxy/api.sock`（トークンは TCP と同じく要る）。global の設定のうち守りに関わる項目（`trusted_proxies`・`access_log`・`crowdsec`・`geoip`・`acme`）は、既定では Unix ソケットからしか変えられない（rproxy-api の `RPROXY_API_RELOAD_UNIX_ONLY=false` で TCP からも変えられるが、勧めない）。
 - UI を別のホストに置くなら制御 API は `https://` にする。クライアント証明書（mTLS）は `RPROXY_API_TLS_CERT`・`RPROXY_API_TLS_KEY`・`RPROXY_API_TLS_CA`。
 
 起動して確かめる。
@@ -210,7 +216,7 @@ sudo systemctl enable --now rproxy-ui
 journalctl -u rproxy-ui -f
 ```
 
-ダッシュボードに「rproxy に接続できます」と出て、サイドバーの下に UI と rproxy-api の版が出ればよい。
+ダッシュボードの「rproxy」の欄に「接続できます」と出て、サイドバーの下に UI と rproxy-api の版が出ればよい。
 
 ## 4. サインイン
 
@@ -328,6 +334,7 @@ rproxy-api v0.4.23 以上（`features.static_overlay`）なら、固定ルール
 - 保存は丸ごとの置き換え。ほかの人が先に変えていれば 412。「読み直す」で今の内容にしてからやり直す。
 - 重ねる分はノードごと（グループにまとめない）。
 - 管理者でない人は、自分が作った重ねる分だけを直せる。設定ファイルのサービスと、秘密のファイルを持つものは使えない。
+- 保存されるかは UI のトークンの `persist` による。ふつうの UI のトークン（`persist` なし）では、rproxy を再起動すると消え、UI も送り直さない（[3.3](#33-rproxy-api-への接続とトークンのスコープ)）。そのとき画面に「DB に保存できていません」の印は出ない（rproxy が `persisted` を返さないため）。
 - 詳しくは [README の「使い方」の「固定ルールに重ねる分」](../README.md#使い方)。
 
 ### 5.3 global の設定（acme・geoip・タイムアウト）
@@ -443,7 +450,7 @@ sudo apt update && sudo apt upgrade
 
 - .deb：`journalctl -u rproxy-ui`（`-f` で追う）。起動時の誤り（`nodes.yaml`・トークンのファイルの権限・DB の TLS・mTLS の組）は理由を出して止まる。各ノードの rproxy-api の版も起動時に出る。
 - rproxy が UI のトークンを断ったとき（401・403・429）は、UI のログに理由と確かめるものが出る。
-- Kubernetes：`kubectl -n rproxy-ui logs deploy/rproxy-ui`。migration の失敗は `kubectl -n rproxy-ui logs job/<リリース>-rproxy-ui-migrate`。
+- Kubernetes：`kubectl -n rproxy-ui logs deploy/rproxy-ui`。migration の失敗は `kubectl -n rproxy-ui logs job/rproxy-ui-migrate`（リリース名が `rproxy-ui` のとき。名前の決まりは [KUBERNETES.md の「バックアップと戻し方」](KUBERNETES.md#バックアップと戻し方)の終わり）。
 - rproxy-api のログ（作成・変更・削除の `event: "audit"` など）は rproxy-api の側（`/var/log/rproxy/`）。
 
 ### 7.5 セキュリティの注意
@@ -462,9 +469,9 @@ sudo apt update && sudo apt upgrade
 | 出るもの | わけ | すること |
 |---|---|---|
 | 403 `no_role`（「権限がありません」） | 管理者のロールがなく、`RPROXY_UI_USER_ROLE` が空か、そのロールがない | ロールを付けるか、`RPROXY_UI_USER_ROLE` を書く。トークンなら `role` を見る |
-| 502 `forbidden`（「UI が使う rproxy のトークンに、この操作の権限がありません」） | UI のトークンのスコープか `allow_listen_ports` が足りない | UI のトークンを `admin` にする（[3.3](#33-rproxy-api-への接続とトークンのスコープ)） |
-| 502 `not_owner` | rproxy-api v0.4.23 以上で、UI のトークンが `admin` でない。API のルールの編集・削除、送り直し、rproxy の再起動で戻したルールの変更で出る | UI のトークンを `admin` にする（それらを使わないなら `allow_restored: true`）。`reload rproxy-api` |
-| 403 `global_forbidden` | global の設定に要る `admin` が UI のトークンにない | UI のトークンを `admin` にする |
+| 502 `forbidden`（「UI が使う rproxy のトークンに、この操作の権限がありません」） | UI のトークンのスコープが足りないか、トークンの `allow_listen_ports`・`allow_certs` の外 | UI のトークンを `admin` にする（[3.3](#33-rproxy-api-への接続とトークンのスコープ)）。`allow_listen_ports`・`allow_certs` は `admin` でも効くので、広げるか外す。画面の文は「rules:read と rules:write」と言うが、文が古い。`admin` が正しい |
+| 502 `not_owner` | rproxy-api v0.4.23 以上で、UI のトークンが `admin` でない。API のルールの編集・削除、送り直し、rproxy の再起動で戻したルールの変更で出る | UI のトークンを `admin` にする（それらを使わないなら `allow_restored: true`。rproxy-api v0.4.23 以上でだけ足す（v0.4.22 以前の rproxy-api は知らない項目があるとトークンファイル全体を読まず、すべてのトークンが通らなくなる）。版を戻す前に外す）。`reload rproxy-api` |
+| 502 `global_forbidden` | global の設定に要る `admin` が UI のトークンにない | UI のトークンを `admin` にする |
 | 403 `global_unix_only` | 守りに関わる項目を TCP のノードから変えようとした | そのノードの url を `unix:/…` のソケットにする |
 | 502 `rproxy_unauthorized` | UI のトークンが違う・期限切れ | `RPROXY_API_TOKEN`・`RPROXY_API_TOKEN_FILE` と rproxy のトークンファイルを見る |
 | 502 `rproxy_locked_out` | UI の認証の失敗が続き、rproxy が UI を一時的に止めた | トークン・クライアント証明書を直す。止める時間が過ぎれば解ける |
@@ -485,7 +492,8 @@ sudo apt update && sudo apt upgrade
 | `tls_config`、ファイルの持ち主の断り | 証明書・鍵のパスや中身、持ち主・モードの誤り | `rproxy-api:rproxy` 0640 にする。画面に直し方が出る |
 | 「usage_* の表がありません（…010_usage.sql…）」・「attr 列がありません（…011…）」 | 利用量の migration がない | `010`・`011` を当てる（`migrate.mjs`） |
 | 500 `nodes_db`（「forward_rule_targets を更新できません」） | 複数のノードの migration（`006`・`007`）がないか、権限がない | 当てて、UI のユーザーに権限を渡す |
-| 重ねる分の保存で「DB（rproxy_rule_overlays）に保存できませんでした」 | migration `014` がないか、rproxy のユーザーの権限がない | `014` を当て、rproxy のユーザーに権限を渡す。今は効いているが再起動で消える |
+| 重ねる分の保存で「DB（rproxy_rule_overlays）に保存できませんでした」 | `persist: true` のトークンの重ねる分で、migration `014` がないか、rproxy のユーザーの権限がない | `014` を当て、rproxy のユーザーに権限を渡す。今は効いているが再起動で消える |
+| rproxy を再起動したら重ねる分が消えた | UI のトークンに `persist` がない（ふつう）。重ねる分は rproxy のメモリにだけあった。migration `014` の問題ではない | 履歴の `OVERLAY` の行を見て作り直す（[3.3](#33-rproxy-api-への接続とトークンのスコープ)） |
 | UI が起動しない | `nodes.yaml` の誤り、トークンのファイルの持ち主・権限、DB の TLS の設定、`http://` の URL と `RPROXY_API_TLS_*` の組など | `journalctl -u rproxy-ui` の理由を見て直す |
 | ダッシュボードに版の注意 | rproxy-api が v0.3.5 より古いか、版を返さない（v0.3.18 より前） | rproxy-api を上げる |
 

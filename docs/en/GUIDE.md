@@ -68,11 +68,12 @@ Then install from rproxy-api's apt repository (together with rproxy-api if it ru
 sudo curl -fsSLo /usr/share/keyrings/rproxy-archive-keyring.gpg https://max3584.github.io/rproxy-api/rproxy-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/rproxy-archive-keyring.gpg] https://max3584.github.io/rproxy-api stable main" \
   | sudo tee /etc/apt/sources.list.d/rproxy-api.list
-sudo apt update && sudo apt install rproxy-api rproxy-ui
+sudo apt update && sudo apt install rproxy-api   # first, if it runs on the same host
+sudo apt install rproxy-ui
 ```
 
 - Installing does not start it. Finish [3. First setup](#3-first-setup), then run `sudo systemctl enable --now rproxy-ui`.
-- If rproxy-api is installed first, the UI's env file gets the control API URL and the token file (`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`).
+- If rproxy-api is installed first, installing the UI puts the control API URL and the token file (`RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens`) into the env file. rproxy-ui only Suggests rproxy-api, so apt does not order them. If they were not filled in, write `RPROXY_API_URL` and `RPROXY_API_TOKEN_FILE` (or `RPROXY_API_TOKEN`) by hand.
 - The `rproxy-ui` user joins the group `rproxy` shared with rproxy-api. It reads rproxy-api's token file and Unix socket without copying them.
 - It listens on `127.0.0.1:3000` by default. To expose it, put a static rule of rproxy in front that terminates TLS ([PRODUCTION.md, "Publishing the dashboard (static rule)"](PRODUCTION.md#publishing-the-dashboard-static-rule)).
 - How to change NodeSource's major version and what the pin does: [README, "Installation"](../../README.en.md#installation-debian--ubuntu).
@@ -163,7 +164,7 @@ With the .deb it is `/etc/rproxy-ui/rproxy-ui.env` (`root:root` 600). After chan
 | `KEYCLOAK_ISSUER`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET` | When using Keycloak |
 | `RPROXY_UI_TOKENS_FILE` | The file for token sign-in |
 | `RPROXY_UI_USER_ROLE` | The role of users. Empty (default) means only administrators can use the UI |
-| `RPROXY_UI_NODES` | `nodes.yaml` for several rproxy instances ([6.](#6-multiple-nodes-and-groups)). When set, `RPROXY_API_URL` and `RPROXY_API_TOKEN` are not used |
+| `RPROXY_UI_NODES` | `nodes.yaml` for several rproxy instances ([6.](#6-multiple-nodes-and-groups)). When set, `RPROXY_API_URL`, `RPROXY_API_TOKEN` and `RPROXY_API_TOKEN_FILE` are not used |
 
 Other variables (session length, usage, user limits, mTLS, act / stb): the comments in the file and [the variable list under "Development" in the README](../../README.en.md#development).
 
@@ -195,12 +196,17 @@ Why `admin`:
 
 From rproxy-api v0.4.23 (rproxy-api #401), a token without `admin` may only change the rules, overlays and rule sets it created (others get `403 not_owner`).
 The API rules screen and resending change rules other tokens created with the UI's token, so they stop working without `admin`.
-A setup that uses neither and only changes the rules the UI restored may use `rules:read`, `rules:write` and `allow_restored: true` instead (rproxy-api's docs/en/API.md).
-Do not give the UI's token `persist: true` (the UI stores rules in its own DB, so they would be stored twice).
+A setup that uses neither and only changes the rules the UI restored may use `rules:read`, `rules:write` and `allow_restored: true` instead (rproxy-api's docs/en/API.md). For `allow_restored`, add it only on rproxy-api v0.4.23 or later (v0.4.22 and earlier do not read the token file at all when it has an unknown field, so every token stops working); remove it before going back to an older version.
+
+Whether to give the UI's token `persist: true` is a trade-off (normally do not):
+
+- Without it: overlays on static rules made from the UI live only in rproxy's memory and are lost when rproxy restarts (an upgrade without a restart hands them over). The UI does not resend overlays (drift and resend cover rules only). If one is lost, recreate it from the contents in the history (`OVERLAY` rows). A token in the one-per-line format has no `persist` either.
+- With it: even the rules the UI creates become rproxy API rules (`origin: api`) and also go into rproxy's `rproxy_rules` (stored twice with the UI's DB). The UI then sees them as "an API rule uses the same key" and refuses changes, resumes and resends with 409 `shadowed`. This stops the UI from managing its rules, so it is not recommended.
+- To keep an overlay across restarts, an administrator can also create it through the rproxy API with a separate `persist: true` token (once an overlay has been stored, later changes by any token are stored too; "Overlays on static rules" in rproxy-api's docs/en/API.md). The UI's history then has no creator for it, so only administrators can change it in the UI.
 
 - After changing the token file, run `sudo systemctl reload rproxy-api`.
 - On the UI side, put the token in plain text in `RPROXY_API_TOKEN`, or write it on one line in a file only the UI reads (`root:rproxy-ui` 0640) and point `RPROXY_API_TOKEN_FILE` at it. A YAML token file holds only SHA-256 values, so the UI cannot point at it.
-- For a Unix socket, set `RPROXY_API_SOCKET=/run/rproxy/api.sock` and `RPROXY_API_SOCKET_GROUP=rproxy` on rproxy, and `RPROXY_API_URL=unix:/run/rproxy/api.sock` on the UI (a token is still needed, as over TCP). The security-related global items (`trusted_proxies`, `access_log`, `crowdsec`, `geoip`, `acme`) can only be changed over the Unix socket.
+- For a Unix socket, set `RPROXY_API_SOCKET=/run/rproxy/api.sock` and `RPROXY_API_SOCKET_GROUP=rproxy` on rproxy, and `RPROXY_API_URL=unix:/run/rproxy/api.sock` on the UI (a token is still needed, as over TCP). The security-related global items (`trusted_proxies`, `access_log`, `crowdsec`, `geoip`, `acme`) can by default only be changed over the Unix socket (rproxy-api's `RPROXY_API_RELOAD_UNIX_ONLY=false` allows TCP too, which is not recommended).
 - If the UI runs on another host, use `https://` for the control API. Client certificates (mTLS): `RPROXY_API_TLS_CERT`, `RPROXY_API_TLS_KEY`, `RPROXY_API_TLS_CA`.
 
 Start it and check.
@@ -210,7 +216,7 @@ sudo systemctl enable --now rproxy-ui
 journalctl -u rproxy-ui -f
 ```
 
-The dashboard should say rproxy is reachable, and the bottom of the sidebar should show the UI and rproxy-api versions.
+The "rproxy" tile on the dashboard should say "Reachable", and the bottom of the sidebar should show the UI and rproxy-api versions.
 
 ## 4. Sign-in
 
@@ -328,6 +334,7 @@ With rproxy-api v0.4.23 or later (`features.static_overlay`), "Overlay" in a sta
 - Saving replaces the whole overlay. If someone changed it first, you get 412. Use "Reload" to load the current contents, then try again.
 - Overlays are per node (not per group).
 - People who are not administrators may only change overlays they created. They cannot use the settings file's services, nor anything with secret files.
+- Whether it is stored depends on `persist` of the UI's token. With a normal UI token (no `persist`), it is lost when rproxy restarts and the UI does not resend it ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)). The screen shows no "not stored in the DB" mark then (rproxy does not return `persisted`).
 - Details: "Overlays on static rules" under [README, "Usage"](../../README.en.md#usage).
 
 ### 5.3 Global settings (acme, geoip, timeouts)
@@ -443,7 +450,7 @@ When keepalived moves the VIP of an `active_standby` group, this keeps a standby
 
 - .deb: `journalctl -u rproxy-ui` (`-f` to follow). Startup errors (`nodes.yaml`, token file permissions, DB TLS, mTLS combinations) stop it with the reason. Each node's rproxy-api version is also logged at startup.
 - When rproxy refuses the UI's token (401, 403, 429), the UI logs the reason and what to check.
-- Kubernetes: `kubectl -n rproxy-ui logs deploy/rproxy-ui`. Failed migrations: `kubectl -n rproxy-ui logs job/<release>-rproxy-ui-migrate`.
+- Kubernetes: `kubectl -n rproxy-ui logs deploy/rproxy-ui`. Failed migrations: `kubectl -n rproxy-ui logs job/rproxy-ui-migrate` (with the release name `rproxy-ui`; the naming rule is at the end of [KUBERNETES.md, "Backup and restore"](KUBERNETES.md#backup-and-restore)).
 - rproxy-api's logs (such as `event: "audit"` for creating, changing and deleting) are on the rproxy-api side (`/var/log/rproxy/`).
 
 ### 7.5 Security notes
@@ -462,9 +469,9 @@ Look for the `code` after the error text on the screen. When rproxy refuses the 
 | What you see | Why | What to do |
 |---|---|---|
 | 403 `no_role` | No administrator role, and `RPROXY_UI_USER_ROLE` is empty or the person lacks that role | Give the role, or set `RPROXY_UI_USER_ROLE`. For tokens, check `role` |
-| 502 `forbidden` ("The rproxy token used by the UI lacks the permission for this.") | The UI's token lacks scopes or `allow_listen_ports` | Make the UI's token `admin` ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)) |
-| 502 `not_owner` | rproxy-api v0.4.23 or later and the UI's token is not `admin`. Seen when editing or deleting API rules, resending, or changing rules restored at an rproxy restart | Make the UI's token `admin` (or `allow_restored: true` if you use none of those). `reload rproxy-api` |
-| 403 `global_forbidden` | The UI's token lacks the `admin` that global settings need | Make the UI's token `admin` |
+| 502 `forbidden` ("The rproxy token used by the UI lacks the permission for this.") | The UI's token lacks scopes, or the action is outside the token's `allow_listen_ports` / `allow_certs` | Make the UI's token `admin` ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)). `allow_listen_ports` and `allow_certs` apply even to `admin`, so widen or remove them. The screen text mentions "rules:read and rules:write"; that text is older, and `admin` is correct |
+| 502 `not_owner` | rproxy-api v0.4.23 or later and the UI's token is not `admin`. Seen when editing or deleting API rules, resending, or changing rules restored at an rproxy restart | Make the UI's token `admin` (or `allow_restored: true` if you use none of those; add it only on rproxy-api v0.4.23 or later (v0.4.22 and earlier do not read the token file at all when it has an unknown field, so every token stops working); remove it before going back to an older version). `reload rproxy-api` |
+| 502 `global_forbidden` | The UI's token lacks the `admin` that global settings need | Make the UI's token `admin` |
 | 403 `global_unix_only` | A security-related item was changed through a TCP node | Set that node's url to the `unix:/…` socket |
 | 502 `rproxy_unauthorized` | The UI's token is wrong or expired | Check `RPROXY_API_TOKEN` / `RPROXY_API_TOKEN_FILE` and rproxy's token file |
 | 502 `rproxy_locked_out` | Repeated authentication failures made rproxy block the UI for a while | Fix the token or client certificate. It clears when the time passes |
@@ -485,7 +492,8 @@ Look for the `code` after the error text on the screen. When rproxy refuses the 
 | `tls_config`, file owner refusals | Wrong certificate or key path or contents, or wrong owner or mode | Use `rproxy-api:rproxy` 0640. The screen shows how to fix it |
 | "The usage_* tables are missing (…010_usage.sql)", "usage_hourly and usage_daily have no attr column (…011_usage_attr.sql)" | The usage migrations are missing | Apply `010` and `011` (`migrate.mjs`) |
 | 500 `nodes_db` ("Cannot update forward_rule_targets …") | The migrations for several nodes (`006`, `007`) are missing, or rights are missing | Apply them and grant rights to the UI's user |
-| Saving an overlay says "rproxy could not store it in the database (rproxy_rule_overlays …)" | Migration `014` is missing, or rproxy's user lacks rights | Apply `014` and grant rights to rproxy's user. It works now but is lost at a restart |
+| Saving an overlay says "rproxy could not store it in the database (rproxy_rule_overlays …)" | An overlay of a `persist: true` token, and migration `014` is missing or rproxy's user lacks rights | Apply `014` and grant rights to rproxy's user. It works now but is lost at a restart |
+| Overlays disappeared after rproxy restarted | The UI's token has no `persist` (the normal case), so the overlay lived only in rproxy's memory. Not a migration `014` problem | Recreate it from the `OVERLAY` rows in the history ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)) |
 | The UI does not start | Errors in `nodes.yaml`, the token file's owner or mode, DB TLS settings, an `http://` URL with `RPROXY_API_TLS_*`, and so on | Read the reason in `journalctl -u rproxy-ui` and fix it |
 | A version notice on the dashboard | rproxy-api is older than v0.3.5, or does not return its version (before v0.3.18) | Upgrade rproxy-api |
 
