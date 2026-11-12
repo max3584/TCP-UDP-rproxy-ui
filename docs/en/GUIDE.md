@@ -200,9 +200,8 @@ A setup that uses neither and only changes the rules the UI restored may use `ru
 
 Whether to give the UI's token `persist: true` is a trade-off (normally do not):
 
-- Without it: overlays on static rules made from the UI live only in rproxy's memory and are lost when rproxy restarts (an upgrade without a restart hands them over). The UI does not resend overlays (drift and resend cover rules only). If one is lost, recreate it from the contents in the history (`OVERLAY` rows). A token in the one-per-line format has no `persist` either.
+- Without it: overlays on static rules made from the UI live only in rproxy's memory and are lost when rproxy restarts (an upgrade without a restart hands them over). The UI keeps the desired state of its overlays in its own database (`forward_rule_overlays`, migration `015`), so a lost or different overlay shows as drift ("Rules needing attention" on the dashboard and "Overlay" in the rule's details). An administrator puts it back with "Resend all N drifted overlays" or "Resend from the UI database" in the details (on nodes of an act / stb group the automatic resend puts it back too). A token in the one-per-line format has no `persist` either. This is normally fine.
 - With it: even the rules the UI creates become rproxy API rules (`origin: api`) and also go into rproxy's `rproxy_rules` (stored twice with the UI's DB). The UI then sees them as "an API rule uses the same key" and refuses changes, resumes and resends with 409 `shadowed`. This stops the UI from managing its rules, so it is not recommended.
-- To keep an overlay across restarts, an administrator can also create it through the rproxy API with a separate `persist: true` token (once an overlay has been stored, later changes by any token are stored too; "Overlays on static rules" in rproxy-api's docs/en/API.md). The UI's history then has no creator for it, so only administrators can change it in the UI.
 
 - After changing the token file, run `sudo systemctl reload rproxy-api`.
 - On the UI side, put the token in plain text in `RPROXY_API_TOKEN`, or write it on one line in a file only the UI reads (`root:rproxy-ui` 0640) and point `RPROXY_API_TOKEN_FILE` at it. A YAML token file holds only SHA-256 values, so the UI cannot point at it.
@@ -334,7 +333,7 @@ With rproxy-api v0.4.23 or later (`features.static_overlay`), "Overlay" in a sta
 - Saving replaces the whole overlay. If someone changed it first, you get 412. Use "Reload" to load the current contents, then try again.
 - Overlays are per node (not per group).
 - People who are not administrators may only change overlays they created. They cannot use the settings file's services, nor anything with secret files.
-- Whether it is stored depends on `persist` of the UI's token. With a normal UI token (no `persist`), it is lost when rproxy restarts and the UI does not resend it ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)). The screen shows no "not stored in the DB" mark then (rproxy does not return `persisted`).
+- The UI keeps the desired state of overlays in its own database (`forward_rule_overlays`, migration `015`). With a normal UI token (no `persist`) an overlay is lost when rproxy restarts, but the UI shows it as drift ("The overlay in the UI database is missing on rproxy") and can resend it ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)). Whoever may change the overlay (administrators and its creator) can resend it; only administrators can resend in bulk. Removing an overlay also deletes its row in the UI database.
 - Details: "Overlays on static rules" under [README, "Usage"](../../README.en.md#usage).
 
 ### 5.3 Global settings (acme, geoip, timeouts)
@@ -493,7 +492,8 @@ Look for the `code` after the error text on the screen. When rproxy refuses the 
 | "The usage_* tables are missing (…010_usage.sql)", "usage_hourly and usage_daily have no attr column (…011_usage_attr.sql)" | The usage migrations are missing | Apply `010` and `011` (`migrate.mjs`) |
 | 500 `nodes_db` ("Cannot update forward_rule_targets …") | The migrations for several nodes (`006`, `007`) are missing, or rights are missing | Apply them and grant rights to the UI's user |
 | Saving an overlay says "rproxy could not store it in the database (rproxy_rule_overlays …)" | An overlay of a `persist: true` token, and migration `014` is missing or rproxy's user lacks rights | Apply `014` and grant rights to rproxy's user. It works now but is lost at a restart |
-| Overlays disappeared after rproxy restarted | The UI's token has no `persist` (the normal case), so the overlay lived only in rproxy's memory. Not a migration `014` problem | Recreate it from the `OVERLAY` rows in the history ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)) |
+| Overlays disappeared after rproxy restarted | The UI's token has no `persist` (the normal case), so the overlay lived only in rproxy's memory. Not a migration `014` problem | Use "Resend all N drifted overlays" under "Rules needing attention" on the dashboard, or "Resend from the UI database" in the details ([3.3](#33-connecting-to-rproxy-api-and-the-tokens-scopes)) |
+| Saving an overlay gives 500 `overlay_db` ("no overlay table (forward_rule_overlays)") | Migration `015` is missing or the UI's user lacks rights | Apply `015` and grant rights to the UI's user (nothing was sent to rproxy) |
 | The UI does not start | Errors in `nodes.yaml`, the token file's owner or mode, DB TLS settings, an `http://` URL with `RPROXY_API_TLS_*`, and so on | Read the reason in `journalctl -u rproxy-ui` and fix it |
 | A version notice on the dashboard | rproxy-api is older than v0.3.5, or does not return its version (before v0.3.18) | Upgrade rproxy-api |
 

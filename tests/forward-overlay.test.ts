@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
     getOverlay: vi.fn(),
     putOverlay: vi.fn(),
     deleteOverlay: vi.fn(),
+    listRules: vi.fn(),
     nodes: [] as string[],
   };
 });
@@ -44,6 +45,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => {
     getOverlay: seen(mocks.getOverlay),
     putOverlay: seen(mocks.putOverlay),
     deleteOverlay: seen(mocks.deleteOverlay),
+    listRules: seen(mocks.listRules),
   };
 });
 
@@ -128,6 +130,7 @@ beforeEach(() => {
   mocks.getOverlay.mockRejectedValue(notFound());
   mocks.putOverlay.mockImplementation(async (_k: unknown, spec: Record<string, unknown>) => ({ view: view(spec, { etag: '"o-2"' }), etag: '"o-2"' }));
   mocks.deleteOverlay.mockResolvedValue(undefined);
+  mocks.listRules.mockResolvedValue([]);
 });
 
 describe('GET overlay', () => {
@@ -475,5 +478,170 @@ describe('nodes: overlays are per node (static rules come from each node\'s file
       expect((await call('overlay', undefined, 'GET', { ...key, target: 'b' })).body.code).toBe('node_not_allowed');
       expect((await call('overlay-put', { ...key, target: 'a', overlay: wiki, etag: null })).status).toBe(200);
     });
+  });
+});
+
+// UI の DB の正しい形（forward_rule_overlays。migration 015、#197）
+describe('desired state of overlays in the UI database (#197)', () => {
+  type Row = { node: string; protocol: string; listen_addr: string; listen_port: number; spec: string; created_by: string | null };
+  const desired = (spec: Record<string, unknown>, createdBy: string | null = 'admin-1', node = 'default'): Row =>
+    ({ node, protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8443, spec: JSON.stringify(spec), created_by: createdBy });
+
+  // forward_rule_overlays の行を持つ DB（missing なら表がない：errno 1146）
+  function overlayTable(rows: Row[], opts: { missing?: boolean } = {}) {
+    pool.query.mockImplementation(async (q: string, params: unknown[] = []) => {
+      if (q.includes('forward_rule_overlays')) {
+        if (opts.missing) throw Object.assign(new Error("Table 'rproxy.forward_rule_overlays' doesn't exist"), { errno: 1146 });
+        if (q.startsWith('SELECT')) {
+          return q.includes('WHERE node = ?') ? rows.filter((r) => r.node === params[0] && r.listen_port === params[3]) : rows;
+        }
+        if (q.startsWith('INSERT')) {
+          const [node, protocol, addr, port, spec, createdBy] = params as [string, string, string, number, string, string | null];
+          const i = rows.findIndex((r) => r.node === node && r.listen_port === port);
+          if (i >= 0) rows[i] = { ...rows[i], spec };
+          else rows.push({ node, protocol, listen_addr: addr, listen_port: port, spec, created_by: createdBy });
+        }
+        if (q.startsWith('DELETE')) {
+          const i = rows.findIndex((r) => r.node === params[0] && r.listen_port === params[3]);
+          if (i >= 0) rows.splice(i, 1);
+        }
+        return { affectedRows: 1 };
+      }
+      return [];
+    });
+    return rows;
+  }
+
+  it('saves the form rproxy answered with the creator, and keeps the creator when an admin changes it', async () => {
+    const rows = overlayTable([]);
+    mocks.putOverlay.mockImplementation(async (_k: unknown, spec: Record<string, unknown>) => ({ view: view({ ...spec, http: { ...(spec.http as object), middlewares: {} } }), etag: '"o-2"' }));
+    expect((await call('overlay-put', { ...key, overlay: wiki, etag: null })).status).toBe(200);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ node: 'default', created_by: 'admin-1' });
+    expect(JSON.parse(rows[0].spec)).toEqual(wiki);
+    // 利用者が作ったものを管理者が直しても、作った人は利用者のまま
+    rows[0].created_by = 'user-1';
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-1"' });
+    const next = { http: { ...wiki.http, routes: [{ ...wiki.http.routes[0], match: 'Host(`w.example.com`)' }] } };
+    expect((await call('overlay-put', { ...key, overlay: next, etag: '"o-1"' })).status).toBe(200);
+    expect(rows[0].created_by).toBe('user-1');
+    expect(JSON.parse(rows[0].spec).http.routes[0].match).toBe('Host(`w.example.com`)');
+  });
+
+  it('refuses to change an overlay without the table (500 overlay_db) before rproxy', async () => {
+    overlayTable([], { missing: true });
+    const put = await call('overlay-put', { ...key, overlay: wiki, etag: null });
+    expect(put.status).toBe(500);
+    expect(put.body.code).toBe('overlay_db');
+    expect(mocks.putOverlay).not.toHaveBeenCalled();
+    // 読むだけ（GET）は止めない（ずれは出さない）
+    const info = await call('overlay', undefined, 'GET', key);
+    expect(info.status).toBe(200);
+    expect(info.body.drift).toBeUndefined();
+  });
+
+  it('removing deletes the row first, puts it back when rproxy refuses, and works when rproxy already lost it', async () => {
+    const rows = overlayTable([desired(wiki)]);
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-1"' });
+    mocks.deleteOverlay.mockRejectedValueOnce(new RproxyError('changed', 'precondition_failed', 412));
+    expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).status).toBe(412);
+    expect(rows).toHaveLength(1);
+    expect((await call('overlay-delete', { ...key, etag: '"o-1"' })).status).toBe(200);
+    expect(rows).toHaveLength(0);
+    // rproxy から消えていて UI の DB にだけある：行を消すだけ（rproxy には送らない）
+    overlayTable([desired(wiki)]);
+    mocks.getOverlay.mockRejectedValue(notFound());
+    mocks.deleteOverlay.mockClear();
+    expect((await call('overlay-delete', { ...key, etag: null })).status).toBe(200);
+    expect(mocks.deleteOverlay).not.toHaveBeenCalled();
+    expect(logInserts().at(-1)).toContain('{"overlay":null}');
+  });
+
+  it('GET reports an overlay missing or different on rproxy to admins and the creator', async () => {
+    overlayTable([desired(wiki, 'user-1')]);
+    const missing = await call('overlay', undefined, 'GET', key);
+    expect(missing.body).toMatchObject({ overlay: null, drift: 'missing', canResend: true });
+    mocks.getOverlay.mockResolvedValue({ view: view({ http: { ...wiki.http, services: { wiki: { servers: [{ url: 'http://10.0.0.9:8080' }] } } } }), etag: '"o-1"' });
+    expect((await call('overlay', undefined, 'GET', key)).body.drift).toBe('different');
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-1"' });
+    expect((await call('overlay', undefined, 'GET', key)).body.drift).toBeUndefined();
+    // 作った利用者には出し、送り直せる（送り直しで rproxy の created_at が変わっても作った人は UI の DB の行）
+    mocks.getServerSession.mockResolvedValue(user);
+    vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
+    mocks.getOverlay.mockRejectedValue(notFound());
+    expect((await call('overlay', undefined, 'GET', key)).body).toMatchObject({ drift: 'missing', canResend: true, canEdit: true });
+  });
+
+  it('keeps an overlay lost on rproxy to its creator: other users see no drift and cannot add over it', async () => {
+    overlayTable([desired(wiki, 'admin-1')]);
+    mocks.getServerSession.mockResolvedValue(user);
+    vi.stubEnv('RPROXY_UI_USER_TARGETS', '10.0.0.0/8');
+    const info = await call('overlay', undefined, 'GET', key);
+    expect(info.body.drift).toBeUndefined();
+    expect(info.body).toMatchObject({ canEdit: false, editCode: 'overlay_not_owner' });
+    expect((await call('overlay-put', { ...key, overlay: wiki, etag: null })).body.code).toBe('overlay_not_owner');
+    expect((await call('overlay-resend', key)).body.code).toBe('overlay_not_owner');
+    expect(mocks.putOverlay).not.toHaveBeenCalled();
+  });
+
+  it('overlay-resend creates a lost overlay (If-None-Match) and records a resend; nothing to do when it is the same', async () => {
+    overlayTable([desired(wiki)]);
+    const { status, body } = await call('overlay-resend', key);
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ rule: 'tcp/0.0.0.0/8443', result: 'added' });
+    expect(mocks.putOverlay).toHaveBeenCalledWith({ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 8443 }, wiki, null);
+    const log = logInserts().at(-1)!;
+    expect(log).toContain('OVERLAY');
+    expect(JSON.parse(String(log.find((v) => typeof v === 'string' && v.includes('"resend"'))))).toMatchObject({ overlay: wiki, resend: true });
+    // 違えば If-Match で置き換える
+    mocks.putOverlay.mockClear();
+    mocks.getOverlay.mockResolvedValue({ view: view({ http: { routes: [] } }), etag: '"o-7"' });
+    expect((await call('overlay-resend', key)).body.result).toBe('modified');
+    expect(mocks.putOverlay).toHaveBeenCalledWith(expect.anything(), wiki, '"o-7"');
+    // 同じなら送らない
+    mocks.putOverlay.mockClear();
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-8"' });
+    expect((await call('overlay-resend', key)).body.result).toBe('unchanged');
+    expect(mocks.putOverlay).not.toHaveBeenCalled();
+    // UI の DB になければ 404
+    overlayTable([]);
+    expect((await call('overlay-resend', key)).status).toBe(404);
+  });
+
+  it('overlay-resend-all resends drifted overlays for admins only, and the dashboard marks them', async () => {
+    overlayTable([desired(wiki)]);
+    // GET /rules の固定ルール（重ねる分がない＝消えた）
+    mocks.listRules.mockResolvedValue([staticRule()]);
+    const dash = await call('dashboard', undefined, 'GET');
+    expect(dash.status).toBe(200);
+    const row = dash.body.rules.find((r: { origin: string; srcPort: number }) => r.origin === 'static' && r.srcPort === 8443);
+    expect(row.overlayDrift).toBe('missing');
+    mocks.getServerSession.mockResolvedValue(user);
+    expect((await call('overlay-resend-all', {})).body.code).toBe('forbidden_admin');
+    // 作っていない利用者のダッシュボードには出さない
+    const userDash = await call('dashboard', undefined, 'GET');
+    expect(userDash.body.rules.find((r: { origin: string }) => r.origin === 'static')?.overlayDrift).toBeUndefined();
+    mocks.getServerSession.mockResolvedValue(admin);
+    const out = await call('overlay-resend-all', {});
+    expect(out.status).toBe(200);
+    expect(out.body.results).toEqual([{ rule: 'tcp/0.0.0.0/8443', result: 'added' }]);
+    // 効いていて同じなら何もしない
+    mocks.listRules.mockResolvedValue([staticRule({ overlay: { state: 'applied', routes: 2, tls_routes: 0 } })]);
+    mocks.getOverlay.mockResolvedValue({ view: view(wiki), etag: '"o-1"' });
+    expect((await call('overlay-resend-all', {})).body.results).toEqual([]);
+    expect((await call('dashboard', undefined, 'GET')).body.rules.find((r: { origin: string }) => r.origin === 'static').overlayDrift).toBeUndefined();
+  });
+
+  it('history shows a resend as a resend, not a change', async () => {
+    pool.query.mockImplementation(async (q: string) => {
+      if (q.includes('COUNT(*)')) return [{ total: 1 }];
+      if (q.includes('FROM forward_rules_log l') && q.includes('ORDER BY l.id DESC LIMIT')) {
+        if (q.includes("update_action = 'OVERLAY' ORDER BY l.id DESC LIMIT 1")) return [{ options: JSON.stringify({ overlay: wiki }) }];
+        return [{ id: 2, updated_at: new Date(), auth_id: 'system', update_action: 'OVERLAY', protocol: 'tcp', src_addr: '0.0.0.0', src_port: 8443, src_port_end: null, options: JSON.stringify({ overlay: wiki, resend: true }) }];
+      }
+      return [];
+    });
+    const { body } = await call('history', undefined, 'GET');
+    expect(body.entries[0].changes).toEqual(['UI の DB の重ねる分を送り直しました']);
   });
 });

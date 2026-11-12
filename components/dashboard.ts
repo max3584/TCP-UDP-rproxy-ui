@@ -323,6 +323,13 @@ export function targetFullProblem(rule: Pick<ForwardRules, 'state' | 'stats' | '
     : translate('すべての宛先が同時接続の上限に達していて、新しい接続を断っています。');
 }
 
+// 固定ルールに重ねる分のずれの説明（#197。なければ null）
+export function overlayDriftText(rule: Pick<ForwardRules, 'overlayDrift'>): string | null {
+  if (rule.overlayDrift === 'missing') return translate('UI の DB にある重ねる分が rproxy にありません（送り直してください）。');
+  if (rule.overlayDrift === 'different') return translate('rproxy の重ねる分が UI の DB の内容と違います（送り直してください）。');
+  return null;
+}
+
 // 要確認のルール（failed を先に、次に missing、次に証明書の期限が近い・切れたルール、次に宛先がすべて上限のルール。それぞれ元の順番のまま）
 // （ACME の証明書を取れない・更新できないルールは証明書の期限と同じ扱い。acmeProblem）
 export function needsAttention(rules: ForwardRules[]): ForwardRules[] {
@@ -331,8 +338,9 @@ export function needsAttention(rules: ForwardRules[]): ForwardRules[] {
   const full = (r: ForwardRules) => targetFullProblem(r) !== null;
   const fulls = rules.filter((r) => !certIssue(r) && full(r));
   // 複数のノード：UI の定義とずれているノードがある・act の判定に警告があるルール（#98）
+  // 固定ルールに重ねる分が UI の DB の内容と違う・rproxy にないルール（#197）も同じ所に
   const nodeIssues = rules.filter((r) => r.state !== 'failed' && r.state !== 'missing' && !certIssue(r) && !full(r)
-    && (driftedNodes(r).length > 0 || (r.ha?.warning ?? null) !== null));
+    && (driftedNodes(r).length > 0 || (r.ha?.warning ?? null) !== null || r.overlayDrift !== undefined));
   return [...rules.filter((r) => r.state === 'failed'), ...rules.filter((r) => r.state === 'missing'), ...certs, ...fulls, ...nodeIssues];
 }
 

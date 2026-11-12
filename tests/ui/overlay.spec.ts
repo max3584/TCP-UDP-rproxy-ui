@@ -30,6 +30,14 @@ async function clearOverlay(port: number): Promise<void> {
   await fetch(overlayUrl(port), { method: 'DELETE', headers: apiHeaders }).catch(() => undefined);
 }
 
+// UI からも外す（UI の DB の正しい形も消す。#197。残すと次の試験でずれ・作った人として残る）。なければ 404 で何もしない
+async function clearUiOverlay(page: Page, port: number): Promise<void> {
+  const info = await page.request.get(`/api/forward/overlay?protocol=tcp&addr=127.0.0.1&port=${port}`);
+  const etag = info.ok() ? ((await info.json()) as { etag?: string | null }).etag ?? null : null;
+  await page.request.post('/api/forward/overlay-delete', { headers: SAME_ORIGIN, data: { protocol: 'tcp', addr: '127.0.0.1', port, etag } });
+  await clearOverlay(port);
+}
+
 function listen<T extends net.Server>(server: T, port: number): Promise<T> {
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
@@ -64,8 +72,46 @@ test.describe('overlays on static rules (#193)', () => {
   });
   test.beforeEach(async ({ page }) => {
     test.skip(!(await canOverlay(page)), 'needs rproxy-api v0.4.23 (features.static_overlay) and the static rules of the CI e2e job');
+    await clearUiOverlay(page, HTTP_PORT);
+    await clearUiOverlay(page, SNI_PORT);
+  });
+  test.afterEach(async ({ page }) => {
+    if (!(await canOverlay(page))) return;
+    await clearUiOverlay(page, HTTP_PORT);
+    await clearUiOverlay(page, SNI_PORT);
+  });
+
+  test('shows an overlay rproxy lost (a restart) as drift and resends it, one by one and in bulk (#197)', async ({ page }) => {
+    const created = await page.request.post('/api/forward/overlay-put', {
+      headers: SAME_ORIGIN,
+      data: { protocol: 'tcp', addr: '127.0.0.1', port: HTTP_PORT, overlay: { http: { routes: [{ name: 'lost', match: 'Host(`lost.overlay-e2e.test`)', service: 'file-web' }] } }, etag: null },
+    });
+    expect(created.status(), await created.text()).toBe(200);
+    expect((await get('lost.overlay-e2e.test')).status).toBe(200);
+    // rproxy の再起動で消えたのと同じ（UI のトークンは persist なし）：rproxy の API で直接外す
     await clearOverlay(HTTP_PORT);
-    await clearOverlay(SNI_PORT);
+    expect((await get('lost.overlay-e2e.test')).status).toBe(404);
+
+    await page.goto(detail(HTTP_PORT));
+    const section = page.getByTestId('overlay-section');
+    await expect(section.getByTestId('overlay-drift')).toContainText('rproxy にありません');
+    await section.getByTestId('overlay-resend').click();
+    await expect(section.getByTestId('overlay-notice')).toContainText('送り直しました');
+    await expect(section.getByTestId('overlay-drift')).toHaveCount(0);
+    await expect(section.getByTestId('overlay-state')).toHaveText('効いています');
+    expect((await get('lost.overlay-e2e.test')).status).toBe(200);
+    // 履歴には送り直しとして残る
+    const history = page.locator('#section-history').locator('..');
+    await expect(history.getByTestId('history-overlay-changes').first()).toContainText('送り直しました');
+
+    // ダッシュボードの「要確認のルール」からまとめて
+    await clearOverlay(HTTP_PORT);
+    await page.goto('/');
+    const bulk = page.getByTestId('overlay-resend-all');
+    await expect(bulk).toBeVisible({ timeout: 15_000 });
+    await bulk.getByRole('button', { name: /まとめて送り直す/ }).click();
+    await expect(bulk.getByRole('status')).toContainText('1 件');
+    expect((await get('lost.overlay-e2e.test')).status).toBe(200);
   });
 
   test('adds http routes that use the file service and middleware, keeps the file routes first, and removes them', async ({ page }) => {

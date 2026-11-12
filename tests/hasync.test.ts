@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const mocks = vi.hoisted(() => {
   const conn = { beginTransaction: vi.fn(), commit: vi.fn(), rollback: vi.fn(), release: vi.fn(), destroy: vi.fn(), query: vi.fn() };
   const pool = { getConnection: vi.fn(), query: vi.fn() };
-  return { conn, pool, addRule: vi.fn(), modifyRule: vi.fn(), deleteRule: vi.fn(), listRules: vi.fn(), getRule: vi.fn(), getInterfaces: vi.fn() };
+  return { conn, pool, addRule: vi.fn(), modifyRule: vi.fn(), deleteRule: vi.fn(), listRules: vi.fn(), getRule: vi.fn(), getInterfaces: vi.fn(), getOverlay: vi.fn(), putOverlay: vi.fn(), overlays: [] as unknown[] };
 });
 
 vi.mock('mariadb', () => ({ default: { createPool: () => mocks.pool } }));
@@ -20,6 +20,7 @@ vi.mock('@/components/rproxy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/components/rproxy')>()),
   addRule: mocks.addRule, modifyRule: mocks.modifyRule, deleteRule: mocks.deleteRule,
   listRules: mocks.listRules, getRule: mocks.getRule, getInterfaces: mocks.getInterfaces,
+  getOverlay: mocks.getOverlay, putOverlay: mocks.putOverlay,
 }));
 
 import { RproxyError, currentNode } from '@/components/rproxy';
@@ -61,6 +62,8 @@ beforeAll(() => {
 // pool.query：グループのルール（ha は 1・2、manual は 3）と上書き（なし）
 function rulesFor(q: string, params: unknown[] = []): unknown[] {
   if (q.includes('FROM forward_rule_overrides')) return [];
+  // UI の DB の重ねる分（#197。既定はなし）
+  if (q.includes('FROM forward_rule_overlays')) return (mocks.overlays as { node: string }[]).filter((o) => params.includes(o.node));
   if (q.includes('FROM forward_rules WHERE target IN')) {
     const out = [];
     if (params.includes('ha')) out.push(row(1, 'ha'), row(2, 'ha'));
@@ -72,6 +75,7 @@ function rulesFor(q: string, params: unknown[] = []): unknown[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.overlays.length = 0;
   stopHaSync();
   pool.getConnection.mockResolvedValue(conn);
   pool.query.mockImplementation(async (q: string, params?: unknown[]) => rulesFor(q, params));
@@ -301,5 +305,44 @@ describe('keepalived endpoints', () => {
     expect((await call(notifyHandler, 'POST', { node: 'c', state: 'BACKUP' }, 'secret-1')).body.results).toEqual([]);
     expect(added).toEqual([]);
     expect((await call(notifyHandler, 'GET', { node: 'c' }, 'secret-1')).status).toBe(405);
+  });
+});
+
+describe('overlays on static rules of HA nodes (#197)', () => {
+  const wiki = { http: { routes: [{ name: 'wiki', match: 'Host(`wiki.example.com`)', service: 'wiki' }], services: { wiki: { servers: [{ url: 'http://10.0.0.7:8080' }] } } } };
+  const staticStatus = (extra: Record<string, unknown> = {}) => status(9443, { origin: 'static', remote_addr: '', remote_port: 0, ...extra });
+
+  it('a node whose overlay rproxy lost is not ready, and the sync puts it back (OVERLAY resend by system)', async () => {
+    mocks.overlays.push({ node: 'a', protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9443, spec: JSON.stringify(wiki), created_by: 'user-1' });
+    mocks.listRules.mockResolvedValue([status(8001), status(8002), staticStatus()]);
+    const r = await nodeReadiness(loadNodes(), 'a');
+    expect(r).toEqual({ node: 'a', ready: false, checked: 3, issues: [{ target: 'a', key: 'tcp|0.0.0.0|9443', state: 'missing', fields: ['overlay'] }] });
+    mocks.getOverlay.mockRejectedValue(new RproxyError('no overlay', 'not_found', 404));
+    const seen: (string | undefined)[] = [];
+    mocks.putOverlay.mockImplementation(async (_k: unknown, spec: unknown) => {
+      seen.push(currentNode()?.name);
+      return { view: { ...(spec as object), created_at: 1790000100 }, etag: '"o-2"' };
+    });
+    const out = await syncNode(loadNodes(), 'a', { onlyAuto: true });
+    expect(out.results).toEqual([{ target: 'a', key: 'tcp|0.0.0.0|9443', result: 'added', overlay: true }]);
+    expect(seen).toEqual(['a']);
+    expect(mocks.putOverlay).toHaveBeenCalledWith({ protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9443 }, wiki, null);
+    const log = pool.query.mock.calls.find((c) => String(c[0]).startsWith('INSERT INTO forward_rules_log'));
+    expect(log?.[1]).toEqual(expect.arrayContaining(['system', 'a', 'OVERLAY']));
+    expect(JSON.parse(String((log?.[1] as unknown[]).find((v) => typeof v === 'string' && v.includes('resend'))))).toEqual({ overlay: wiki, resend: true, created_at: 1790000100 });
+  });
+
+  it('an overlay that matches, or whose static rule left the file, is not an issue', async () => {
+    mocks.overlays.push({ node: 'a', protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9443, spec: JSON.stringify(wiki), created_by: null });
+    mocks.listRules.mockResolvedValue([status(8001), status(8002), staticStatus({ overlay: { state: 'applied', routes: 2, tls_routes: 0 } })]);
+    mocks.getOverlay.mockResolvedValue({ view: { ...wiki, etag: '"o-1"' }, etag: '"o-1"' });
+    expect((await nodeReadiness(loadNodes(), 'a')).ready).toBe(true);
+    mocks.listRules.mockResolvedValue([status(8001), status(8002)]);
+    expect((await nodeReadiness(loadNodes(), 'a')).ready).toBe(true);
+    // ほかのノード（b）の重ねる分は a では見ない
+    mocks.overlays.length = 0;
+    mocks.overlays.push({ node: 'b', protocol: 'tcp', listen_addr: '0.0.0.0', listen_port: 9443, spec: JSON.stringify(wiki), created_by: null });
+    mocks.listRules.mockResolvedValue([status(8001), status(8002), staticStatus()]);
+    expect((await nodeReadiness(loadNodes(), 'a')).ready).toBe(true);
   });
 });

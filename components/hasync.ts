@@ -13,6 +13,7 @@ import { effectiveRule } from './overrides';
 import { ruleDrift } from './drift';
 import { ResendResult, fromRow, getPool, isPaused, isShadowing, loadOverrides, resendOne, ruleOptions } from './ruledb';
 import { haStatus, interfaceAddrs } from './ha';
+import { DesiredOverlay, OverlayResendResult, checkOverlaysOnNode, desiredOverlay, loadDesiredOverlays, resendOverlayWithLog } from './overlaydb';
 
 // 自動の送り直しの履歴の操作者
 export const SYSTEM_ACTOR = 'system';
@@ -51,9 +52,11 @@ interface Candidate {
   id: number;
   target: string;
   key: string;
+  // 固定ルールに重ねる分（#197。id は使わない。target はノード）
+  overlay?: { desired: DesiredOverlay; file: ForwardRule };
 }
 
-// そのノードの、グループのルールの揃い具合と、送り直すもの
+// そのノードの、グループのルールと、そのノードの固定ルールに重ねる分（UI の DB のもの。#197）の揃い具合と、送り直すもの
 async function inspectNode(cfg: NodesConfig, node: string, groups: GroupConfig[], logger: AppLogger): Promise<{ readiness: NodeReadiness; todo: Candidate[] }> {
   const targets = groups.filter((gr) => gr.nodes.includes(node)).map((gr) => gr.name);
   const readiness: NodeReadiness = { node: node, ready: true, checked: 0, issues: [] };
@@ -64,22 +67,34 @@ async function inspectNode(cfg: NodesConfig, node: string, groups: GroupConfig[]
     targets
   );
   const list = Array.isArray(rows) ? rows : [];
-  readiness.checked = list.length;
-  if (list.length === 0) return { readiness: readiness, todo: [] };
+  const overlays = await loadDesiredOverlays(pool, [node]);
+  readiness.checked = list.length + overlays.length;
+  if (list.length === 0 && overlays.length === 0) return { readiness: readiness, todo: [] };
   const cfgNode = cfg.nodes.find((n) => n.name === node)!;
+  const overlayKey = (d: DesiredOverlay) => `${d.key.protocol}|${d.key.listen_addr.toLowerCase()}|${d.key.listen_port}`;
   let live: Map<string, RproxyRuleStatus>;
+  const todo: Candidate[] = [];
   try {
     const statuses = await withNode(toRproxyNode(cfgNode), () => listRules());
     live = new Map(statuses.map((s) => [`${String(s.protocol).toLowerCase()}|${s.listen_addr.toLowerCase()}|${s.listen_port}`, s]));
+    // 重ねる分：rproxy にない・違うものを送り直す（固定ルールが設定ファイルから消えたものは比べない）
+    for (const c of overlays.length > 0 ? await withNode(toRproxyNode(cfgNode), () => checkOverlaysOnNode(overlays, statuses)) : []) {
+      if (c.drift === null) continue;
+      const key = overlayKey(c.desired);
+      readiness.issues.push({ target: node, key: key, state: c.drift === 'missing' ? 'missing' : 'drift', fields: ['overlay'] });
+      todo.push({ id: 0, target: node, key: key, overlay: { desired: c.desired, file: c.file } });
+    }
   } catch (err) {
     logger.warn(`ノード ${node} に問い合わせできません（揃っているか確かめられません）: ${err}`);
     const message = err instanceof Error ? err.message : String(err);
     readiness.ready = false;
-    readiness.issues = list.map((r: any) => ({ target: String(r.target), key: keyOf(fromRow(r)), state: 'unknown' as const, error: message }));
+    readiness.issues = [
+      ...list.map((r: any) => ({ target: String(r.target), key: keyOf(fromRow(r)), state: 'unknown' as const, error: message })),
+      ...overlays.map((d) => ({ target: node, key: overlayKey(d), state: 'unknown' as const, fields: ['overlay'], error: message })),
+    ];
     return { readiness: readiness, todo: [] };
   }
   const overrides = await loadOverrides(pool, list.map((r: any) => Number(r.id)));
-  const todo: Candidate[] = [];
   for (const row of list) {
     const rule = fromRow(row);
     const eff = effectiveRule(rule, overrides.get(Number(row.id))?.[node]);
@@ -119,6 +134,17 @@ export interface SyncResult {
   key: string;
   result: ResendResult | 'error';
   error?: string;
+  // 固定ルールに重ねる分の送り直し（#197）
+  overlay?: true;
+}
+
+// 重ねる分を 1 件送り直す（UI の DB の今の形を読み直してから。消されていれば何もしない。変わっていなければ履歴を残さない）
+async function resendOverlay(cfg: NodesConfig, cand: Candidate & { overlay: NonNullable<Candidate['overlay']> }, node: string, actor: string, logger: AppLogger): Promise<OverlayResendResult> {
+  const desired = await desiredOverlay(getPool(), node, cand.overlay.desired.key);
+  if (desired === null) return 'unchanged';
+  const cfgNode = cfg.nodes.find((n) => n.name === node)!;
+  return withNode(toRproxyNode(cfgNode), () => resendOverlayWithLog(getPool(), actor, node, { desired, file: cand.overlay.file },
+    (err) => logger.warn(`ノード ${node} の重ねる分 ${cand.key} の送り直しを履歴に書けませんでした: ${err}`)));
 }
 
 // 1 件を送り直す（ルールの行をロックしてから。変わっていなければ履歴を残さない）
@@ -165,10 +191,13 @@ export async function syncNode(cfg: NodesConfig, node: string, opts: { onlyAuto:
   const failures = state().failures;
   const results: SyncResult[] = [];
   for (const cand of todo) {
-    const fkey = `${node}|${cand.target}|${cand.key}`;
+    const fkey = `${node}|${cand.target}|${cand.key}${cand.overlay ? '|overlay' : ''}`;
+    const mark = cand.overlay ? { overlay: true as const } : {};
     try {
-      const result = await resendLocked(cfg, cand, node, opts.actor ?? SYSTEM_ACTOR);
-      results.push({ target: cand.target, key: cand.key, result: result });
+      const result = cand.overlay
+        ? await resendOverlay(cfg, { ...cand, overlay: cand.overlay }, node, opts.actor ?? SYSTEM_ACTOR, logger)
+        : await resendLocked(cfg, cand, node, opts.actor ?? SYSTEM_ACTOR);
+      results.push({ target: cand.target, key: cand.key, result: result, ...mark });
       failures.delete(fkey);
       if (result === 'shadowed') logger.warn(`ノード ${node} の ${cand.key}（${cand.target}）は、同じキーを rproxy の API のルール・ルールの組が使っているため送り直しません`);
       else if (result !== 'unchanged') logger.info(`ノード ${node} に ${cand.key}（${cand.target}）を送り直しました（${result}）`);
@@ -177,7 +206,7 @@ export async function syncNode(cfg: NodesConfig, node: string, opts: { onlyAuto:
       const prev = failures.get(fkey);
       failures.set(fkey, { node: node, target: cand.target, key: cand.key, count: (prev?.count ?? 0) + 1, error: message, since: prev?.since ?? new Date().toISOString() });
       logger.warn(`ノード ${node} に ${cand.key}（${cand.target}）を送り直せませんでした: ${message}`);
-      results.push({ target: cand.target, key: cand.key, result: 'error', error: message });
+      results.push({ target: cand.target, key: cand.key, result: 'error', error: message, ...mark });
     }
   }
   return { readiness: readiness, results: results };

@@ -22,6 +22,7 @@ UI と rproxy-api が共有するテーブルの定義。
 | `migrate.mjs` | migration を順に当て、当てたものを `schema_migrations` に書く（下の「migrate.mjs」。Kubernetes の chart の migration の Job が使う。.deb でも使える） |
 | `migrations/013_rproxy_global.sql` | rproxy-api v0.4.19 が制御 API（`PATCH /config/global`）で入れた `global` の値を保存する `rproxy_global`（rproxy-api #342、UI #169。書くのは rproxy だけ。ノードごとに 1 行）。適用しなくても動く（API の値を保存せず、rproxy を再起動すると消える）。複数の rproxy では適用したらノードごとのビューを作り直す |
 | `migrations/014_rproxy_rule_overlays.sql` | rproxy-api v0.4.23 が設定ファイルの固定ルールの待ち受けに API で重ねる分（overlay。http のルート・サービス・ミドルウェアと `tls.routes` の名前）を保存する `rproxy_rule_overlays`（rproxy-api #397、UI #193。書くのは rproxy だけ。固定ルールのキーごとに 1 行）。適用しなくても動く（重ねる分を保存せず、rproxy を再起動すると消える）。複数の rproxy では適用したらノードごとのビューを作り直す |
+| `migrations/015_forward_rule_overlays.sql` | UI が固定ルールに重ねた分の正しい形 `forward_rule_overlays`（UI #197。書くのも読むのも UI だけ。ノード・固定ルールのキーごとに 1 行）。rproxy にない・違う重ねる分を UI がずれに出して送り直す。適用しないと UI は重ねる分を足す・直す・外すことを断る |
 | `node-view.mjs` | ノードごとのデータベースと `forward_rules` ビュー・読み取りだけの DB ユーザーの SQL を出す（下の「複数の rproxy（ノードごとのビュー）」） |
 
 既存の環境では `002` から順に適用する（手で流すか、下の `migrate.mjs`）。`schema.sql` を変えたときは、同じ変更をする migration も追加すること（`schema.sql` はすべての migration を当てた形にする。`migrate.mjs` は新しい DB に `schema.sql` を流し、すべてを当てたことにする）。
@@ -82,6 +83,8 @@ DB_HOST=db.example DB_DATABASE=rproxy DB_ADMIN_USER=root DB_ADMIN_PASSWORD=... n
 
 - `rproxy_rule_overlays`（014）：rproxy-api v0.4.23 が、制御 API の `PUT /rules/{protocol}/{addr}/{port}/overlay`（UI のルールの詳細の「重ねる分」）で固定ルール（`origin: static`）に足した分を保存する（`(node, protocol, listen_addr, listen_port)` で一意。`spec` は `PUT` の本文、`created_by`・`updated_by` はトークンの名前）。書くのは rproxy だけで、`persist: true` のトークンが作った分（と一度書いた分）だけ。重ねる分を外すと行を消す。UI は rproxy の API で読み書きし、このテーブルは読まない（UI の DB ユーザーに権限は要らない）。rproxy は起動時に設定ファイルのルールのあと、`rproxy_rules` の前に自分の `node` の行を戻す。テーブルがない・書けないときも重ねる分は効くが、`persisted: false` で、再起動すると消える。
 
+- `forward_rule_overlays`（015）：UI が重ねる分を足す・直すたびに書く、重ねる分の正しい形（`(node, protocol, listen_addr, listen_port)` で一意。`node` は UI のノードの名前で、`RPROXY_UI_NODES` を使わない 1 台は `default`。`spec` は rproxy が `PUT` に答えた形、`created_by` は作った UI の利用者（`auth_id`。管理者でない人が直せるのは自分のものだけ）、`updated_by` は最後に直した利用者）。外すと行を消す。書くのも読むのも UI だけ（rproxy は読まない）。UI のトークンは `persist` を付けないので rproxy は重ねる分を `rproxy_rule_overlays` に書かず、再起動で消える。UI はこの行と rproxy の今の重ねる分を比べ、ない・違うものをずれに出して送り直す（ダッシュボード・ルールの詳細・act / stb の自動の送り直し）。
+
 - `usage_counters`・`usage_hourly`・`usage_daily`（010）：利用量の集計。UI が rproxy の統計を取り、`usage_counters` に最後に見た数（と `counters_since`・`started_at`）、その差を `usage_hourly`（`hour` は UTC の時の始まり）と `usage_daily`（`day` は UTC の日付）に、ルール・ノードごとに足す。各行の `owner`・`target`・`labels`・`origin` はそのときのルールの持ち主と印で、主キーの `attr`（011。それらの SHA-256）が違えば別の行になる（同じ日に持ち主が変わっても、前の分の持ち主を書き換えない）。古い行は UI が消す（`RPROXY_UI_USAGE_HOURLY_DAYS`・`RPROXY_UI_USAGE_DAILY_DAYS`）。
 
 ## DB ユーザー
@@ -95,6 +98,8 @@ GRANT SELECT, INSERT                 ON rproxy.forward_rules_log TO 'rproxy_ui'@
 -- RPROXY_UI_NODES を使うとき
 GRANT SELECT, INSERT, DELETE         ON rproxy.forward_rule_targets TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overrides TO 'rproxy_ui'@'10.0.0.%';
+-- 固定ルールに重ねる分の正しい形（015）
+GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.forward_rule_overlays TO 'rproxy_ui'@'10.0.0.%';
 -- 利用量の集計（010）
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_counters TO 'rproxy_ui'@'10.0.0.%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON rproxy.usage_hourly   TO 'rproxy_ui'@'10.0.0.%';

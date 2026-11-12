@@ -44,6 +44,7 @@ export const APP_GRANTS = [
   ['forward_rules_log', 'SELECT, INSERT'],
   ['forward_rule_targets', 'SELECT, INSERT, DELETE'],
   ['forward_rule_overrides', 'SELECT, INSERT, UPDATE, DELETE'],
+  ['forward_rule_overlays', 'SELECT, INSERT, UPDATE, DELETE'],
   ['usage_counters', 'SELECT, INSERT, UPDATE, DELETE'],
   ['usage_hourly', 'SELECT, INSERT, UPDATE, DELETE'],
   ['usage_daily', 'SELECT, INSERT, UPDATE, DELETE'],

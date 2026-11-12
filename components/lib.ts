@@ -361,7 +361,12 @@ export interface ForwardRules extends ForwardRule {
   shadowedBy?: ShadowedBy;
   // 固定ルールに API で重ねる分の様子（rproxy-api v0.4.23 の overlay。重ねる分のある固定ルールだけ。UI #193）
   overlay?: OverlaySummary;
+  // UI の DB（forward_rule_overlays）の重ねる分が rproxy にない・違う（#197。管理者と、その重ねる分を作った人にだけ付く）
+  overlayDrift?: OverlayDrift;
 }
+
+// UI の DB の重ねる分と rproxy の今の重ねる分の違い（#197。components/drift.ts の overlayDrift）
+export type OverlayDrift = 'missing' | 'different';
 
 // ルールの 1 ノードでの稼働情報
 export interface NodeLiveState {
@@ -385,7 +390,9 @@ export interface NodeLiveState {
 
 // UI の定義と rproxy の実際のルールで違う項目（画面で名前に直す）
 export type DriftField = 'remote' | 'targets' | 'source_ip' | 'udp_idle_secs' | 'port_range' | 'tls' | 'starttls' | 'allow_from' | 'http' | 'crowdsec' | 'extra_listen_addrs' | 'enabled'
-  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'idle_timeout' | 'half_close_timeout' | 'connect_timeout' | 'target_max_connections';
+  | 'labels' | 'limits' | 'bandwidth' | 'geoip' | 'outlier_detection' | 'proxy_protocol' | 'idle_timeout' | 'half_close_timeout' | 'connect_timeout' | 'target_max_connections'
+  // 固定ルールに重ねる分（#197。ruleDrift は返さない。act / stb の揃い具合の issues で使う）
+  | 'overlay';
 
 export type NodeRole = 'active' | 'standby';
 
