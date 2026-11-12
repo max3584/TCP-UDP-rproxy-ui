@@ -44,6 +44,7 @@ apt policy nodejs   # the Candidate must come from deb.nodesource.com
 ```
 
 - The steps are the same on Debian 13 and Ubuntu 24.04 (NodeSource's `nodistro` does not depend on the distribution). For 22, use `NODE_MAJOR=22` (22.23.4 or later)
+- The same steps work on arm64 (rproxy-ui is one package for all CPUs, and on arm64 it runs with NodeSource's nodejs). On a Raspberry Pi, a 64-bit OS is recommended
 - With the pin in `/etc/apt/preferences.d/nodejs` (priority 600), `apt install nodejs` replaces an already installed distribution nodejs with NodeSource's, and `apt upgrade` never goes back to the distribution's. NodeSource's nodejs includes npm (the distribution's `npm` package is not needed)
 - `apt upgrade` only moves within the same major version. To change the major version, change `NODE_MAJOR`, rewrite `nodesource.list`, and run `sudo apt update && sudo apt install nodejs`
 
@@ -83,7 +84,7 @@ Required information:
 + Database settings (`DB_PORT` defaults to 3306 when omitted)
 + Keycloak settings (a confidential client. Roles are read from the realm roles in the access token's `realm_access.roles`; see "Roles" below)
 + The URL and token of the rproxy-api control API (`RPROXY_API_TOKEN` is needed only when rproxy is started with `--token-file`)
-  + If the rproxy tokens have permissions (YAML), the UI's token needs the scopes `rules:read` (list and details) and `rules:write` (add, change and delete). `metrics:read` is not used (`GET /capabilities` can be read with any token).
+  + If the rproxy tokens have permissions (YAML), make the UI's token `admin` (a token in the one-per-line format is already `admin`). From rproxy-api v0.4.23 (rproxy-api #401), a token without `admin` may only change the rules, overlays and rule sets it created (others get `403 not_owner`), and the UI's "API rules" screen and resending on several nodes change rules other tokens created with the UI's token. A setup that uses neither and only changes the rules the UI restored may use `rules:read` (list and details), `rules:write` (add, change and delete) and `allow_restored: true` instead (global settings need `admin`). `metrics:read` is not used (`GET /capabilities` can be read with any token).
     With `allow_listen_ports`, rules whose listen ports are outside that range cannot be created, changed or deleted from the UI.
     If a scope is missing, the screen shows "The rproxy token used by the UI does not have permission for this operation" (it is also logged by the UI).
     Creating or changing rules with ACME certificates from the UI also needs `acme:write` (see "Obtaining certificates with ACME" below).

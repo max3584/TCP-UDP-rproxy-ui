@@ -126,11 +126,12 @@ migrate: {existingSecret: rproxy-ui-db-admin, baseline: "012"}
 The .deb ships it too (`/usr/share/rproxy-ui/db/migrate.mjs`; it loads the driver from `/usr/lib/rproxy-ui/node_modules`). With the .deb you may keep applying migrations by hand; to use `migrate.mjs`:
 
 ```shell
-sudo -u rproxy-ui sh -c 'set -a; . /etc/rproxy-ui/rproxy-ui.env; \
+# the env file is root:root 600, so read it as root
+sudo sh -c 'set -a; . /etc/rproxy-ui/rproxy-ui.env; \
   DB_ADMIN_USER=<admin> DB_ADMIN_PASSWORD=<password> node /usr/share/rproxy-ui/db/migrate.mjs --baseline 012'
-node /usr/share/rproxy-ui/db/migrate.mjs --status    # applied and pending (same DB_*)
-node /usr/share/rproxy-ui/db/migrate.mjs --dry-run   # only print what it would do
 ```
+
+The same command takes `--status` (applied and pending) and `--dry-run` (only print what it would do).
 
 `--baseline` is needed only the first time (later runs read `schema_migrations`). Options and variables: "migrate.mjs" in [db/README.en.md](../../db/README.en.md).
 

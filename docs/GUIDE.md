@@ -120,12 +120,16 @@ docker run -d --name rproxy-ui --env-file rproxy-ui.env -p 3000:3000 \
 
 テーブルは DB の管理者で作り、UI のユーザーには DDL の権限を渡さない。いちばん楽なのは `migrate.mjs` に任せる方法。新しい DB では `schema.sql` を流し、UI のユーザーを作って要る権限だけを渡す。
 
-`migrate.mjs` は TCP でつなぐので、パスワードで入れる管理者が要る（Debian の MariaDB の root はソケットの認証だけ）。なければ作る。
+`migrate.mjs` は `DB_HOST`・`DB_PORT` に TCP でつなぎ、`DB_ADMIN_USER`・`DB_ADMIN_PASSWORD` のパスワードで入る（Unix ソケットでは入らない）。
+管理者には DDL を流す権限と、`DB_APP_USER` を使うならユーザーを作って権限を渡す権限（`CREATE USER` と `GRANT OPTION`）が要る。
+MariaDB の root がパスワードで TCP から入れるかは環境による（root をソケットの認証だけにしている環境では入れない）。入れないときは、パスワードで入れる管理者を作る。例：
 
 ```shell
 sudo mariadb -e "CREATE USER 'rproxy_admin'@'127.0.0.1' IDENTIFIED BY '<管理者のパスワード>';
   GRANT ALL PRIVILEGES ON *.* TO 'rproxy_admin'@'127.0.0.1' WITH GRANT OPTION;"
 ```
+
+権限の範囲は環境に合わせて狭めてよい（この例は試しやすさを優先している）。
 
 ```shell
 sudo sh -c 'set -a; . /etc/rproxy-ui/rproxy-ui.env; \

@@ -219,7 +219,7 @@ RPROXY_API_TOKEN_FILE=/etc/rproxy/tokens  # インストール時に入る（1 �
 
 `RPROXY_API_TOKEN_FILE` は最初の空でない・`#` でない行をトークンとして読み、ファイルが変われば次の問い合わせから新しいトークンを使う（UI の設定を書き換えなくてよい）。トークンファイルを YAML（下）にすると SHA-256 しか置かないので、UI のトークンは `RPROXY_API_TOKEN` に書くか、UI だけが読むファイル（`root:rproxy-ui` 0640）に 1 行で書いて `RPROXY_API_TOKEN_FILE` で指す。
 
-rproxy のトークンファイルを権限付き（YAML）にする場合、UI のトークンには `rules:read` と `rules:write` のスコープを付ける（`metrics:read` は使わない。`GET /capabilities` はどのトークンでも読める）。
+rproxy のトークンファイルを権限付き（YAML）にする場合、UI のトークンは `admin` にする（1 行に 1 トークンの書き方のトークンはもともと `admin`）。rproxy-api v0.4.23（rproxy-api #401）から、`admin` でないトークンは自分が作ったルール・重ねる分・組しか直せない（ほかは `403 not_owner`）。UI の「API のルール」の画面と複数のノードの送り直しは、ほかのトークンが作ったルールを UI のトークンで変えるので、`admin` でないと止まる。global の設定にも `admin` が要る。それらを使わず、UI が戻したルールだけを直せればよい構成なら、`rules:read`・`rules:write` と `allow_restored: true` でもよい（[GUIDE.md の 3.3](GUIDE.md#33-rproxy-api-への接続とトークンのスコープ)）。`metrics:read` は使わない（`GET /capabilities` はどのトークンでも読める）。UI のトークンに `persist: true` は付けない。
 `allow_listen_ports` を付けると、その範囲の外のルールは UI から作成・変更・削除できない。足りないと rproxy が 403 `forbidden` を返し、画面にはスコープを確かめるように出る。
 
 ```yaml
@@ -227,7 +227,7 @@ rproxy のトークンファイルを権限付き（YAML）にする場合、UI 
 tokens:
   - name: rproxy-ui
     sha256: <printf %s "$TOKEN" | sha256sum の値>
-    scopes: [rules:read, rules:write]
+    scopes: [admin]
 ```
 
 `TOKEN` は UI の `RPROXY_API_TOKEN` に入れる値（`openssl rand -hex 32` などで作る）。トークンファイルを変えたら `sudo systemctl reload rproxy-api`。

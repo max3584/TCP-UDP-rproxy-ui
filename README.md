@@ -44,6 +44,7 @@ apt policy nodejs   # 候補（Candidate）が deb.nodesource.com のものに�
 ```
 
 - Debian 13・Ubuntu 24.04 とも同じ手順（NodeSource の `nodistro` は配布物を問わない）。22 にするなら `NODE_MAJOR=22`（22.23.4 以上）
+- arm64 も同じ手順（rproxy-ui は CPU を問わないパッケージで、arm64 は NodeSource の nodejs で動く）。Raspberry Pi なら 64 ビットの OS を勧める
 - `/etc/apt/preferences.d/nodejs` の pin（優先度 600）で、ディストリの nodejs をすでに入れていても `apt install nodejs` が NodeSource のものに置き換え、`apt upgrade` でもディストリの nodejs には戻らない。NodeSource の nodejs は npm を含む（ディストリの `npm` パッケージは要らない）
 - `apt upgrade` で上がるのは同じメジャー版の中だけ。メジャー版を変えるときは `NODE_MAJOR` を変えて `nodesource.list` を書き直し、`sudo apt update && sudo apt install nodejs`
 
@@ -83,7 +84,7 @@ npm run dev
 + Database 設定情報（`DB_PORT` を省略した場合は 3306）
 + Keycloak 設定情報（Confidential クライアント。ロールは realm ロールをアクセストークンの `realm_access.roles` から読む。下の「ロール」）
 + rproxy-api の制御 API の URL とトークン（`RPROXY_API_TOKEN` は rproxy を `--token-file` 付きで起動した場合のみ必要）
-  + rproxy のトークンを権限付き（YAML）にする場合、UI のトークンには `rules:read`（一覧・詳細）と `rules:write`（追加・変更・削除）のスコープが要ります。`metrics:read` は使いません（`GET /capabilities` はどのトークンでも読めます）。
+  + rproxy のトークンを権限付き（YAML）にする場合、UI のトークンは `admin` にします（1 行に 1 トークンの書き方のトークンはもともと `admin`）。rproxy-api v0.4.23（rproxy-api #401）から、`admin` でないトークンは自分が作ったルール・重ねる分・組しか直せず（ほかは `403 not_owner`）、UI の「API のルール」の画面と複数のノードの送り直しは、ほかのトークンが作ったルールを UI のトークンで変えるためです。それらを使わず、UI が戻したルールだけを直せればよい構成なら、`rules:read`（一覧・詳細）・`rules:write`（追加・変更・削除）と `allow_restored: true` でもよい（global の設定には `admin` が要ります）。`metrics:read` は使いません（`GET /capabilities` はどのトークンでも読めます）。
     `allow_listen_ports` を付けると、その範囲の外の待ち受けポートのルールは UI から作成・変更・削除できません。
     スコープが足りないと、画面に「UI が使う rproxy のトークンに、この操作の権限がありません」と出ます（UI のログにも残ります）。
     ACME の証明書を使うルールを UI から作成・変更するには、さらに `acme:write` が要ります（下の「ACME で証明書を取る」）。

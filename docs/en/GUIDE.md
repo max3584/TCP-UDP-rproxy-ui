@@ -120,12 +120,16 @@ On the same host, `sudo apt install mariadb-server` is enough (with `DB_HOST=127
 
 Create the tables as the DB administrator, and do not give the UI's user DDL rights. The easiest way is to let `migrate.mjs` do it. On a new DB it runs `schema.sql`, creates the UI's user and grants only what it needs.
 
-`migrate.mjs` connects over TCP, so it needs an administrator that signs in with a password (root on Debian's MariaDB uses socket authentication only). Create one if you have none.
+`migrate.mjs` connects to `DB_HOST` / `DB_PORT` over TCP and signs in with the password of `DB_ADMIN_USER` / `DB_ADMIN_PASSWORD` (not through the Unix socket).
+The administrator needs the rights to run DDL and, with `DB_APP_USER`, to create users and grant rights (`CREATE USER` and `GRANT OPTION`).
+Whether MariaDB's root can sign in with a password over TCP depends on the environment (not where root uses socket authentication only). If it cannot, create an administrator that signs in with a password. For example:
 
 ```shell
 sudo mariadb -e "CREATE USER 'rproxy_admin'@'127.0.0.1' IDENTIFIED BY '<admin password>';
   GRANT ALL PRIVILEGES ON *.* TO 'rproxy_admin'@'127.0.0.1' WITH GRANT OPTION;"
 ```
+
+You may narrow the rights to suit your environment (this example favours ease of trying).
 
 ```shell
 sudo sh -c 'set -a; . /etc/rproxy-ui/rproxy-ui.env; \
