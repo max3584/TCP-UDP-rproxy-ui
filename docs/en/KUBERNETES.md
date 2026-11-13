@@ -151,7 +151,7 @@ rproxy pods run by rproxy-gateway are shown **read-only** (C in rproxy-gateway's
 The controller writes the Secret `rproxy-ui-discovery` (`rproxy.discovery.secretName`) into the UI's namespace: a group `k8s:<namespace>/<Gateway>` per Gateway with its rproxy pods (`https://<pod IP>:9443`), the CA certificate (no key), and a read-only token per Gateway (scopes `rules:read`, `metrics:read`). The UI reads it at `/etc/rproxy-ui/k8s` (`RPROXY_UI_K8S_DISCOVERY`) and again when the files change.
 
 - **Admins only** (Kubernetes rules have no UI owner). Rules (targets, labels, state) and usage are shown.
-- **No writes**: the screens show no buttons that change them and the API refuses with `409 readonly_node`. The token can only read, so rproxy refuses with `403` as well. The source of truth for Kubernetes rules is the Gateway API objects (etcd); the UI's DB does not hold them.
+- **No writes**: the screens show no buttons that change them and the API refuses with `409 readonly_node`. The token can only read, so rproxy refuses with `403` as well. The UI does not ask for the global settings (they need `admin`) or the stored certificates (they need `certs:read`) and only shows "Not permitted to read this" (no need to widen the token). The source of truth for Kubernetes rules is the Gateway API objects (etcd); the UI's DB does not hold them.
 - The Gateway's NetworkPolicy lets the UI pods of the UI namespace reach port 9443 only (the controller adds this).
 - After a pod is replaced, the UI may ask the old IP and fail until the kubelet updates the Secret volume (1 to 2 minutes; the next reload fixes it).
 - The UI runs while the Secret does not exist yet (no Gateway): the volume is `optional`.

@@ -804,7 +804,7 @@ rproxy が UI のトークンを断ったとき、UI はそれを 502 にして�
 |---|---|---|
 | 502 `forbidden`（「UI が使う rproxy のトークンに、この操作の権限がありません」） | UI のトークンのスコープが足りないか、操作がトークンの `allow_listen_ports`・`allow_certs` の外 | UI のトークンを `admin` にします。`allow_listen_ports`・`allow_certs` は `admin` でも効くので、広げるか外します |
 | 502 `not_owner` | rproxy-api v0.4.23 以上で、UI のトークンが `admin` でない | 下で説明します |
-| 502 `global_forbidden` | global の設定に要る `admin` が、UI のトークンにない | UI のトークンを `admin` にします |
+| 502 `global_forbidden` | global の設定に要る `admin` が、UI のトークンにない | UI のトークンを `admin` にします（Kubernetes の Gateway の rproxy（読むだけ）では出ません。[8.5](#85-複数のノード) の `readonly_not_permitted` を見ます） |
 | 502 `rproxy_unauthorized` | UI のトークンが違う、または期限が切れた | `RPROXY_API_TOKEN`・`RPROXY_API_TOKEN_FILE` と、rproxy のトークンファイルを見比べます |
 | 502 `rproxy_locked_out` | UI の認証の失敗が続き、rproxy が UI を一時的に止めた | トークンやクライアント証明書を直します。止める時間が過ぎれば解けます |
 
@@ -854,6 +854,7 @@ rproxy が UI のトークンを断ったとき、UI はそれを 502 にして�
 | 400 `target_required` | 置き場所（ノード／グループ）を指定していない | ノード／グループを選びます |
 | 400 `unknown_target` | `nodes.yaml` にない名前を指定した | 名前を選び直し、`nodes.yaml` を見ます |
 | 409 `readonly_node` | Kubernetes の Gateway の rproxy（読むだけ）に書こうとした | Gateway API のリソースの側で変えます |
+| `readonly_not_permitted`（「権限が足りないため読めません」） | Kubernetes の Gateway の rproxy（読むだけ）の、global の設定・登録済みの証明書の一覧を読もうとした。UI に渡るトークンは `rules:read`・`metrics:read` だけで、これらに要る `admin`・`certs:read` がない（設計どおり。UI は問い合わせない） | 何もしません。トークンを `admin` にしないでください |
 
 ### 8.6 DB と migration
 

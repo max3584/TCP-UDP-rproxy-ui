@@ -4,7 +4,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/pages/api/auth/[...nextauth]';
 import type { sessionUser } from './lib';
-import { NO_ROLE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from './messages';
+import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, READONLY_NOT_PERMITTED_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from './messages';
 import { NodesConfigError, loadNodes, probeNode, targetNodes, toRproxyNode, visibleNodes } from './nodes';
 import { accessOf, nodesAllowed, roleConfig } from './roles';
 import type { RoleConfig } from './roles';
@@ -127,4 +127,15 @@ export function rproxyFailure(err: unknown): { error: string; code: string } {
     error: err instanceof Error ? err.message : String(err),
     code: err instanceof RproxyError ? err.code : 'internal',
   };
+}
+
+// rproxy の GET /rules（と変更前の差分）の失敗を、画面に出す文にする（トークンの問題は説明を足す）。
+// 見るだけのノード（Kubernetes の rproxy）の 403 は、トークンが読むだけなのが設計どおりなので、admin にする勧めを出さない（#203）
+export function liveError(err: unknown, readonly = false): string {
+  let message = err instanceof Error ? err.message : String(err);
+  if (err instanceof RproxyError && err.status === 403 && readonly) return READONLY_NOT_PERMITTED_MESSAGE;
+  if (err instanceof RproxyError && err.status === 403) message = `${FORBIDDEN_MESSAGE}（詳細: ${message}）`;
+  if (err instanceof RproxyError && err.status === 401) message = `${RPROXY_UNAUTHORIZED_MESSAGE}（詳細: ${message}）`;
+  if (err instanceof RproxyError && err.status === 429) message = lockedOutText(err.retryAfter);
+  return message;
 }

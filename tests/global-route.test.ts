@@ -24,6 +24,7 @@ import handler from '@/pages/api/forward/global';
 import { RproxyError, currentNode } from '@/components/rproxy';
 import { resetNodesCache } from '@/components/nodes';
 import { globalFailure } from '@/components/globalapi';
+import { explainError } from '@/components/messages';
 
 let dir = '';
 const as = (roles: string[]) => mocks.getServerSession.mockResolvedValue({ user: { id: 'u1', name: 'n', email: 'e', image: '', role: '', roles: roles }, expires: '' });
@@ -289,6 +290,40 @@ describe('/api/forward/global', () => {
       resetNodesCache();
       rmSync(k8s, { recursive: true, force: true });
     }
+  });
+
+  it('does not read the global settings of a read-only (Kubernetes) node, and gives no advice to make the token admin (#203)', async () => {
+    const k8s = mkdtempSync(join(tmpdir(), 'rproxy-ui-k8s-'));
+    writeFileSync(join(k8s, 'nodes.yaml'), [
+      'nodes:', '  - {name: "k8s:ns/gw/pod-0", url: "https://10.0.0.9:8443", token_file: token, tls_ca: ca.crt, tls_server_name: rproxy.ns.svc}',
+      'groups:', '  - {name: "k8s:ns/gw", nodes: ["k8s:ns/gw/pod-0"]}',
+    ].join('\n'));
+    writeFileSync(join(k8s, 'token'), 'tok\n');
+    writeFileSync(join(k8s, 'ca.crt'), '');
+    process.env.RPROXY_UI_K8S_DISCOVERY = k8s;
+    resetNodesCache();
+    try {
+      const { status, body } = await call('GET');
+      expect(status).toBe(200);
+      const ro = body.nodes.find((n: { node: string }) => n.node === 'k8s:ns/gw/pod-0');
+      expect(ro).toMatchObject({ readonly: true, reachable: true, supported: true, settings: null, error: '権限が足りないため読めません。', code: 'readonly_not_permitted' });
+      expect(explainError(ro.code, ro.error)).toBe('権限が足りないため読めません。');
+      expect(explainError(ro.code, ro.error)).not.toContain('admin');
+      // 403 になると分かっているので問い合わせない。ほかのノードは今までどおり
+      expect(mocks.getGlobalSettings.mock.calls.length).toBe(2);
+      expect(body.nodes.find((n: { node: string }) => n.node === 'a').settings).not.toBeNull();
+    } finally {
+      delete process.env.RPROXY_UI_K8S_DISCOVERY;
+      resetNodesCache();
+      rmSync(k8s, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the advice for the admin scope on nodes that are not read-only', async () => {
+    mocks.getGlobalSettings.mockRejectedValue(new RproxyError('missing scope admin', 'forbidden', 403));
+    const { body } = await call('GET', { query: { target: 'a' } });
+    expect(body.nodes[0]).toMatchObject({ readonly: false, code: 'global_forbidden' });
+    expect(explainError(body.nodes[0].code, body.nodes[0].error)).toContain('admin');
   });
 
   it('needs a target with several nodes, and refuses unknown targets, overlapping names and bad values', async () => {

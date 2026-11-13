@@ -90,6 +90,9 @@ const NodeCard: React.FC<{ n: GlobalNodeView; many: boolean }> = ({ n, many }) =
         <p className="text-sm text-red-800">問い合わせできません{n.error ? `: ${n.error}` : ''}</p>
       ) : !n.supported ? (
         <p className="text-sm text-gray-700" data-testid="global-unsupported">この rproxy は global の設定の API に対応していません（rproxy-api v0.4.19 から）。</p>
+      ) : !s && n.code === 'readonly_not_permitted' ? (
+        // 見るだけのノード（Kubernetes の rproxy）：global の設定には admin が要るので読まない（#203）。誤りではないので赤にしない
+        <p className="text-sm text-gray-700" data-testid="global-readonly">{explainError(n.code, n.error ?? '')}</p>
       ) : !s ? (
         <p className="text-sm text-red-800">{explainError(n.code ?? undefined, n.error ?? '')}</p>
       ) : (

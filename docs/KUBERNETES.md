@@ -151,7 +151,7 @@ rproxy-gateway が動かす rproxy の Pod を、**読むだけ**で画面に出
 コントローラは UI の namespace に Secret `rproxy-ui-discovery`（`rproxy.discovery.secretName`）を書く：Gateway ごとのグループ `k8s:<namespace>/<Gateway>` とその rproxy の Pod（`https://<Pod の IP>:9443`）、CA の証明書（鍵は入らない）、Gateway ごとの読むだけのトークン（スコープ `rules:read`・`metrics:read`）。UI はこれを `/etc/rproxy-ui/k8s`（`RPROXY_UI_K8S_DISCOVERY`）に読み、ファイルが変われば読み直す。
 
 - **管理者だけ**に見せる（Kubernetes のルールには UI の持ち主がいない）。ルール（宛先・ラベル・状態）と利用量が出る。
-- **書けない**：画面は変更のボタンを出さず、API は `409 readonly_node` で断る。トークンも読むだけなので、rproxy も `403` で断る。Kubernetes のルールの正は Gateway API の資源（etcd）で、UI の DB には持たない。
+- **書けない**：画面は変更のボタンを出さず、API は `409 readonly_node` で断る。トークンも読むだけなので、rproxy も `403` で断る。global の設定（`admin` が要る）と登録済みの証明書の一覧（`certs:read` が要る）は UI が問い合わせず、「権限が足りないため読めません」とだけ出す（トークンを広げる必要はない）。Kubernetes のルールの正は Gateway API の資源（etcd）で、UI の DB には持たない。
 - Gateway の NetworkPolicy は、UI の namespace の UI の Pod から 9443 だけを開ける（コントローラが足す）。
 - Pod が入れ替わると、kubelet が Secret のボリュームを更新するまで（1〜2 分）古い IP に聞いて失敗することがある（次の読み直しで直る）。
 - Secret が無い間（まだ Gateway がない）も UI は動く（ボリュームは `optional`）。

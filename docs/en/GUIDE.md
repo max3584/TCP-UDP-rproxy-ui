@@ -804,7 +804,7 @@ The codes in this table are fixed in the settings of the UI's token ([3.3](#33-c
 |---|---|---|
 | 502 `forbidden` ("The rproxy token used by the UI lacks the permission for this.") | The UI's token lacks scopes, or the action is outside the token's `allow_listen_ports` / `allow_certs` | Make the UI's token `admin`. `allow_listen_ports` and `allow_certs` apply even to `admin`, so widen or remove them |
 | 502 `not_owner` | rproxy-api v0.4.23 or later, and the UI's token is not `admin` | Explained below |
-| 502 `global_forbidden` | The UI's token lacks the `admin` that global settings need | Make the UI's token `admin` |
+| 502 `global_forbidden` | The UI's token lacks the `admin` that global settings need | Make the UI's token `admin` (this does not appear for a Kubernetes Gateway's rproxy (read-only); see `readonly_not_permitted` in [8.5](#85-multiple-nodes)) |
 | 502 `rproxy_unauthorized` | The UI's token is wrong or expired | Compare `RPROXY_API_TOKEN` / `RPROXY_API_TOKEN_FILE` with rproxy's token file |
 | 502 `rproxy_locked_out` | Repeated authentication failures made rproxy block the UI for a while | Fix the token or client certificate. It clears when the time passes |
 
@@ -854,6 +854,7 @@ These appear with the setup in [6.](#6-multiple-nodes-and-groups).
 | 400 `target_required` | No place (node / group) was given | Choose a node / group |
 | 400 `unknown_target` | A name not in `nodes.yaml` was given | Choose the name again and check `nodes.yaml` |
 | 409 `readonly_node` | A write to a Kubernetes Gateway's rproxy (read-only) | Change the Gateway API resources instead |
+| `readonly_not_permitted` ("Not permitted to read this") | A read of the global settings or the stored certificates of a Kubernetes Gateway's rproxy (read-only). The token the UI gets has only `rules:read` and `metrics:read`, not the `admin` and `certs:read` these need (by design; the UI does not ask) | Nothing. Do not make the token `admin` |
 
 ### 8.6 The DB and migrations
 

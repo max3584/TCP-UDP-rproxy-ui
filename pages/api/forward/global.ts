@@ -11,7 +11,7 @@ import {
 } from '@/components/globalsettings';
 import { GlobalRouteError, applyGlobal, changeSummary, globalFailure } from '@/components/globalapi';
 import type { GlobalChange, GlobalNodeResult, GlobalNodeView, GlobalSettings } from '@/components/globalsettings';
-import { READONLY_NODE_MESSAGE } from '@/components/messages';
+import { READONLY_NODE_MESSAGE, READONLY_NOT_PERMITTED_MESSAGE } from '@/components/messages';
 import { localizedApi } from '@/i18n/server';
 
 // rproxy の global の設定（rproxy-api v0.4.19 の GET / PATCH /config/global、#342。UI #169）。管理者だけ。
@@ -69,6 +69,11 @@ async function nodeView(p: PlanNode): Promise<GlobalNodeView> {
     return { ...base, reachable: false, supported: false, settings: null, error: f.error, code: f.code };
   }
   if (!supported) return { ...base, reachable: true, supported: false, settings: null, error: null, code: null };
+  // 見るだけのノード（Kubernetes の rproxy）のトークンは rules:read・metrics:read だけで、GET /config/global の admin がない（設計どおり）。
+  // 403 になると分かっているので問い合わせず、トークンを admin にする勧めも出さない（#203）
+  if (p.readonly) {
+    return { ...base, reachable: true, supported: true, settings: null, error: READONLY_NOT_PERMITTED_MESSAGE, code: 'readonly_not_permitted' };
+  }
   try {
     const raw = globalSettingsView(await run(p, () => getGlobalSettings()));
     // 再起動が要る項目（acme の contact・directory・eab など）の中身は画面に出さない。

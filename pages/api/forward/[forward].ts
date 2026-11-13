@@ -84,10 +84,10 @@ import { DEFAULT_OVERLAY_NODE, DesiredOverlay, OverlayResendResult, checkOverlay
 import { NodeOverride, Overrides, effectiveRule, normalizeOverride, overrideFromRow, overrideRow, sameOverrides, settingsOverridesToBody } from '@/components/overrides';
 import { haStatus, interfaceAddrs, vipAddrs } from '@/components/ha';
 import { FanoutError, NodeResult, Undo, applyToNodes } from '@/components/fanout';
-import { FORBIDDEN_MESSAGE, NO_ROLE_MESSAGE, READONLY_NODE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from '@/components/messages';
+import { NO_ROLE_MESSAGE, READONLY_NODE_MESSAGE, RPROXY_UNAUTHORIZED_MESSAGE, lockedOutText } from '@/components/messages';
 import mariadb, { PoolConnection } from 'mariadb';
 import { localizedApi } from '@/i18n/server';
-import { rejectCrossSite } from '@/components/apiguard';
+import { liveError, rejectCrossSite } from '@/components/apiguard';
 import { translate } from '@/i18n/core';
 import { Access, RoleConfig, accessOf, certPrefixesFor, nodesAllowed, portsAllowed, roleConfig } from '@/components/roles';
 import { toHttpRules, validateHttp } from '@/components/httpspec';
@@ -636,15 +636,6 @@ function withLiveState(id: number, rule: ForwardRule, live: boolean, status: Rpr
   };
 }
 
-// rproxy の GET /rules の失敗を、画面に出す文にする（トークンの問題は説明を足す）
-function liveError(err: unknown): string {
-  let message = err instanceof Error ? err.message : String(err);
-  if (err instanceof RproxyError && err.status === 403) message = `${FORBIDDEN_MESSAGE}（詳細: ${message}）`;
-  if (err instanceof RproxyError && err.status === 401) message = `${RPROXY_UNAUTHORIZED_MESSAGE}（詳細: ${message}）`;
-  if (err instanceof RproxyError && err.status === 429) message = lockedOutText(err.retryAfter);
-  return message;
-}
-
 // 1 ノードの GET /rules。live が null なら問い合わせできなかった
 interface NodeLive {
   node: RproxyNode;
@@ -659,7 +650,7 @@ async function fetchNodeLive(node: RproxyNode | null, logger: AppLogger): Promis
     return { live: new Map(statuses.map((r) => [ruleKeyString(r.protocol, r.listen_addr, r.listen_port), r])), statuses: statuses, error: null };
   } catch (err) {
     logger.warn(`rproxy${node ? `（${node.name}）` : ''} からルールの状態を取得できません: ${err}`);
-    return { live: null, statuses: [], error: liveError(err) };
+    return { live: null, statuses: [], error: liveError(err, node?.readonly === true) };
   }
 }
 
@@ -1244,7 +1235,7 @@ async function planRule(actor: Actor, body: any, logger: AppLogger): Promise<{ a
       const plan = await withNode(node, () => step(node));
       return plan === null ? { node: node.name } : { node: node.name, plan: plan };
     } catch (err) {
-      if (err instanceof HttpError || err instanceof RproxyError) return { node: node.name, error: err instanceof RproxyError ? liveError(err) : err.message, code: err.code };
+      if (err instanceof HttpError || err instanceof RproxyError) return { node: node.name, error: err instanceof RproxyError ? liveError(err, node.readonly === true) : err.message, code: err.code };
       throw err;
     }
   }));
