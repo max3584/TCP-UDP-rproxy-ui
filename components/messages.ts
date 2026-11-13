@@ -117,6 +117,11 @@ export const SHADOWED_RULE_MESSAGE =
 export const READONLY_NODE_MESSAGE =
   'Kubernetes の rproxy は見るだけです（画面からは変更・停止・送り直しができません）。ルールは Gateway API のリソース（Gateway・HTTPRoute など）で変えてください。';
 
+// 見るだけのノードで、読むのに UI のトークンの外のスコープが要るもの（global の設定の admin、登録済みの証明書の certs:read）。
+// 見るだけのトークンは設計どおりなので、FORBIDDEN_MESSAGE のようにトークンを admin にする勧めは出さない（#203）。
+// UI はこれらを見るだけのノードに問い合わせない（readonly_not_permitted）
+export const READONLY_NOT_PERMITTED_MESSAGE = '権限が足りないため読めません。';
+
 // global の設定（rproxy-api v0.4.19 の PATCH /config/global、UI #169。pages/api/forward/global.ts・components/globalapi.ts）
 export const GLOBAL_UNSUPPORTED_MESSAGE = 'この rproxy は global の設定の API に対応していません（rproxy-api v0.4.19 から）。';
 // PATCH の答えを待つ間に時間切れ・接続が切れ、読み直しても効いたか分からないとき
@@ -148,6 +153,7 @@ const EXPLAIN: Record<string, string> = {
   owned: OWNED_RULE_MESSAGE,
   shadowed: SHADOWED_RULE_MESSAGE,
   readonly_node: READONLY_NODE_MESSAGE,
+  readonly_not_permitted: READONLY_NOT_PERMITTED_MESSAGE,
   csrf: 'ほかのサイトからの変更の要求は受け付けません。この画面を開き直してから操作してください。',
   global_static: 'この項目は rproxy の設定ファイル（か環境変数）が決めているため、画面からは変えられません。変えるときは設定ファイルを直してください。',
   global_restart_only: 'この項目は rproxy の起動のときだけ読まれるため、画面からは変えられません。設定ファイルで変えて rproxy を再起動してください。',

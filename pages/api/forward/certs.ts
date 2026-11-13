@@ -4,14 +4,18 @@ import { RproxyError, listCerts, withNode } from '@/components/rproxy';
 import { requireRole, rproxyFailure, viewerProbe } from '@/components/apiguard';
 import { certPrefixesFor } from '@/components/roles';
 import { certAllowed } from '@/components/userlimits';
+import { READONLY_NOT_PERMITTED_MESSAGE } from '@/components/messages';
 import { localizedApi } from '@/i18n/server';
 
 // rproxy の証明書の API に登録した証明書（GET /certs。rproxy-api v0.4.2、#155）。フォームの「登録済みの証明書」の選択肢。
 // 名前・名前の一覧（sans）・期限だけを返す（鍵は rproxy も返さない）。利用者にはその人が使える先頭（RPROXY_UI_USER_CERTS・RPROXY_UI_USER_CERTS_BY_SUB・RPROXY_UI_USER_CERTS_BY_ROLE）の名前だけ。
-// 読めない（UI のトークンに certs:read がない 403・古い rproxy の 404）ときは 200 の available: false
+// 読めない（UI のトークンに certs:read がない 403・古い rproxy の 404）ときは 200 の available: false。
+// 見るだけのノード（Kubernetes の rproxy。トークンは rules:read・metrics:read だけ）には問い合わせず、readonly: true を付ける（#203）
 export interface CertsInfo {
   available: boolean;
   certs: { name: string; sans: string[]; not_after: string | null }[];
+  readonly?: boolean;
+  error?: string;
 }
 
 export function certsFromRproxy(raw: unknown, prefixes: string[] | null): CertsInfo['certs'] {
@@ -39,6 +43,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     const probe = viewerProbe(session, req.query.target);
     if (!probe.ok) return res.status(probe.status).json(probe.body);
     const node = probe.node;
+    if (node?.readonly) {
+      return res.status(200).json({ available: false, certs: [], readonly: true, error: READONLY_NOT_PERMITTED_MESSAGE } satisfies CertsInfo);
+    }
     // 利用者には、その人の先頭（RPROXY_UI_USER_CERTS か、利用者・ロールごとの割り当て。#160）の名前だけ
     const prefixes = certPrefixesFor(probe.admin ? 'admin' : 'user', probe.roles, session.user.id, session.user.roles ?? []);
     const raw = node ? await withNode(node, () => listCerts()) : await listCerts();

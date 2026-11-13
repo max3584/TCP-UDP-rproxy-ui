@@ -101,4 +101,17 @@ describe('/api/forward/certs with nodes', () => {
     mocks.getServerSession.mockResolvedValue(admin);
     expect((await call('GET', { target: 'n2' })).status).toBe(200);
   });
+
+  it('does not ask a read-only (Kubernetes) node: its token has no certs:read by design (#203)', async () => {
+    const cfg = parseNodesConfig('nodes:\n  - {name: n1, url: "http://127.0.0.1:8081"}\n  - {name: k8s, url: "http://127.0.0.1:8082"}\ndefault_target: n1\n', () => 't');
+    mocks.loadNodes.mockReturnValue({ ...cfg, nodes: cfg.nodes.map((n) => (n.name === 'k8s' ? { ...n, readonly: true } : n)) });
+    mocks.getServerSession.mockResolvedValue(admin);
+    mocks.listCerts.mockResolvedValue(RAW);
+    const res = await call('GET', { target: 'k8s' });
+    expect(res).toEqual({ status: 200, body: { available: false, certs: [], readonly: true, error: '権限が足りないため読めません。' } });
+    expect(mocks.listCerts).not.toHaveBeenCalled();
+    // ほかのノードは今までどおり聞く
+    expect((await call('GET', { target: 'n1' })).body.available).toBe(true);
+    expect(mocks.listCerts).toHaveBeenCalledTimes(1);
+  });
 });

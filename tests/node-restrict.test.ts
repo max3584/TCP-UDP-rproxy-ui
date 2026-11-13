@@ -66,7 +66,7 @@ beforeEach(() => {
   mocks.loadNodes.mockReturnValue(config());
 });
 
-describe.each([['acme', acme], ['capabilities', capabilities], ['interfaces', interfaces], ['certs', certs]] as [string, Handler][])('/api/forward/%s', (_name, handler) => {
+describe.each([['acme', acme], ['capabilities', capabilities], ['interfaces', interfaces], ['certs', certs]] as [string, Handler][])('/api/forward/%s', (name, handler) => {
   it('users may ask only the nodes of RPROXY_UI_USER_NODES', async () => {
     vi.stubEnv('RPROXY_UI_USER_NODES', 'n1');
     expect((await call(handler, { target: 'n1' })).status).toBe(200);
@@ -85,7 +85,8 @@ describe.each([['acme', acme], ['capabilities', capabilities], ['interfaces', in
     vi.stubEnv('RPROXY_UI_USER_NODES', 'n1');
     expect((await call(handler, { target: 'k1' })).status).toBe(200);
     expect((await call(handler, { target: 'n2' })).status).toBe(200);
-    expect(mocks.asked).toEqual(['k1', 'n2']);
+    // 登録済みの証明書は見るだけのノードに聞かない（トークンに certs:read がない。#203）
+    expect(mocks.asked).toEqual(name === 'certs' ? ['n2'] : ['k1', 'n2']);
   });
 
   it('users without a node they may touch get 403 and nothing is asked', async () => {

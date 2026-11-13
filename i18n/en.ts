@@ -1554,6 +1554,7 @@ export const en: Record<string, string> = {
   "同じキーを rproxy では API で作ったルールかルールの組のルールが使っているため、この UI のルールの変更は rproxy に送れません。": "In rproxy, a rule created through the API or a rule of a rule set uses the same key, so changes to this UI rule cannot be sent to rproxy.",
   "同じキーを API のルール・ルールの組が使っている（送り直さない）": "Key used by an API rule or a rule set (not resent)",
   "同じキーを rproxy ではルールの組のルールが使っているため、この UI のルールは動いていません。": "In rproxy, a rule of a rule set uses the same key, so this UI rule is not running.",
+  "権限が足りないため読めません。": "Not permitted to read this.",
   "Kubernetes の rproxy は見るだけです（画面からは変更・停止・送り直しができません）。ルールは Gateway API のリソース（Gateway・HTTPRoute など）で変えてください。": "The Kubernetes rproxy is read-only (nothing can be changed, paused or resent from this UI). Change its rules through Gateway API resources (Gateway, HTTPRoute, ...).",
   "{0} はディレクトリの中のファイルの名前にしてください。": "{0} must be the name of a file in the directory.",
   "{0}.name は {1} で始まる {2} 文字までの名前にしてください。": "{0}.name must start with {1} and be at most {2} characters.",

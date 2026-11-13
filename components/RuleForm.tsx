@@ -36,7 +36,7 @@ import { PROFILES } from './profiles';
 import {
   PROXY_PROTOCOL_IN_HELP, PROXY_PROTOCOL_REQUIRED_HELP, ROUTE_SOURCE_IP_HELP, SOURCE_IP_DOC_URL, proxyProtocolHint, transparentHint,
 } from './sourceip';
-import { ACME_NOT_CONFIGURED_NOTE, ACME_UNSUPPORTED_NOTE, FILE_OWNER_NOTE } from './messages';
+import { ACME_NOT_CONFIGURED_NOTE, ACME_UNSUPPORTED_NOTE, FILE_OWNER_NOTE, READONLY_NOT_PERMITTED_MESSAGE } from './messages';
 import { USER_FILES_NOTE, USER_TARGETS_NOTE } from './userlimits';
 import { AcmeInfo, splitAcmeDomains } from './acme';
 import AcmeCertificateEditor, { acmeRowProblem } from './AcmeCertificateEditor';
@@ -535,7 +535,10 @@ const RuleForm: React.FC<RuleFormProps> = ({ onSubmit, onCancel, initialData, su
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
         setStoredCerts(Array.isArray(data.certs) ? data.certs : []);
-        setStoredCertsError(data.available === false ? '登録済みの証明書の一覧を rproxy から読めません（UI のトークンに certs:read がない・古い rproxy）。名前を直接入力してください。' : '');
+        // 見るだけのノード（#203）では、トークンの scope を変える勧めを出さない
+        setStoredCertsError(data.available === false
+          ? (data.readonly === true ? READONLY_NOT_PERMITTED_MESSAGE : '登録済みの証明書の一覧を rproxy から読めません（UI のトークンに certs:read がない・古い rproxy）。名前を直接入力してください。')
+          : '');
       } catch (err) {
         setStoredCertsError(`登録済みの証明書の一覧を取得できませんでした（名前を直接入力してください）: ${err instanceof Error ? err.message : err}`);
       }
