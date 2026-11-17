@@ -101,7 +101,7 @@ mariadb:
   image:
     # the official image (https://hub.docker.com/_/mariadb)
     repository: mariadb
-    tag: "11.8"
+    tag: "13.0"
     pullPolicy: IfNotPresent
   # Secret with MARIADB_ROOT_PASSWORD. Required when enabled
   existingSecret: ""
