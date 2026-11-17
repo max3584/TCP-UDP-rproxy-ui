@@ -3,7 +3,7 @@
 # next build の standalone（.deb と同じもの）と db/（schema.sql・migrations・migrate.mjs・node-view.mjs）を node:24-alpine に入れる。
 # ネイティブなモジュールを入れないので、JS はビルドするマシンで 1 回だけ作り、amd64・arm64 の両方のイメージに同じものを入れる。
 # 実行は uid 65532、ルートは読むだけでよい（書くのは /tmp と /app/.next/cache だけ。chart は emptyDir を付ける）。
-ARG NODE_IMAGE=node:24-alpine
+ARG NODE_IMAGE=node:26-alpine
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 WORKDIR /src
