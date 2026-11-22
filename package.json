@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:ui": "playwright test",
+    "version": "node scripts/sync-chart-version.mjs",
     "i18n:check": "vitest run tests/i18n.test.ts",
     "db:node-view": "node db/node-view.mjs",
     "token": "node scripts/rproxy-ui-token.mjs",
